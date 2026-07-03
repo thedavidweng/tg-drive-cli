@@ -12,11 +12,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/thedavidweng/tg-drive-cli/internal/apperr"
+	apperr "github.com/thedavidweng/tg-drive-cli/core/errors"
+	"github.com/thedavidweng/tg-drive-cli/core/fsmodel"
+	"github.com/thedavidweng/tg-drive-cli/core/manifest"
+	"github.com/thedavidweng/tg-drive-cli/core/pathcodec"
 	"github.com/thedavidweng/tg-drive-cli/internal/db"
-	"github.com/thedavidweng/tg-drive-cli/internal/fsmodel"
-	"github.com/thedavidweng/tg-drive-cli/internal/manifest"
-	"github.com/thedavidweng/tg-drive-cli/internal/pathcodec"
 	"lukechampine.com/blake3"
 )
 

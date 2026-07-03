@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/thedavidweng/tg-drive-cli/internal/apperr"
+	apperr "github.com/thedavidweng/tg-drive-cli/core/errors"
+	"github.com/thedavidweng/tg-drive-cli/core/manifest"
 	"github.com/thedavidweng/tg-drive-cli/internal/config"
 	"github.com/thedavidweng/tg-drive-cli/internal/db"
-	"github.com/thedavidweng/tg-drive-cli/internal/manifest"
 	"github.com/thedavidweng/tg-drive-cli/internal/telegram"
 	"github.com/thedavidweng/tg-drive-cli/internal/telegram/fake"
 )

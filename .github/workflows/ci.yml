@@ -27,6 +27,8 @@ jobs:
         run: make vet
       - name: Test
         run: go test -coverprofile=coverage.out ./...
+      - name: Core WASM test
+        run: make test-core-wasm
       - name: Race test
         run: make test-race
       - name: Build

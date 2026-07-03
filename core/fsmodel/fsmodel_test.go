@@ -9,7 +9,7 @@ import (
 
 func loadPathCases(t *testing.T) []string {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "paths", "simple.txt"))
+	data, err := os.ReadFile(filepath.Join("..", "testdata", "contracts", "paths", "simple.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}

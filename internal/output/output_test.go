@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/thedavidweng/tg-drive-cli/internal/apperr"
+	apperr "github.com/thedavidweng/tg-drive-cli/core/errors"
 )
 
 func TestSuccessJSONEnvelope(t *testing.T) {

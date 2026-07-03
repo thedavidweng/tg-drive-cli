@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/thedavidweng/tg-drive-cli/internal/apperr"
-	"github.com/thedavidweng/tg-drive-cli/internal/fsmodel"
+	apperr "github.com/thedavidweng/tg-drive-cli/core/errors"
+	"github.com/thedavidweng/tg-drive-cli/core/fsmodel"
 	_ "modernc.org/sqlite"
 )
 

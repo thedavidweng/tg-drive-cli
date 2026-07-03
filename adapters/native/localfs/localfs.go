@@ -3,6 +3,7 @@ package localfs
 import (
 	"context"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -33,7 +34,7 @@ func (FS) Open(ctx context.Context, path string) (io.ReadCloser, error) {
 }
 
 // MkdirAll creates a directory tree.
-func (FS) MkdirAll(ctx context.Context, path string, perm os.FileMode) error {
+func (FS) MkdirAll(ctx context.Context, path string, perm fs.FileMode) error {
 	return os.MkdirAll(path, perm)
 }
 

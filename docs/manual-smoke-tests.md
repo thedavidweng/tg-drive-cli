@@ -4,6 +4,14 @@ Use a private Telegram test channel. Do not use personal production channels.
 
 ## Required environment
 
+Create a Telegram app at https://my.telegram.org/apps, then either:
+
+```sh
+td auth setup
+```
+
+or:
+
 ```sh
 export TD_API_ID=...
 export TD_API_HASH=...
@@ -13,6 +21,7 @@ export TD_PHONE=...
 ## Test sequence
 
 ```sh
+td auth setup
 td auth login
 td auth status --json
 td init ./testdata/local --create-channel

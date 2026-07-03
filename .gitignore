@@ -1,4 +1,5 @@
 dist/
+reference/
 coverage.out
 local_cache.db
 *.db

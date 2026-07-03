@@ -1,10 +1,10 @@
 package mtproto
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"io"
 	"strconv"
 	"time"
 
@@ -291,9 +291,8 @@ func (c *Client) DeleteMessage(ctx context.Context, channelID int64, messageID i
 	})
 }
 
-func (c *Client) DownloadMedia(ctx context.Context, channelID int64, messageID int) ([]byte, error) {
-	var data []byte
-	err := c.run(ctx, func(ctx context.Context, api *tg.Client, _ *telegram.Client) error {
+func (c *Client) DownloadMedia(ctx context.Context, channelID int64, messageID int, dst io.Writer) error {
+	return c.run(ctx, func(ctx context.Context, api *tg.Client, _ *telegram.Client) error {
 		peer, err := c.resolveChannelPeer(ctx, api, strconv.FormatInt(channelID, 10))
 		if err != nil {
 			return err
@@ -318,15 +317,9 @@ func (c *Client) DownloadMedia(ctx context.Context, channelID int64, messageID i
 			return errors.New("unsupported document type")
 		}
 		dl := downloader.NewDownloader()
-		var buf bytes.Buffer
-		_, err = dl.Download(api, doc.AsInputDocumentFileLocation("")).WithVerify(true).Stream(ctx, &buf)
-		if err != nil {
-			return mapRPCError(err)
-		}
-		data = buf.Bytes()
-		return nil
+		_, err = dl.Download(api, doc.AsInputDocumentFileLocation("")).WithVerify(true).Stream(ctx, dst)
+		return mapRPCError(err)
 	})
-	return data, err
 }
 
 func firstMessage(msgs tg.MessagesMessagesClass) (*tg.Message, error) {

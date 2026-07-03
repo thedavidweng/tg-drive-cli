@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,6 +17,7 @@ import (
 	"github.com/thedavidweng/tg-drive-cli/internal/fsmodel"
 	"github.com/thedavidweng/tg-drive-cli/internal/manifest"
 	"github.com/thedavidweng/tg-drive-cli/internal/pathcodec"
+	"lukechampine.com/blake3"
 )
 
 // LSEntry is one directory listing entry.
@@ -214,6 +217,10 @@ func (a *App) Scan(ctx context.Context, opts ScanOptions) (map[string]any, error
 	now := time.Now().UTC().Format(time.RFC3339)
 	seen := map[string]bool{}
 	maxID := afterID
+	scanActive, err := a.activePaths(ctx, channelID)
+	if err != nil {
+		return nil, err
+	}
 
 	for _, msg := range msgs {
 		if msg.ID > maxID {
@@ -278,10 +285,14 @@ func (a *App) Scan(ctx context.Context, opts ScanOptions) (map[string]any, error
 			meta.DisplayName = msg.FileName
 		}
 		seen[meta.CanonicalPath] = true
-		if err := a.indexScannedFile(ctx, channelID, mediaMessageID, manifestMsgID, meta, now); err != nil {
+		indexed, err := a.indexScannedFile(ctx, channelID, mediaMessageID, manifestMsgID, meta, now, scanActive)
+		if err != nil {
 			return nil, err
 		}
-		_, _ = a.DB.Raw().ExecContext(ctx, `update scan_errors set status='resolved', resolved_at=? where channel_id=? and message_id=?`, now, channelID, mediaMessageID)
+		if indexed {
+			scanActive = appendScanIndexedPath(scanActive, meta.CanonicalPath)
+			_, _ = a.DB.Raw().ExecContext(ctx, `update scan_errors set status='resolved', resolved_at=? where channel_id=? and message_id=?`, now, channelID, mediaMessageID)
+		}
 	}
 
 	if opts.Full {
@@ -379,35 +390,53 @@ func (a *App) DownloadFile(ctx context.Context, remotePath, localDest string, po
 			return apperr.New(apperr.ErrLocalPathExists, localDest)
 		}
 	}
-	data, err := a.TG.DownloadMedia(ctx, tgChID, messageID)
-	if err != nil {
-		return mapTGErr(err)
-	}
-	if size > 0 && int64(len(data)) != size {
-		return apperr.New(apperr.ErrTelegramRPC, "size mismatch")
-	}
-	if hash != "" && a.Cfg.Hash.Enabled && strings.HasPrefix(hash, "blake3:") {
-		tmpPath := localDest + ".hashcheck"
-		if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
-			return err
-		}
-		got, err := computeHash(tmpPath, true)
-		_ = os.Remove(tmpPath)
-		if err != nil {
-			return err
-		}
-		if got != hash {
-			return apperr.New(apperr.ErrTelegramRPC, "content hash mismatch")
-		}
-	}
-	tmp := localDest + ".tmp"
 	if err := os.MkdirAll(filepath.Dir(localDest), 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	tmp := localDest + ".tmp"
+	f, err := os.Create(tmp)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, localDest)
+	hashEnabled := hash != "" && a.Cfg.Hash.Enabled && strings.HasPrefix(hash, "blake3:")
+	var w io.Writer = f
+	var h *blake3.Hasher
+	if hashEnabled {
+		h = blake3.New(32, nil)
+		w = io.MultiWriter(f, h)
+	}
+	if err := a.TG.DownloadMedia(ctx, tgChID, messageID, w); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return mapTGErr(err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if size > 0 {
+		info, err := os.Stat(tmp)
+		if err != nil {
+			_ = os.Remove(tmp)
+			return err
+		}
+		if info.Size() != size {
+			_ = os.Remove(tmp)
+			return apperr.New(apperr.ErrTelegramRPC, "size mismatch")
+		}
+	}
+	if hashEnabled {
+		got := "blake3:" + hex.EncodeToString(h.Sum(nil))
+		if got != hash {
+			_ = os.Remove(tmp)
+			return apperr.New(apperr.ErrTelegramRPC, "content hash mismatch")
+		}
+	}
+	if err := os.Rename(tmp, localDest); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func autoRenameLocal(path string) string {
@@ -466,7 +495,10 @@ func (a *App) MoveFile(ctx context.Context, from, to string) error {
 		_ = a.DB.ReleaseLock(ctx, db.LockKey(channelID, dst), owner)
 	}()
 
-	existingSlugs := map[string]string{}
+	existingSlugs, err := a.loadExistingSlugs(ctx, channelID)
+	if err != nil {
+		return err
+	}
 	tags, _, _ := pathcodec.GenerateChain(dst, existingSlugs)
 	meta := manifest.FileMeta{
 		CanonicalPath: dst,
@@ -690,42 +722,88 @@ func (a *App) DownloadRecursive(ctx context.Context, remotePath, localDir string
 	return nil
 }
 
-func (a *App) indexScannedFile(ctx context.Context, channelID int64, messageID int, manifestMsgID *int, meta manifest.ParsedMeta, now string) error {
+func appendScanIndexedPath(active []fsmodel.ActivePath, canonical string) []fsmodel.ActivePath {
+	out := make([]fsmodel.ActivePath, 0, len(active)+4)
+	for _, ap := range active {
+		if ap.Canonical != canonical {
+			out = append(out, ap)
+		}
+	}
+	out = append(out, fsmodel.ActivePath{Canonical: canonical, IsDir: false})
+	for anc := range fsmodel.DeriveDirectoryNodes([]string{canonical}) {
+		found := false
+		for _, ap := range out {
+			if ap.Canonical == anc && ap.IsDir {
+				found = true
+				break
+			}
+		}
+		if !found {
+			out = append(out, fsmodel.ActivePath{Canonical: anc, IsDir: true})
+		}
+	}
+	return out
+}
+
+func (a *App) indexScannedFile(ctx context.Context, channelID int64, messageID int, manifestMsgID *int, meta manifest.ParsedMeta, now string, active []fsmodel.ActivePath) (bool, error) {
+	// Exclude the path being re-indexed from conflict checks.
+	filtered := make([]fsmodel.ActivePath, 0, len(active))
+	for _, ap := range active {
+		if ap.Canonical != meta.CanonicalPath {
+			filtered = append(filtered, ap)
+		}
+	}
+	if conflictErr := fsmodel.CheckUploadConflict(meta.CanonicalPath, filtered); conflictErr != nil {
+		code := apperr.ErrPathInvalid
+		if ae, ok := apperr.As(conflictErr); ok {
+			code = ae.Code
+		}
+		_, _ = a.DB.Raw().ExecContext(ctx, `
+			insert into scan_errors(channel_id,message_id,error_code,error_message,raw_excerpt,status,first_seen_at,last_seen_at)
+			values(?,?,?,?,?,'pending',?,?)
+			on conflict(channel_id,message_id,error_code) do update set last_seen_at=excluded.last_seen_at`,
+			channelID, messageID, code, conflictErr.Error(), truncate(meta.CanonicalPath, 200), now, now)
+		return false, nil
+	}
+
 	var mfID any
 	if manifestMsgID != nil {
 		mfID = *manifestMsgID
 	}
 	var fileID int64
 	err := a.DB.Raw().QueryRowContext(ctx, `
-		select id from files where channel_id=? and canonical_path=?`,
+		select id from files where channel_id=? and canonical_path=? and status not in ('superseded','deleted')`,
 		channelID, meta.CanonicalPath).Scan(&fileID)
 	if err == sql.ErrNoRows {
 		err = a.DB.Raw().QueryRowContext(ctx, `
-			select id from files where channel_id=? and message_id=?`,
+			select id from files where channel_id=? and message_id=? and status not in ('superseded','deleted')`,
 			channelID, messageID).Scan(&fileID)
 	}
-	switch {
-	case err == nil:
+	switch err {
+	case nil:
 		_, err = a.DB.Raw().ExecContext(ctx, `
 			update files set message_id=?, manifest_message_id=?, canonical_path=?, display_name=?, size=?, content_hash=?, mime=?, status='active', updated_at=?
 			where id=?`,
 			messageID, mfID, meta.CanonicalPath, meta.DisplayName, meta.Size, meta.Hash, meta.MIME, now, fileID)
-	case err == sql.ErrNoRows:
+	case sql.ErrNoRows:
 		_, err = a.DB.Raw().ExecContext(ctx, `
 			insert into files(channel_id,message_id,manifest_message_id,canonical_path,display_name,size,content_hash,mime,status,uploaded_at,updated_at)
 			values(?,?,?,?,?,?,?,?,'active',?,?)`,
 			channelID, messageID, mfID, meta.CanonicalPath, meta.DisplayName, meta.Size, meta.Hash, meta.MIME, now, now)
 	default:
-		return apperr.Wrap(apperr.ErrDB, "lookup scanned file", err)
+		return false, apperr.Wrap(apperr.ErrDB, "lookup scanned file", err)
 	}
 	if err != nil {
-		return apperr.Wrap(apperr.ErrDB, "index scanned file", err)
+		return false, apperr.Wrap(apperr.ErrDB, "index scanned file", err)
 	}
 	if fileID == 0 {
 		_ = a.DB.Raw().QueryRowContext(ctx, `select id from files where channel_id=? and canonical_path=? and status='active'`,
 			channelID, meta.CanonicalPath).Scan(&fileID)
 	}
-	existingSlugs := map[string]string{}
+	existingSlugs, err := a.loadExistingSlugs(ctx, channelID)
+	if err != nil {
+		return false, err
+	}
 	tags, slugMaps, _ := pathcodec.GenerateChain(meta.CanonicalPath, existingSlugs)
 	for _, sm := range slugMaps {
 		_, _ = a.DB.Raw().ExecContext(ctx, `insert or ignore into path_segment_slugs(channel_id,parent_canonical_path,segment,slug,hash_len,created_at) values(?,?,?,?,?,?)`,
@@ -739,5 +817,5 @@ func (a *App) indexScannedFile(ctx context.Context, channelID int64, messageID i
 		_, _ = a.DB.Raw().ExecContext(ctx, `insert or ignore into nodes(channel_id,canonical_path,parent_path,display_name,type,derived,created_at,updated_at) values(?,?,?,?,'dir',1,?,?)`,
 			channelID, anc, fsmodel.ParentPath(anc), name, now, now)
 	}
-	return nil
+	return true, nil
 }

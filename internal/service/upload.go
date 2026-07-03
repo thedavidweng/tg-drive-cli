@@ -104,6 +104,17 @@ func detectMIME(path string) string {
 	return mt
 }
 
+func (a *App) loadExistingSlugs(ctx context.Context, channelID int64) (map[string]string, error) {
+	slugs, err := a.DB.LoadSlugMap(ctx, channelID)
+	if err != nil {
+		return nil, apperr.Wrap(apperr.ErrDB, "load slugs", err)
+	}
+	if slugs == nil {
+		return map[string]string{}, nil
+	}
+	return slugs, nil
+}
+
 func (a *App) uploadLimit(ctx context.Context) int64 {
 	tgChID, err := a.tgChannelID(ctx)
 	if err != nil {
@@ -213,7 +224,10 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 	mimeType := detectMIME(localPath)
 	displayName := fsmodel.BaseName(dest)
 
-	existingSlugs := map[string]string{}
+	existingSlugs, err := a.loadExistingSlugs(ctx, channelID)
+	if err != nil {
+		return nil, err
+	}
 	tags, slugMaps, err := pathcodec.GenerateChain(dest, existingSlugs)
 	if err != nil {
 		return nil, err
@@ -235,28 +249,17 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 	}
 
 	var fileID int64
-	if replaceFileID > 0 {
-		fileID = replaceFileID
-		_, err = a.DB.Raw().ExecContext(ctx, `
-			update files set status='pending', display_name=?, original_local_path=?, size=?, content_hash=?, mime=?, updated_at=?
-			where id=?`,
-			displayName, localPath, info.Size(), contentHash, mimeType, now, fileID)
+	err = a.DB.WithTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `insert into files(channel_id,canonical_path,display_name,original_local_path,size,content_hash,mime,status,updated_at) values(?,?,?,?,?,?,?,'pending',?)`,
+			channelID, dest, displayName, localPath, info.Size(), contentHash, mimeType, now)
 		if err != nil {
-			return nil, apperr.Wrap(apperr.ErrDB, "mark pending replace", err)
+			return err
 		}
-	} else {
-		err = a.DB.WithTx(ctx, func(tx *sql.Tx) error {
-			res, err := tx.ExecContext(ctx, `insert into files(channel_id,canonical_path,display_name,original_local_path,size,content_hash,mime,status,updated_at) values(?,?,?,?,?,?,?,'pending',?)`,
-				channelID, dest, displayName, localPath, info.Size(), contentHash, mimeType, now)
-			if err != nil {
-				return err
-			}
-			fileID, _ = res.LastInsertId()
-			return nil
-		})
-		if err != nil {
-			return nil, apperr.Wrap(apperr.ErrDB, "insert pending", err)
-		}
+		fileID, _ = res.LastInsertId()
+		return nil
+	})
+	if err != nil {
+		return nil, apperr.Wrap(apperr.ErrDB, "insert pending", err)
 	}
 
 	f, err := os.Open(localPath)
@@ -288,21 +291,16 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 		manifestMsgID = &id
 	}
 
-	if replaceFileID > 0 {
-		if a.Cfg.Delete.Mode == "delete" {
-			if oldMsgID.Valid {
-				_ = a.TG.DeleteMessage(ctx, tgChID, int(oldMsgID.Int64))
-			}
-			if oldManifestID.Valid {
-				_ = a.TG.DeleteMessage(ctx, tgChID, int(oldManifestID.Int64))
-			}
-		}
-	}
-
 	err = a.DB.WithTx(ctx, func(tx *sql.Tx) error {
 		var mfID any
 		if manifestMsgID != nil {
 			mfID = *manifestMsgID
+		}
+		if replaceFileID > 0 {
+			if _, err := tx.ExecContext(ctx, `update files set status='superseded', node_id=null, updated_at=? where id=?`,
+				now, replaceFileID); err != nil {
+				return err
+			}
 		}
 		_, err := tx.ExecContext(ctx, `update files set status='active', message_id=?, manifest_message_id=?, uploaded_at=?, updated_at=? where id=?`,
 			up.MessageID, mfID, now, now, fileID)
@@ -333,6 +331,15 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 	})
 	if err != nil {
 		return nil, apperr.Wrap(apperr.ErrDB, "commit upload", err)
+	}
+
+	if replaceFileID > 0 && a.Cfg.Delete.Mode == "delete" {
+		if oldMsgID.Valid {
+			_ = a.TG.DeleteMessage(ctx, tgChID, int(oldMsgID.Int64))
+		}
+		if oldManifestID.Valid {
+			_ = a.TG.DeleteMessage(ctx, tgChID, int(oldManifestID.Int64))
+		}
 	}
 
 	return map[string]any{

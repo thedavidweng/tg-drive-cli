@@ -8,8 +8,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/thedavidweng/tg-drive-cli/internal/apperr"
 	"github.com/thedavidweng/tg-drive-cli/internal/config"
 	"github.com/thedavidweng/tg-drive-cli/internal/db"
+	"github.com/thedavidweng/tg-drive-cli/internal/manifest"
+	"github.com/thedavidweng/tg-drive-cli/internal/telegram"
 	"github.com/thedavidweng/tg-drive-cli/internal/telegram/fake"
 )
 
@@ -283,6 +286,114 @@ func TestManifestReplyScanRebuild(t *testing.T) {
 		}
 	}
 	t.Fatalf("indexed message_id %d is not manifest-reply media (msgs=%d)", messageID, len(tg.Messages(tgChID)))
+}
+
+func TestReplaceCreatesSupersededRow(t *testing.T) {
+	app, tg := testApp(t)
+	loginAndInit(t, app, tg)
+	ctx := context.Background()
+	local := filepath.Join(t.TempDir(), "a.txt")
+	_ = os.WriteFile(local, []byte("v1"), 0o644)
+	data, err := app.UploadFile(ctx, local, "/replace.txt", ConflictFail, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldID := int(data["message_id"].(int))
+	_ = os.WriteFile(local, []byte("v2"), 0o644)
+	_, err = app.UploadFile(ctx, local, "/replace.txt", ConflictReplace, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	channelID, _, err := app.channelID(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var superseded int
+	if err := app.DB.Raw().QueryRowContext(ctx, `
+		select count(*) from files where channel_id=? and canonical_path='/replace.txt' and status='superseded'`,
+		channelID).Scan(&superseded); err != nil {
+		t.Fatal(err)
+	}
+	if superseded != 1 {
+		t.Fatalf("superseded count = %d", superseded)
+	}
+	var active int
+	if err := app.DB.Raw().QueryRowContext(ctx, `
+		select count(*) from files where channel_id=? and canonical_path='/replace.txt' and status='active'`,
+		channelID).Scan(&active); err != nil {
+		t.Fatal(err)
+	}
+	if active != 1 {
+		t.Fatalf("active count = %d", active)
+	}
+	tgChID, _ := app.tgChannelID(ctx)
+	for _, m := range tg.Messages(tgChID) {
+		if m.ID == oldID {
+			t.Fatalf("old message %d should be deleted after replace", oldID)
+		}
+	}
+	res, err := app.Scan(ctx, ScanOptions{Full: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res["active"].(int) != 1 {
+		t.Fatalf("active after full scan = %v", res["active"])
+	}
+}
+
+func TestScanRejectsFileDirConflict(t *testing.T) {
+	app, tg := testApp(t)
+	loginAndInit(t, app, tg)
+	ctx := context.Background()
+	local := filepath.Join(t.TempDir(), "blocker")
+	_ = os.WriteFile(local, []byte("blocks"), 0o644)
+	_, err := app.UploadFile(ctx, local, "/blocker", ConflictFail, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	channelID, _, err := app.channelID(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tgChID, _ := app.tgChannelID(ctx)
+	conflictPath := "/blocker/nested.txt"
+	caption := manifest.RenderCompact(manifest.FileMeta{
+		CanonicalPath: conflictPath,
+		DisplayName:   "nested.txt",
+		Size:          4,
+		MIME:          "text/plain",
+	})
+	if _, err := tg.UploadMedia(ctx, telegram.UploadRequest{
+		ChannelID: tgChID,
+		Caption:   caption,
+		FileName:  "nested.txt",
+		MIME:      "text/plain",
+		Size:      4,
+		Reader:    strings.NewReader("evil"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.Scan(ctx, ScanOptions{Full: true}); err != nil {
+		t.Fatal(err)
+	}
+	var scanErrors int
+	if err := app.DB.Raw().QueryRowContext(ctx, `
+		select count(*) from scan_errors where channel_id=? and status='pending' and error_code=?`,
+		channelID, apperr.ErrPathInvalid).Scan(&scanErrors); err != nil {
+		t.Fatal(err)
+	}
+	if scanErrors == 0 {
+		t.Fatal("expected scan error for file/dir conflict")
+	}
+	var indexed int
+	if err := app.DB.Raw().QueryRowContext(ctx, `
+		select count(*) from files where channel_id=? and canonical_path=? and status='active'`,
+		channelID, conflictPath).Scan(&indexed); err != nil {
+		t.Fatal(err)
+	}
+	if indexed != 0 {
+		t.Fatalf("conflicting path indexed as active")
+	}
 }
 
 func TestStatusIncludesUploadLimit(t *testing.T) {

@@ -54,6 +54,13 @@ func TestFileDirCollision(t *testing.T) {
 	}
 }
 
+func TestDirAllowsDescendantUpload(t *testing.T) {
+	active := []ActivePath{{Canonical: "/a", IsDir: true}}
+	if err := CheckUploadConflict("/a/b.txt", active); err != nil {
+		t.Fatalf("unexpected conflict: %v", err)
+	}
+}
+
 func TestDirBlocksUpload(t *testing.T) {
 	active := []ActivePath{{Canonical: "/a", IsDir: true}}
 	dest, err := MoveDestination("/x/y.txt", "/a", active)

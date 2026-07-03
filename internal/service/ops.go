@@ -12,11 +12,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/thedavidweng/tg-drive-cli/internal/apperr"
+	apperr "github.com/thedavidweng/tg-drive-cli/core/errors"
+	"github.com/thedavidweng/tg-drive-cli/core/fsmodel"
+	"github.com/thedavidweng/tg-drive-cli/core/manifest"
+	"github.com/thedavidweng/tg-drive-cli/core/pathcodec"
 	"github.com/thedavidweng/tg-drive-cli/internal/db"
-	"github.com/thedavidweng/tg-drive-cli/internal/fsmodel"
-	"github.com/thedavidweng/tg-drive-cli/internal/manifest"
-	"github.com/thedavidweng/tg-drive-cli/internal/pathcodec"
 	"lukechampine.com/blake3"
 )
 
@@ -221,6 +221,10 @@ func (a *App) Scan(ctx context.Context, opts ScanOptions) (map[string]any, error
 	if err != nil {
 		return nil, err
 	}
+	scanSlugs, err := a.loadExistingSlugs(ctx, channelID)
+	if err != nil {
+		return nil, err
+	}
 
 	for _, msg := range msgs {
 		if msg.ID > maxID {
@@ -285,7 +289,7 @@ func (a *App) Scan(ctx context.Context, opts ScanOptions) (map[string]any, error
 			meta.DisplayName = msg.FileName
 		}
 		seen[meta.CanonicalPath] = true
-		indexed, err := a.indexScannedFile(ctx, channelID, mediaMessageID, manifestMsgID, meta, now, scanActive)
+		indexed, err := a.indexScannedFile(ctx, channelID, mediaMessageID, manifestMsgID, meta, now, scanActive, scanSlugs)
 		if err != nil {
 			return nil, err
 		}
@@ -745,7 +749,7 @@ func appendScanIndexedPath(active []fsmodel.ActivePath, canonical string) []fsmo
 	return out
 }
 
-func (a *App) indexScannedFile(ctx context.Context, channelID int64, messageID int, manifestMsgID *int, meta manifest.ParsedMeta, now string, active []fsmodel.ActivePath) (bool, error) {
+func (a *App) indexScannedFile(ctx context.Context, channelID int64, messageID int, manifestMsgID *int, meta manifest.ParsedMeta, now string, active []fsmodel.ActivePath, slugMap map[string]string) (bool, error) {
 	// Exclude the path being re-indexed from conflict checks.
 	filtered := make([]fsmodel.ActivePath, 0, len(active))
 	for _, ap := range active {
@@ -800,14 +804,11 @@ func (a *App) indexScannedFile(ctx context.Context, channelID int64, messageID i
 		_ = a.DB.Raw().QueryRowContext(ctx, `select id from files where channel_id=? and canonical_path=? and status='active'`,
 			channelID, meta.CanonicalPath).Scan(&fileID)
 	}
-	existingSlugs, err := a.loadExistingSlugs(ctx, channelID)
-	if err != nil {
-		return false, err
-	}
-	tags, slugMaps, _ := pathcodec.GenerateChain(meta.CanonicalPath, existingSlugs)
+	tags, slugMaps, _ := pathcodec.GenerateChain(meta.CanonicalPath, slugMap)
 	for _, sm := range slugMaps {
 		_, _ = a.DB.Raw().ExecContext(ctx, `insert or ignore into path_segment_slugs(channel_id,parent_canonical_path,segment,slug,hash_len,created_at) values(?,?,?,?,?,?)`,
 			channelID, sm.ParentCanonical, sm.Segment, sm.Slug, sm.HashLen, now)
+		slugMap[sm.ParentCanonical+"|"+sm.Segment] = sm.Slug
 	}
 	_ = a.DB.Raw().QueryRowContext(ctx, `select id from files where channel_id=? and canonical_path=? and status='active'`, channelID, meta.CanonicalPath).Scan(&fileID)
 	for i, tag := range tags {

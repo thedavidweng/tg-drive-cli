@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/thedavidweng/tg-drive-cli/internal/apperr"
+	apperr "github.com/thedavidweng/tg-drive-cli/core/errors"
+	"github.com/thedavidweng/tg-drive-cli/core/fsmodel"
+	"github.com/thedavidweng/tg-drive-cli/core/pathcodec"
 	"github.com/thedavidweng/tg-drive-cli/internal/config"
-	"github.com/thedavidweng/tg-drive-cli/internal/fsmodel"
-	"github.com/thedavidweng/tg-drive-cli/internal/pathcodec"
 	"github.com/thedavidweng/tg-drive-cli/internal/telegram"
 )
 

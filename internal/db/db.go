@@ -6,10 +6,14 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/thedavidweng/tg-drive-cli/internal/apperr"
-	"github.com/thedavidweng/tg-drive-cli/internal/fsmodel"
+	apperr "github.com/thedavidweng/tg-drive-cli/core/errors"
+	"github.com/thedavidweng/tg-drive-cli/core/fsmodel"
+	"github.com/thedavidweng/tg-drive-cli/core/model"
+	"github.com/thedavidweng/tg-drive-cli/core/ports"
 	_ "modernc.org/sqlite"
 )
+
+var _ ports.Store = (*DB)(nil)
 
 const schemaSQL = `
 create table if not exists schema_version (
@@ -288,7 +292,7 @@ func (d *DB) ActivePaths(ctx context.Context, channelID int64) ([]struct {
 }
 
 // LoadSlugMap returns parent|segment -> slug mappings for a channel.
-func (d *DB) LoadSlugMap(ctx context.Context, channelID int64) (map[string]string, error) {
+func (d *DB) LoadSlugMap(ctx context.Context, channelID model.ChannelID) (map[string]string, error) {
 	rows, err := d.sql.QueryContext(ctx, `
 		select parent_canonical_path, segment, slug
 		from path_segment_slugs where channel_id=?`, channelID)

@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/thedavidweng/tg-drive-cli/internal/apperr"
+	apperr "github.com/thedavidweng/tg-drive-cli/core/errors"
 )
 
 // Renderer writes human or JSON output.

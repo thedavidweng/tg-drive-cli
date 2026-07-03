@@ -5,7 +5,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/thedavidweng/tg-drive-cli/internal/apperr"
+	apperr "github.com/thedavidweng/tg-drive-cli/core/errors"
 	"golang.org/x/text/unicode/norm"
 )
 

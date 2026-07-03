@@ -20,6 +20,7 @@ import (
 	"github.com/thedavidweng/tg-drive-cli/core/manifest"
 	"github.com/thedavidweng/tg-drive-cli/core/model"
 	"github.com/thedavidweng/tg-drive-cli/core/pathcodec"
+	"github.com/thedavidweng/tg-drive-cli/core/ports"
 	"github.com/thedavidweng/tg-drive-cli/core/telegram"
 	"github.com/thedavidweng/tg-drive-cli/internal/config"
 	"lukechampine.com/blake3"
@@ -32,6 +33,13 @@ type App struct {
 	TG      telegram.Client
 	Runtime *drive.Runtime
 	Render  func() bool // returns json mode
+}
+
+func (a *App) files() ports.FileSystem {
+	if a.Runtime == nil || a.Runtime.Files == nil {
+		panic("runtime filesystem not configured")
+	}
+	return a.Runtime.Files
 }
 
 // ConflictPolicy for uploads/downloads.

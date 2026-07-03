@@ -12,12 +12,17 @@ build:
 	mkdir -p $(DIST_DIR)
 	go build -trimpath -o $(DIST_DIR)/$(BINARY_NAME) ./cmd/td
 
+build-wasm:
+	mkdir -p $(DIST_DIR)
+	GOOS=js GOARCH=wasm go build -trimpath -o $(DIST_DIR)/td.wasm ./cmd/td-wasm
+
 test:
 	go test ./...
 
 test-core-wasm:
 	GOOS=js GOARCH=wasm go test -c ./core/...
 	GOOS=js GOARCH=wasm go build ./core/...
+	rm -f *.test
 
 test-race:
 	go test -race ./...
@@ -40,6 +45,7 @@ ci-local: fmt-check vet test test-race test-core-wasm
 
 clean:
 	rm -rf $(DIST_DIR)
+	rm -f *.test
 
 run-doctor: build
 	./$(DIST_DIR)/$(BINARY_NAME) doctor

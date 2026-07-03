@@ -217,6 +217,10 @@ func (a *App) Scan(ctx context.Context, opts ScanOptions) (map[string]any, error
 	now := time.Now().UTC().Format(time.RFC3339)
 	seen := map[string]bool{}
 	maxID := afterID
+	scanActive, err := a.activePaths(ctx, channelID)
+	if err != nil {
+		return nil, err
+	}
 
 	for _, msg := range msgs {
 		if msg.ID > maxID {
@@ -281,11 +285,12 @@ func (a *App) Scan(ctx context.Context, opts ScanOptions) (map[string]any, error
 			meta.DisplayName = msg.FileName
 		}
 		seen[meta.CanonicalPath] = true
-		indexed, err := a.indexScannedFile(ctx, channelID, mediaMessageID, manifestMsgID, meta, now)
+		indexed, err := a.indexScannedFile(ctx, channelID, mediaMessageID, manifestMsgID, meta, now, scanActive)
 		if err != nil {
 			return nil, err
 		}
 		if indexed {
+			scanActive = appendScanIndexedPath(scanActive, meta.CanonicalPath)
 			_, _ = a.DB.Raw().ExecContext(ctx, `update scan_errors set status='resolved', resolved_at=? where channel_id=? and message_id=?`, now, channelID, mediaMessageID)
 		}
 	}
@@ -427,7 +432,11 @@ func (a *App) DownloadFile(ctx context.Context, remotePath, localDest string, po
 			return apperr.New(apperr.ErrTelegramRPC, "content hash mismatch")
 		}
 	}
-	return os.Rename(tmp, localDest)
+	if err := os.Rename(tmp, localDest); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func autoRenameLocal(path string) string {
@@ -713,11 +722,30 @@ func (a *App) DownloadRecursive(ctx context.Context, remotePath, localDir string
 	return nil
 }
 
-func (a *App) indexScannedFile(ctx context.Context, channelID int64, messageID int, manifestMsgID *int, meta manifest.ParsedMeta, now string) (bool, error) {
-	active, err := a.activePaths(ctx, channelID)
-	if err != nil {
-		return false, err
+func appendScanIndexedPath(active []fsmodel.ActivePath, canonical string) []fsmodel.ActivePath {
+	out := make([]fsmodel.ActivePath, 0, len(active)+4)
+	for _, ap := range active {
+		if ap.Canonical != canonical {
+			out = append(out, ap)
+		}
 	}
+	out = append(out, fsmodel.ActivePath{Canonical: canonical, IsDir: false})
+	for anc := range fsmodel.DeriveDirectoryNodes([]string{canonical}) {
+		found := false
+		for _, ap := range out {
+			if ap.Canonical == anc && ap.IsDir {
+				found = true
+				break
+			}
+		}
+		if !found {
+			out = append(out, fsmodel.ActivePath{Canonical: anc, IsDir: true})
+		}
+	}
+	return out
+}
+
+func (a *App) indexScannedFile(ctx context.Context, channelID int64, messageID int, manifestMsgID *int, meta manifest.ParsedMeta, now string, active []fsmodel.ActivePath) (bool, error) {
 	// Exclude the path being re-indexed from conflict checks.
 	filtered := make([]fsmodel.ActivePath, 0, len(active))
 	for _, ap := range active {
@@ -743,12 +771,12 @@ func (a *App) indexScannedFile(ctx context.Context, channelID int64, messageID i
 		mfID = *manifestMsgID
 	}
 	var fileID int64
-	err = a.DB.Raw().QueryRowContext(ctx, `
-		select id from files where channel_id=? and canonical_path=?`,
+	err := a.DB.Raw().QueryRowContext(ctx, `
+		select id from files where channel_id=? and canonical_path=? and status not in ('superseded','deleted')`,
 		channelID, meta.CanonicalPath).Scan(&fileID)
 	if err == sql.ErrNoRows {
 		err = a.DB.Raw().QueryRowContext(ctx, `
-			select id from files where channel_id=? and message_id=?`,
+			select id from files where channel_id=? and message_id=? and status not in ('superseded','deleted')`,
 			channelID, messageID).Scan(&fileID)
 	}
 	switch err {

@@ -332,6 +332,13 @@ func TestReplaceCreatesSupersededRow(t *testing.T) {
 			t.Fatalf("old message %d should be deleted after replace", oldID)
 		}
 	}
+	res, err := app.Scan(ctx, ScanOptions{Full: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res["active"].(int) != 1 {
+		t.Fatalf("active after full scan = %v", res["active"])
+	}
 }
 
 func TestScanRejectsFileDirConflict(t *testing.T) {

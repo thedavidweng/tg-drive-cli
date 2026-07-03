@@ -140,7 +140,10 @@ func (a *App) Share(ctx context.Context, remotePath string) (map[string]any, err
 		select pt.tag from path_tags pt join files f on f.id=pt.file_id
 		where f.channel_id=? and f.canonical_path=? and f.status='active' order by pt.depth limit 1`, channelID, p).Scan(&tag)
 	if tag == "" {
-		existing := map[string]string{}
+		existing, err := a.loadExistingSlugs(ctx, channelID)
+		if err != nil {
+			return nil, err
+		}
 		tags, _, _ := pathcodec.GenerateChain(p, existing)
 		if len(tags) > 0 {
 			tag = tags[len(tags)-1]

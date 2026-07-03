@@ -193,15 +193,16 @@ func (c *Client) DeleteMessage(ctx context.Context, channelID int64, messageID i
 	return &telegram.MessageNotFoundError{}
 }
 
-func (c *Client) DownloadMedia(ctx context.Context, channelID int64, messageID int) ([]byte, error) {
+func (c *Client) DownloadMedia(ctx context.Context, channelID int64, messageID int, dst io.Writer) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, m := range c.messages[channelID] {
 		if m.ID == messageID {
-			return m.Data, nil
+			_, err := dst.Write(m.Data)
+			return err
 		}
 	}
-	return nil, &telegram.MessageNotFoundError{}
+	return &telegram.MessageNotFoundError{}
 }
 
 func (c *Client) Doctor(ctx context.Context, channelID int64) (*telegram.Capabilities, error) {

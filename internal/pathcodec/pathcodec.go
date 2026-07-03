@@ -64,16 +64,11 @@ func hasChinese(s string) bool {
 	return false
 }
 
-// TagForSegment returns hashtag for a segment under parent.
-func TagForSegment(parentCanonical, segment string) string {
+// TagForSegment returns hashtag for a segment under parent slug chain.
+func TagForSegment(parentSlugParts []string, segment string) string {
 	slug := SegmentSlug(segment, 5)
-	prefix := "td"
-	if parentCanonical != "" && parentCanonical != "/" {
-		parentSeg := strings.TrimPrefix(parentCanonical, "/")
-		parentSeg = strings.ReplaceAll(parentSeg, "/", "_")
-		prefix = "td_" + parentSeg
-	}
-	return fmt.Sprintf("#%s_%s", prefix, slug)
+	parts := append(append([]string(nil), parentSlugParts...), slug)
+	return fmt.Sprintf("#td_%s", strings.Join(parts, "_"))
 }
 
 // SlugMapping stores segment slug info.
@@ -85,6 +80,7 @@ type SlugMapping struct {
 }
 
 // GenerateChain builds shallow-to-deep hashtag chain for a path.
+// Parent levels use accumulated segment slugs, never raw path segments.
 func GenerateChain(canonical string, existing map[string]string) ([]string, []SlugMapping, error) {
 	if canonical == "/" {
 		return nil, nil, nil
@@ -93,6 +89,7 @@ func GenerateChain(canonical string, existing map[string]string) ([]string, []Sl
 	parent := "/"
 	var tags []string
 	var mappings []SlugMapping
+	var slugParts []string
 	used := map[string]bool{}
 	for _, seg := range parts[:len(parts)-1] {
 		key := parent + "|" + seg
@@ -116,14 +113,8 @@ func GenerateChain(canonical string, existing map[string]string) ([]string, []Sl
 			existing[key] = slug
 		}
 		used[slug] = true
-		var tag string
-		if parent == "/" {
-			tag = fmt.Sprintf("#td_%s", slug)
-		} else {
-			parentSlug := strings.ReplaceAll(strings.TrimPrefix(parent, "/"), "/", "_")
-			tag = fmt.Sprintf("#td_%s_%s", parentSlug, slug)
-		}
-		tags = append(tags, tag)
+		slugParts = append(slugParts, slug)
+		tags = append(tags, fmt.Sprintf("#td_%s", strings.Join(slugParts, "_")))
 		if parent == "/" {
 			parent = "/" + seg
 		} else {

@@ -110,9 +110,6 @@ func CheckUploadConflict(dest string, active []ActivePath) error {
 			}
 			return apperr.New(apperr.ErrPathExists, "file exists at destination")
 		}
-		if a.IsDir && strings.HasPrefix(dest+"/", p+"/") {
-			return apperr.New(apperr.ErrPathInvalid, "cannot upload under existing file path")
-		}
 		if !a.IsDir && strings.HasPrefix(dest+"/", p+"/") {
 			return apperr.New(apperr.ErrPathInvalid, "cannot upload: file blocks descendant path")
 		}

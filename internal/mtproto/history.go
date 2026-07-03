@@ -19,10 +19,7 @@ func (c *Client) History(ctx context.Context, channelID int64, afterID int, limi
 		}
 		offsetID := 0
 		const pageSize = 100
-		for {
-			if limit > 0 && len(out) >= limit {
-				break
-			}
+		for limit <= 0 || len(out) < limit {
 			batch := pageSize
 			if limit > 0 && limit-len(out) < batch {
 				batch = limit - len(out)
@@ -82,8 +79,7 @@ func messageFromTG(msg *tg.Message) tgtelegram.Message {
 		Caption: msg.Message,
 	}
 	if msg.Media != nil {
-		switch media := msg.Media.(type) {
-		case *tg.MessageMediaDocument:
+		if media, ok := msg.Media.(*tg.MessageMediaDocument); ok {
 			if doc, ok := media.Document.(*tg.Document); ok {
 				out.FileSize = doc.Size
 				out.MIME = doc.MimeType

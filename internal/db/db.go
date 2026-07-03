@@ -287,6 +287,26 @@ func (d *DB) ActivePaths(ctx context.Context, channelID int64) ([]struct {
 	return out, rows.Err()
 }
 
+// LoadSlugMap returns parent|segment -> slug mappings for a channel.
+func (d *DB) LoadSlugMap(ctx context.Context, channelID int64) (map[string]string, error) {
+	rows, err := d.sql.QueryContext(ctx, `
+		select parent_canonical_path, segment, slug
+		from path_segment_slugs where channel_id=?`, channelID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := make(map[string]string)
+	for rows.Next() {
+		var parent, segment, slug string
+		if err := rows.Scan(&parent, &segment, &slug); err != nil {
+			return nil, err
+		}
+		out[parent+"|"+segment] = slug
+	}
+	return out, rows.Err()
+}
+
 // RunDirectoryGC removes derived directory nodes without active descendants.
 func (d *DB) RunDirectoryGC(ctx context.Context, channelID int64) error {
 	dirRows, err := d.sql.QueryContext(ctx, `

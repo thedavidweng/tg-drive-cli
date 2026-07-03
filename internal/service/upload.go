@@ -16,6 +16,7 @@ import (
 	apperr "github.com/thedavidweng/tg-drive-cli/core/errors"
 	"github.com/thedavidweng/tg-drive-cli/core/fsmodel"
 	"github.com/thedavidweng/tg-drive-cli/core/manifest"
+	"github.com/thedavidweng/tg-drive-cli/core/model"
 	"github.com/thedavidweng/tg-drive-cli/core/pathcodec"
 	"github.com/thedavidweng/tg-drive-cli/internal/config"
 	"github.com/thedavidweng/tg-drive-cli/internal/db"
@@ -105,7 +106,7 @@ func detectMIME(path string) string {
 }
 
 func (a *App) loadExistingSlugs(ctx context.Context, channelID int64) (map[string]string, error) {
-	slugs, err := a.DB.LoadSlugMap(ctx, channelID)
+	slugs, err := a.DB.LoadSlugMap(ctx, model.ChannelID(channelID))
 	if err != nil {
 		return nil, apperr.Wrap(apperr.ErrDB, "load slugs", err)
 	}

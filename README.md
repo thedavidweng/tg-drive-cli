@@ -1,31 +1,47 @@
-# tg-drive-cli agent handoff pack
+# tg-drive-cli
 
-This folder is the complete implementation handoff for `tg-drive-cli`, a Go CLI that stores a virtual file tree in Telegram channels.
+Telegram-backed virtual file tree CLI. Binary name: `td`.
 
-The binary name is `td`.
+## Quickstart
 
-## Start here
+1. Create a Telegram app at [my.telegram.org/apps](https://my.telegram.org/apps).
+2. Configure credentials and log in:
 
-1. Read `AGENTS.md`.
-2. Read `PRODUCT_SPEC.md`.
-3. Follow `IMPLEMENTATION_PLAN.md` in order.
-4. Use `docs/release-and-ci.md` for CI/CD, GoReleaser, release-please, Homebrew, packages, signing, and SBOM.
-5. Keep `docs/acceptance.md` passing before moving to the next stage.
+```sh
+td auth setup
+td auth login
+td auth status --json
+```
 
-## Repository decisions
+3. Initialize a storage channel and upload a file:
 
-- Module: `github.com/thedavidweng/tg-drive-cli`
-- Binary: `td`
-- Language: Go 1.26
-- License: Apache-2.0
-- CLI framework: Cobra
-- MTProto client: gotd/td
-- SQLite driver: modernc.org/sqlite
-- Config: TOML
-- Release: GoReleaser v2
-- Release PRs: release-please
-- CI: GitHub Actions
+```sh
+td init ./Pictures --create-channel "Pictures [TD]"
+td cp ./Pictures/photo.jpg /photo.jpg
+td ls /
+```
 
-## Working rule
+Session is stored at `~/.config/tg-drive-cli/session.json`. Config at `~/.config/tg-drive-cli/config.toml`.
 
-Do not add alternative architecture. Implement the plan as written. When code and docs diverge, update docs in the same change.
+## Development
+
+```sh
+make ci-local
+TD_FAKE_TELEGRAM=1 go test ./...
+```
+
+Set `TD_FAKE_TELEGRAM=1` to use the in-memory fake Telegram client (no network).
+
+## Docs
+
+- `PRODUCT_SPEC.md` — product behavior
+- `IMPLEMENTATION_PLAN.md` — build stages
+- `docs/manual-smoke-tests.md` — real Telegram smoke tests
+- `docs/contracts/` — CLI, JSON, storage contracts
+
+## Reference projects studied
+
+- [TGDrivePersonal](https://github.com/TechShreyash/TGDrivePersonal) — Pyrogram bot-token storage model
+- [Telegram-Drive](https://github.com/caamer20/Telegram-Drive) — grammers phone login and upload flow
+
+`td` uses MTProto user login (like Telegram-Drive) with `td:v1` caption metadata (unlike both references).

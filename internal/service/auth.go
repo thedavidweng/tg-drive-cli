@@ -98,10 +98,10 @@ func (a *App) InitRoot(ctx context.Context, localRoot, channelTitle string, crea
 		accountID, _ = res.LastInsertId()
 	}
 	_, err = a.DB.Raw().ExecContext(ctx, `
-		insert into channels(account_id,tg_channel_id,title,root_local_path,root_remote_path,strategy,created_at,updated_at)
-		values(?,?,?,?,?,'single',?,?)
-		on conflict(account_id, tg_channel_id) do update set title=excluded.title, root_local_path=excluded.root_local_path, updated_at=excluded.updated_at`,
-		accountID, fmt.Sprintf("%d", ch.ID), ch.Title, localRoot, "/", now, now)
+		insert into channels(account_id,tg_channel_id,access_hash,title,root_local_path,root_remote_path,strategy,created_at,updated_at)
+		values(?,?,?,?,?,?,'single',?,?)
+		on conflict(account_id, tg_channel_id) do update set title=excluded.title, access_hash=excluded.access_hash, root_local_path=excluded.root_local_path, updated_at=excluded.updated_at`,
+		accountID, fmt.Sprintf("%d", ch.ID), fmt.Sprintf("%d", ch.AccessHash), ch.Title, localRoot, "/", now, now)
 	if err != nil {
 		return nil, apperr.Wrap(apperr.ErrDB, "insert channel", err)
 	}

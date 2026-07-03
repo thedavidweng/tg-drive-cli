@@ -5,12 +5,14 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/thedavidweng/tg-drive-cli/internal/apperr"
 	"github.com/thedavidweng/tg-drive-cli/internal/config"
 	"github.com/thedavidweng/tg-drive-cli/internal/db"
+	"github.com/thedavidweng/tg-drive-cli/internal/mtproto"
 	"github.com/thedavidweng/tg-drive-cli/internal/output"
 	"github.com/thedavidweng/tg-drive-cli/internal/service"
 	"github.com/thedavidweng/tg-drive-cli/internal/telegram"
@@ -50,7 +52,7 @@ func NewRootCommand() *cobra.Command {
 	cmd.PersistentFlags().Bool("quiet", false, "suppress non-essential output")
 	cmd.PersistentFlags().Bool("verbose", false, "enable verbose diagnostics")
 	cmd.PersistentFlags().StringVar(&opts.channel, "channel", "", "channel title or ID")
-	cmd.PersistentFlags().Bool("wait", false, "wait through safe Telegram flood waits")
+	cmd.PersistentFlags().BoolVar(&opts.wait, "wait", false, "wait through safe Telegram flood waits")
 
 	cmd.AddCommand(newVersionCmd(opts))
 	cmd.AddCommand(newDoctorCmd(opts))
@@ -77,6 +79,7 @@ type runtimeOpts struct {
 	dbPath      string
 	sessionPath string
 	channel     string
+	wait        bool
 }
 
 func (o *runtimeOpts) renderer() *output.Renderer {
@@ -108,10 +111,68 @@ func (o *runtimeOpts) openApp(cmd *cobra.Command) (*service.App, func(), error) 
 	if err != nil {
 		return nil, func() {}, err
 	}
-	tg := fake.New()
+	tg, err := o.telegramClient(cfg, database)
+	if err != nil {
+		_ = database.Close()
+		return nil, func() {}, err
+	}
 	app := &service.App{Cfg: cfg, DB: database, TG: tg}
 	cleanup := func() { _ = database.Close() }
 	return app, cleanup, nil
+}
+
+func (o *runtimeOpts) telegramClient(cfg config.Config, database *db.DB) (telegram.Client, error) {
+	if os.Getenv("TD_FAKE_TELEGRAM") == "1" {
+		return fake.New(), nil
+	}
+	if cfg.Telegram.APIID == 0 || cfg.Telegram.APIHash == "" {
+		return nil, apperr.New(apperr.ErrConfigMissing, "telegram API credentials missing; run: td auth setup")
+	}
+	if err := config.EnsureSessionDir(cfg.Storage.SessionPath); err != nil {
+		return nil, err
+	}
+	client := mtproto.New(cfg.Telegram.APIID, cfg.Telegram.APIHash, cfg.Storage.SessionPath, o.wait)
+	rows, err := database.Raw().Query(`select tg_channel_id, access_hash from channels where access_hash is not null and access_hash != ''`)
+	if err == nil {
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			var tgID, hash string
+			if err := rows.Scan(&tgID, &hash); err != nil {
+				continue
+			}
+			chID, err1 := strconv.ParseInt(tgID, 10, 64)
+			accHash, err2 := strconv.ParseInt(hash, 10, 64)
+			if err1 == nil && err2 == nil {
+				client.RegisterChannelAccessHash(chID, accHash)
+			}
+		}
+	}
+	return client, nil
+}
+
+func ensureTelegramConfig(cfg *config.Config, configPath string, requirePhone bool) error {
+	reader := bufio.NewReader(os.Stdin)
+	if cfg.Telegram.APIID == 0 {
+		fmt.Fprintln(os.Stderr, "Create a Telegram app at https://my.telegram.org/apps")
+		fmt.Fprint(os.Stderr, "api_id: ")
+		s, _ := reader.ReadString('\n')
+		id, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+		if err != nil {
+			return apperr.New(apperr.ErrConfigInvalid, "invalid api_id")
+		}
+		cfg.Telegram.APIID = id
+	}
+	if cfg.Telegram.APIHash == "" {
+		fmt.Fprint(os.Stderr, "api_hash: ")
+		s, _ := reader.ReadString('\n')
+		cfg.Telegram.APIHash = strings.TrimSpace(s)
+	}
+	if requirePhone && cfg.Telegram.Phone == "" {
+		fmt.Fprint(os.Stderr, "phone (international, e.g. +1234567890): ")
+		s, _ := reader.ReadString('\n')
+		cfg.Telegram.Phone = strings.TrimSpace(s)
+	}
+	return config.Save(configPath, *cfg)
 }
 
 func isLightweight(cmd *cobra.Command) bool {
@@ -224,30 +285,69 @@ func newConfigCmd(opts *runtimeOpts) *cobra.Command {
 
 func newAuthCmd(opts *runtimeOpts) *cobra.Command {
 	c := &cobra.Command{Use: "auth", Short: "Authentication commands"}
+	setup := &cobra.Command{
+		Use:   "setup",
+		Short: "Configure Telegram API credentials",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			r := opts.renderer()
+			cfg, configPath, err := opts.loadConfig()
+			if err != nil {
+				return r.Error(err)
+			}
+			if err := ensureTelegramConfig(&cfg, configPath, false); err != nil {
+				return r.Error(err)
+			}
+			if !opts.json {
+				fmt.Fprintln(os.Stderr, "saved Telegram API credentials")
+				fmt.Fprintln(os.Stderr, "next: td auth login")
+			}
+			return r.Success(map[string]any{
+				"config_path": configPath,
+				"api_id":      cfg.Telegram.APIID,
+				"status":      "configured",
+			})
+		},
+	}
 	login := &cobra.Command{
 		Use:   "login",
 		Short: "Login to Telegram",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r := opts.renderer()
-			app, cleanup, err := opts.openApp(cmd)
+			cfg, configPath, err := opts.loadConfig()
 			if err != nil {
 				return r.Error(err)
 			}
-			defer cleanup()
+			if err := ensureTelegramConfig(&cfg, configPath, true); err != nil {
+				return r.Error(err)
+			}
+			database, err := db.Open(cfg.Storage.DBPath)
+			if err != nil {
+				return r.Error(err)
+			}
+			defer func() { _ = database.Close() }()
+			tg, err := opts.telegramClient(cfg, database)
+			if err != nil {
+				return r.Error(err)
+			}
+			app := &service.App{Cfg: cfg, DB: database, TG: tg}
 			reader := bufio.NewReader(os.Stdin)
+			fmt.Fprintln(os.Stderr, "Telegram will send a login code to your phone.")
 			codeFn := func() (string, error) {
 				fmt.Fprint(os.Stderr, "code: ")
 				s, _ := reader.ReadString('\n')
 				return strings.TrimSpace(s), nil
 			}
 			pwFn := func() (string, error) {
-				fmt.Fprint(os.Stderr, "password: ")
+				fmt.Fprint(os.Stderr, "2fa password: ")
 				s, _ := reader.ReadString('\n')
 				return strings.TrimSpace(s), nil
 			}
 			data, err := app.AuthLogin(context.Background(), codeFn, pwFn)
 			if err != nil {
 				return r.Error(err)
+			}
+			if !opts.json {
+				fmt.Fprintln(os.Stderr, "login successful")
 			}
 			return r.Success(data)
 		},
@@ -285,7 +385,7 @@ func newAuthCmd(opts *runtimeOpts) *cobra.Command {
 			return r.Success(map[string]string{"status": "logged_out"})
 		},
 	}
-	c.AddCommand(login, status, logout)
+	c.AddCommand(setup, login, status, logout)
 	return c
 }
 

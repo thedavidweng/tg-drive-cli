@@ -19,6 +19,7 @@ Binary: `td`
 
 ```text
 td version
+td auth setup
 td auth login
 td auth status
 td auth logout

@@ -12,6 +12,7 @@ import (
 
 func TestVersionJSON(t *testing.T) {
 	cmd := exec.Command("go", "run", filepath.Join("..", "..", "cmd", "td"), "version", "--json")
+	cmd.Env = append(os.Environ(), "TD_FAKE_TELEGRAM=1")
 	out, err := cmd.Output()
 	if err != nil {
 		t.Fatal(err)
@@ -43,6 +44,7 @@ func TestDoctorJSONEnvelope(t *testing.T) {
 	_ = os.WriteFile(cfgPath, []byte(""), 0o600)
 	cmd := exec.Command("go", "run", filepath.Join("..", "..", "cmd", "td"),
 		"--config", cfgPath, "--db", dbPath, "doctor", "--json")
+	cmd.Env = append(os.Environ(), "TD_FAKE_TELEGRAM=1")
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil {

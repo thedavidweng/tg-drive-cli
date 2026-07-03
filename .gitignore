@@ -1,0 +1,9 @@
+dist/
+coverage.out
+local_cache.db
+*.db
+*.db-shm
+*.db-wal
+session.json
+.env
+.DS_Store

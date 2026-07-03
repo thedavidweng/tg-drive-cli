@@ -1,0 +1,119 @@
+version: 2
+project_name: td
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    main: ./cmd/td
+    binary: td
+    ldflags:
+      - -s -w
+      - -X github.com/thedavidweng/tg-drive-cli/internal/version.Version={{.Version}}
+      - -X github.com/thedavidweng/tg-drive-cli/internal/version.Commit={{.Commit}}
+      - -X github.com/thedavidweng/tg-drive-cli/internal/version.Date={{.Date}}
+      - -X github.com/thedavidweng/tg-drive-cli/internal/version.BuiltBy=goreleaser
+
+universal_binaries:
+  - replace: true
+
+archives:
+  - formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Os }}_
+      {{- if eq .Arch "amd64"}}x86_64
+      {{- else if eq .Arch "all"}}universal
+      {{- else }}{{ .Arch }}{{ end }}
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+signs:
+  - cmd: cosign
+    artifacts: checksum
+    args:
+      - sign-blob
+      - --bundle=${signature}
+      - ${artifact}
+      - --yes
+
+sboms:
+  - cmd: syft
+    artifacts: archive
+    args:
+      - ${artifact}
+      - --output
+      - spdx-json=${document}
+    documents:
+      - ${artifact}.spdx.json
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  disable: true
+
+release:
+  github:
+    owner: thedavidweng
+    name: tg-drive-cli
+  mode: append
+  draft: false
+  prerelease: auto
+  header: |
+    ## What's Changed
+
+    Full release notes are auto-generated below.
+  footer: |
+    ---
+    **Install:**
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/thedavidweng/tg-drive-cli/main/install.sh | sh
+    ```
+
+nfpms:
+  - package_name: td
+    vendor: thedavidweng
+    maintainer: thedavidweng <noreply@github.com>
+    homepage: https://github.com/thedavidweng/tg-drive-cli
+    description: Telegram-backed virtual file tree CLI
+    license: Apache-2.0
+    formats:
+      - deb
+      - rpm
+      - apk
+    bindir: /usr/bin
+
+homebrew_casks:
+  - name: tg-drive-cli
+    binaries:
+      - td
+    repository:
+      owner: thedavidweng
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: https://github.com/thedavidweng/tg-drive-cli
+    description: Telegram-backed virtual file tree CLI
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/td"]
+          end

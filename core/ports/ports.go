@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/thedavidweng/tg-drive-cli/core/model"
+	"github.com/thedavidweng/tg-drive-cli/core/telegram"
 )
 
 // Store is the persistence port for drive metadata. Native SQLite and browser
@@ -14,26 +15,10 @@ type Store interface {
 	LoadSlugMap(ctx context.Context, channelID model.ChannelID) (map[string]string, error)
 }
 
-// Telegram is the remote channel/media port. Implementations must support
-// streaming download for large files.
+// Telegram is the remote channel/media port.
 type Telegram interface {
-	UploadMedia(ctx context.Context, req UploadRequest) (UploadResult, error)
+	UploadMedia(ctx context.Context, req telegram.UploadRequest) (*telegram.UploadResult, error)
 	DownloadMedia(ctx context.Context, channelID int64, messageID int, dst io.Writer) error
-}
-
-// UploadRequest is a media upload request for the Telegram port.
-type UploadRequest struct {
-	ChannelID int64
-	Caption   string
-	FileName  string
-	MIME      string
-	Size      int64
-	Reader    io.Reader
-}
-
-// UploadResult is returned after a successful upload.
-type UploadResult struct {
-	MessageID int
 }
 
 // Clock provides time for testable use cases.

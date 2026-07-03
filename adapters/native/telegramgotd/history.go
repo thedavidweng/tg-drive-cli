@@ -1,4 +1,4 @@
-package mtproto
+package telegramgotd
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/tg"
-	tgtelegram "github.com/thedavidweng/tg-drive-cli/internal/telegram"
+	tgtelegram "github.com/thedavidweng/tg-drive-cli/core/telegram"
 )
 
 func (c *Client) History(ctx context.Context, channelID int64, afterID int, limit int) ([]tgtelegram.Message, error) {

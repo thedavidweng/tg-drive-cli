@@ -5,9 +5,8 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
-	"fmt"
 	"strconv"
-	"strings"
+	"time"
 
 	"github.com/go-faster/errors"
 	"github.com/gotd/td/telegram"
@@ -19,45 +18,13 @@ import (
 	tgtelegram "github.com/thedavidweng/tg-drive-cli/internal/telegram"
 )
 
-func (c *Client) resolveChannelPeer(ctx context.Context, api *tg.Client, titleOrID string) (*tg.InputPeerChannel, error) {
-	if id, err := parseChannelID(titleOrID); err == nil {
-		if hash, ok := c.channelAccessHash(id); ok {
-			return &tg.InputPeerChannel{ChannelID: id, AccessHash: hash}, nil
-		}
-	}
-	dialogs, err := api.MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
-		OffsetPeer: &tg.InputPeerEmpty{},
-		Limit:      100,
-	})
-	if err != nil {
-		return nil, mapRPCError(err)
-	}
-	var chats []tg.ChatClass
-	switch d := dialogs.(type) {
-	case *tg.MessagesDialogs:
-		chats = d.Chats
-	case *tg.MessagesDialogsSlice:
-		chats = d.Chats
-	default:
-		return nil, errors.New("unexpected dialogs response")
-	}
-	titleOrID = strings.TrimSpace(titleOrID)
-	for _, ch := range chats {
-		if v, ok := ch.(*tg.Channel); ok {
-			if fmt.Sprintf("%d", v.ID) == titleOrID || v.Title == titleOrID {
-				c.rememberChannel(v.ID, v.AccessHash)
-				return &tg.InputPeerChannel{ChannelID: v.ID, AccessHash: v.AccessHash}, nil
-			}
-		}
-	}
-	return nil, errors.New("channel not found")
-}
-
 func (c *Client) CreateChannel(ctx context.Context, title string) (*tgtelegram.Channel, error) {
 	var out *tgtelegram.Channel
 	err := c.run(ctx, func(ctx context.Context, api *tg.Client, _ *telegram.Client) error {
+		channelTitle := formatTDChannelTitle(title)
 		updates, err := api.ChannelsCreateChannel(ctx, &tg.ChannelsCreateChannelRequest{
-			Title:     title,
+			Title:     channelTitle,
+			About:     tdChannelAbout,
 			Broadcast: true,
 		})
 		if err != nil {
@@ -68,11 +35,15 @@ func (c *Client) CreateChannel(ctx context.Context, title string) (*tgtelegram.C
 			return err
 		}
 		c.rememberChannel(ch.ID, ch.AccessHash)
+		_, _ = api.MessagesSetHistoryTTL(ctx, &tg.MessagesSetHistoryTTLRequest{
+			Peer:   channelPeer(ch.ID, ch.AccessHash),
+			Period: 0,
+		})
 		link, _ := c.exportInvite(ctx, api, ch)
 		out = &tgtelegram.Channel{
 			ID:         ch.ID,
 			AccessHash: ch.AccessHash,
-			Title:      ch.Title,
+			Title:      channelTitle,
 			Username:   ch.Username,
 			InviteLink: link,
 		}
@@ -209,16 +180,31 @@ func (c *Client) UploadMedia(ctx context.Context, req tgtelegram.UploadRequest) 
 		if req.MIME != "" {
 			doc = doc.MIME(req.MIME)
 		}
-		updates, err := sender.To(peer).Media(ctx, doc)
-		if err != nil {
-			return mapRPCError(err)
+
+		const maxRetries = 3
+		var lastErr error
+		for attempt := 0; attempt <= maxRetries; attempt++ {
+			updates, err := sender.To(peer).Media(ctx, doc)
+			if err == nil {
+				msgID, extractErr := extractMessageID(updates)
+				if extractErr != nil {
+					return extractErr
+				}
+				result = &tgtelegram.UploadResult{MessageID: msgID}
+				return nil
+			}
+			lastErr = mapRPCError(err)
+			if fw, ok := lastErr.(*tgtelegram.FloodWaitError); ok && c.waitFlood {
+				time.Sleep(time.Duration(fw.Seconds) * time.Second)
+				continue
+			}
+			if attempt < maxRetries {
+				time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+				continue
+			}
+			return lastErr
 		}
-		msgID, err := extractMessageID(updates)
-		if err != nil {
-			return err
-		}
-		result = &tgtelegram.UploadResult{MessageID: msgID}
-		return nil
+		return lastErr
 	})
 	return result, err
 }

@@ -17,22 +17,38 @@ func (c *Client) History(ctx context.Context, channelID int64, afterID int, limi
 		if err != nil {
 			return err
 		}
-		if limit <= 0 {
-			limit = 100
-		}
-		msgs, err := api.MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
-			Peer:  peer,
-			Limit: limit,
-			MinID: afterID,
-		})
-		if err != nil {
-			return mapRPCError(err)
-		}
-		for _, msg := range extractMessages(msgs) {
-			if msg.ID <= afterID {
-				continue
+		offsetID := 0
+		const pageSize = 100
+		for {
+			if limit > 0 && len(out) >= limit {
+				break
 			}
-			out = append(out, messageFromTG(msg))
+			batch := pageSize
+			if limit > 0 && limit-len(out) < batch {
+				batch = limit - len(out)
+			}
+			msgs, err := api.MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
+				Peer:     peer,
+				Limit:    batch,
+				OffsetID: offsetID,
+			})
+			if err != nil {
+				return mapRPCError(err)
+			}
+			batchMsgs := extractMessages(msgs)
+			if len(batchMsgs) == 0 {
+				break
+			}
+			for _, msg := range batchMsgs {
+				if msg.ID <= afterID {
+					continue
+				}
+				out = append(out, messageFromTG(msg))
+			}
+			if len(batchMsgs) < batch {
+				break
+			}
+			offsetID = batchMsgs[len(batchMsgs)-1].ID
 		}
 		return nil
 	})
@@ -128,11 +144,6 @@ func (c *Client) Doctor(ctx context.Context, channelID int64) (*tgtelegram.Capab
 			caps.UploadOK = ch.AdminRights.PostMessages
 			caps.DeleteOK = ch.AdminRights.DeleteMessages
 			caps.EditOldCaptionOK = ch.AdminRights.EditMessages
-		}
-		if !caps.UploadOK && !caps.DeleteOK && !caps.EditOldCaptionOK {
-			caps.UploadOK = true
-			caps.DeleteOK = true
-			caps.EditOldCaptionOK = true
 		}
 		if _, err := c.exportInvite(ctx, api, ch); err == nil {
 			caps.InviteLinkOK = true

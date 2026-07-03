@@ -3,10 +3,11 @@ package mtproto
 import (
 	"context"
 	"os"
+	"strings"
 
 	"github.com/go-faster/errors"
-	tdauth "github.com/gotd/td/telegram/auth"
 	tdtelegram "github.com/gotd/td/telegram"
+	tdauth "github.com/gotd/td/telegram/auth"
 	"github.com/gotd/td/tg"
 	tgtelegram "github.com/thedavidweng/tg-drive-cli/internal/telegram"
 )
@@ -52,9 +53,25 @@ func (c *Client) Login(ctx context.Context, apiID int64, apiHash, phone string, 
 			codeFn:     codeFn,
 			passwordFn: passwordFn,
 		}, tdauth.SendCodeOptions{})
-		if err := client.Auth().IfNecessary(ctx, flow); err != nil {
+
+		var lastErr error
+		for attempt := 1; attempt <= 2; attempt++ {
+			err := client.Auth().IfNecessary(ctx, flow)
+			if err == nil {
+				lastErr = nil
+				break
+			}
+			msg := strings.ToLower(err.Error())
+			if strings.Contains(msg, "auth_restart") || strings.Contains(msg, "500") {
+				lastErr = err
+				continue
+			}
 			return mapRPCError(err)
 		}
+		if lastErr != nil {
+			return mapRPCError(lastErr)
+		}
+
 		self, err := client.Self(ctx)
 		if err != nil {
 			return mapRPCError(err)

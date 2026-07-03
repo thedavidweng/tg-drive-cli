@@ -18,8 +18,8 @@ var forbiddenImports = []string{
 	"github.com/gotd/td",
 	"modernc.org/sqlite",
 	"github.com/spf13/cobra",
-	"github.com/thedavidweng/tg-drive-cli/internal/db",
-	"github.com/thedavidweng/tg-drive-cli/internal/mtproto",
+	"github.com/thedavidweng/tg-drive-cli/adapters/native/sqlitestore",
+	"github.com/thedavidweng/tg-drive-cli/adapters/native/telegramgotd",
 }
 
 func TestCorePackagesAvoidForbiddenImports(t *testing.T) {

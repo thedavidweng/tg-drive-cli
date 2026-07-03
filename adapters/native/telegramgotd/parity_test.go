@@ -1,4 +1,4 @@
-package mtproto
+package telegramgotd
 
 import "testing"
 

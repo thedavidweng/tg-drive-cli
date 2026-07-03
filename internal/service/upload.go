@@ -13,23 +13,25 @@ import (
 	"strings"
 	"time"
 
+	"github.com/thedavidweng/tg-drive-cli/adapters/native/sqlitestore"
+	"github.com/thedavidweng/tg-drive-cli/core/drive"
 	apperr "github.com/thedavidweng/tg-drive-cli/core/errors"
 	"github.com/thedavidweng/tg-drive-cli/core/fsmodel"
 	"github.com/thedavidweng/tg-drive-cli/core/manifest"
 	"github.com/thedavidweng/tg-drive-cli/core/model"
 	"github.com/thedavidweng/tg-drive-cli/core/pathcodec"
+	"github.com/thedavidweng/tg-drive-cli/core/telegram"
 	"github.com/thedavidweng/tg-drive-cli/internal/config"
-	"github.com/thedavidweng/tg-drive-cli/internal/db"
-	"github.com/thedavidweng/tg-drive-cli/internal/telegram"
 	"lukechampine.com/blake3"
 )
 
 // App is the main application service.
 type App struct {
-	Cfg    config.Config
-	DB     *db.DB
-	TG     telegram.Client
-	Render func() bool // returns json mode
+	Cfg     config.Config
+	DB      *sqlitestore.DB
+	TG      telegram.Client
+	Runtime *drive.Runtime
+	Render  func() bool // returns json mode
 }
 
 // ConflictPolicy for uploads/downloads.
@@ -209,7 +211,7 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 	}
 
 	owner := newOwnerToken()
-	lockKey := db.LockKey(channelID, dest)
+	lockKey := sqlitestore.LockKey(channelID, dest)
 	ttl := time.Duration(a.Cfg.Locks.TTLSeconds) * time.Second
 	if err := a.DB.AcquireLock(ctx, lockKey, owner, ttl); err != nil {
 		return nil, err

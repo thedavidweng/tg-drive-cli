@@ -9,14 +9,16 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/thedavidweng/tg-drive-cli/adapters/native/localfs"
+	"github.com/thedavidweng/tg-drive-cli/adapters/native/sqlitestore"
+	"github.com/thedavidweng/tg-drive-cli/adapters/native/telegramgotd"
+	"github.com/thedavidweng/tg-drive-cli/core/drive"
 	apperr "github.com/thedavidweng/tg-drive-cli/core/errors"
+	"github.com/thedavidweng/tg-drive-cli/core/telegram"
+	"github.com/thedavidweng/tg-drive-cli/core/telegram/fake"
 	"github.com/thedavidweng/tg-drive-cli/internal/config"
-	"github.com/thedavidweng/tg-drive-cli/internal/db"
-	"github.com/thedavidweng/tg-drive-cli/internal/mtproto"
 	"github.com/thedavidweng/tg-drive-cli/internal/output"
 	"github.com/thedavidweng/tg-drive-cli/internal/service"
-	"github.com/thedavidweng/tg-drive-cli/internal/telegram"
-	"github.com/thedavidweng/tg-drive-cli/internal/telegram/fake"
 	"github.com/thedavidweng/tg-drive-cli/internal/version"
 )
 
@@ -107,7 +109,7 @@ func (o *runtimeOpts) openApp(cmd *cobra.Command) (*service.App, func(), error) 
 	if err != nil {
 		return nil, func() {}, err
 	}
-	database, err := db.Open(cfg.Storage.DBPath)
+	database, err := sqlitestore.Open(cfg.Storage.DBPath)
 	if err != nil {
 		return nil, func() {}, err
 	}
@@ -116,12 +118,17 @@ func (o *runtimeOpts) openApp(cmd *cobra.Command) (*service.App, func(), error) 
 		_ = database.Close()
 		return nil, func() {}, err
 	}
-	app := &service.App{Cfg: cfg, DB: database, TG: tg}
+	app := &service.App{
+		Cfg:     cfg,
+		DB:      database,
+		TG:      tg,
+		Runtime: drive.NewRuntime(database, localfs.FS{}, tg),
+	}
 	cleanup := func() { _ = database.Close() }
 	return app, cleanup, nil
 }
 
-func (o *runtimeOpts) telegramClient(cfg config.Config, database *db.DB) (telegram.Client, error) {
+func (o *runtimeOpts) telegramClient(cfg config.Config, database *sqlitestore.DB) (telegram.Client, error) {
 	if os.Getenv("TD_FAKE_TELEGRAM") == "1" {
 		return fake.New(), nil
 	}
@@ -131,7 +138,7 @@ func (o *runtimeOpts) telegramClient(cfg config.Config, database *db.DB) (telegr
 	if err := config.EnsureSessionDir(cfg.Storage.SessionPath); err != nil {
 		return nil, err
 	}
-	client := mtproto.New(cfg.Telegram.APIID, cfg.Telegram.APIHash, cfg.Storage.SessionPath, o.wait)
+	client := telegramgotd.New(cfg.Telegram.APIID, cfg.Telegram.APIHash, cfg.Storage.SessionPath, o.wait)
 	rows, err := database.Raw().Query(`select tg_channel_id, access_hash from channels where access_hash is not null and access_hash != ''`)
 	if err == nil {
 		defer func() { _ = rows.Close() }()
@@ -320,7 +327,7 @@ func newAuthCmd(opts *runtimeOpts) *cobra.Command {
 			if err := ensureTelegramConfig(&cfg, configPath, true); err != nil {
 				return r.Error(err)
 			}
-			database, err := db.Open(cfg.Storage.DBPath)
+			database, err := sqlitestore.Open(cfg.Storage.DBPath)
 			if err != nil {
 				return r.Error(err)
 			}
@@ -329,7 +336,12 @@ func newAuthCmd(opts *runtimeOpts) *cobra.Command {
 			if err != nil {
 				return r.Error(err)
 			}
-			app := &service.App{Cfg: cfg, DB: database, TG: tg}
+			app := &service.App{
+				Cfg:     cfg,
+				DB:      database,
+				TG:      tg,
+				Runtime: drive.NewRuntime(database, localfs.FS{}, tg),
+			}
 			reader := bufio.NewReader(os.Stdin)
 			fmt.Fprintln(os.Stderr, "Telegram will send a login code to your phone.")
 			codeFn := func() (string, error) {

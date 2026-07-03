@@ -12,11 +12,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/thedavidweng/tg-drive-cli/adapters/native/sqlitestore"
 	apperr "github.com/thedavidweng/tg-drive-cli/core/errors"
 	"github.com/thedavidweng/tg-drive-cli/core/fsmodel"
 	"github.com/thedavidweng/tg-drive-cli/core/manifest"
 	"github.com/thedavidweng/tg-drive-cli/core/pathcodec"
-	"github.com/thedavidweng/tg-drive-cli/internal/db"
 	"lukechampine.com/blake3"
 )
 
@@ -490,13 +490,13 @@ func (a *App) MoveFile(ctx context.Context, from, to string) error {
 	owner := newOwnerToken()
 	ttl := time.Duration(a.Cfg.Locks.TTLSeconds) * time.Second
 	for _, p := range []string{src, dst} {
-		if err := a.DB.AcquireLock(ctx, db.LockKey(channelID, p), owner, ttl); err != nil {
+		if err := a.DB.AcquireLock(ctx, sqlitestore.LockKey(channelID, p), owner, ttl); err != nil {
 			return err
 		}
 	}
 	defer func() {
-		_ = a.DB.ReleaseLock(ctx, db.LockKey(channelID, src), owner)
-		_ = a.DB.ReleaseLock(ctx, db.LockKey(channelID, dst), owner)
+		_ = a.DB.ReleaseLock(ctx, sqlitestore.LockKey(channelID, src), owner)
+		_ = a.DB.ReleaseLock(ctx, sqlitestore.LockKey(channelID, dst), owner)
 	}()
 
 	existingSlugs, err := a.loadExistingSlugs(ctx, channelID)

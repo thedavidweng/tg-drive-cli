@@ -1,4 +1,4 @@
-package mtproto
+package telegramgotd
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	tdtelegram "github.com/gotd/td/telegram"
 	tdauth "github.com/gotd/td/telegram/auth"
 	"github.com/gotd/td/tg"
-	tgtelegram "github.com/thedavidweng/tg-drive-cli/internal/telegram"
+	tgtelegram "github.com/thedavidweng/tg-drive-cli/core/telegram"
 )
 
 type callbackAuth struct {

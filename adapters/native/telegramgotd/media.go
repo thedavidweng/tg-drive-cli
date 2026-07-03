@@ -1,4 +1,4 @@
-package mtproto
+package telegramgotd
 
 import (
 	"context"
@@ -15,7 +15,7 @@ import (
 	"github.com/gotd/td/telegram/message/styling"
 	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
-	tgtelegram "github.com/thedavidweng/tg-drive-cli/internal/telegram"
+	tgtelegram "github.com/thedavidweng/tg-drive-cli/core/telegram"
 )
 
 func (c *Client) CreateChannel(ctx context.Context, title string) (*tgtelegram.Channel, error) {

@@ -1,5 +1,5 @@
 // Package mtproto implements the Telegram adapter using gotd/td.
-package mtproto
+package telegramgotd
 
 import (
 	"context"
@@ -14,7 +14,7 @@ import (
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/tg"
 	"github.com/gotd/td/tgerr"
-	tgtelegram "github.com/thedavidweng/tg-drive-cli/internal/telegram"
+	tgtelegram "github.com/thedavidweng/tg-drive-cli/core/telegram"
 )
 
 // Client is a gotd-backed Telegram client.

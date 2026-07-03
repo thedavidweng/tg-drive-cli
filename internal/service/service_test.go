@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/thedavidweng/tg-drive-cli/internal/config"
@@ -209,4 +211,92 @@ func TestRepairPending(t *testing.T) {
 	if res["repaired"] == nil {
 		t.Fatalf("res = %v", res)
 	}
+}
+
+func TestReplaceUpload(t *testing.T) {
+	app, tg := testApp(t)
+	loginAndInit(t, app, tg)
+	ctx := context.Background()
+	local := filepath.Join(t.TempDir(), "a.txt")
+	_ = os.WriteFile(local, []byte("v1"), 0o644)
+	_, err := app.UploadFile(ctx, local, "/replace.txt", ConflictFail, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(local, []byte("v2-longer"), 0o644)
+	_, err = app.UploadFile(ctx, local, "/replace.txt", ConflictReplace, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(t.TempDir(), "out.txt")
+	if err := app.DownloadFile(ctx, "/replace.txt", dest, ConflictFail); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(dest)
+	if string(data) != "v2-longer" {
+		t.Fatalf("data = %q", data)
+	}
+}
+
+func TestManifestReplyScanRebuild(t *testing.T) {
+	app, tg := testApp(t)
+	loginAndInit(t, app, tg)
+	ctx := context.Background()
+	parts := make([]string, 35)
+	for i := range parts {
+		parts[i] = fmt.Sprintf("level-%02d-unique", i)
+	}
+	remote := "/" + strings.Join(parts, "/") + "/manifest-reply.bin"
+	local := filepath.Join(t.TempDir(), "manifest-reply.bin")
+	if err := os.WriteFile(local, []byte("manifest-reply-payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.UploadFile(ctx, local, remote, ConflictFail, false); err != nil {
+		t.Fatal(err)
+	}
+	channelID, _, err := app.channelID(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.DB.Raw().ExecContext(ctx, `delete from path_tags`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.DB.Raw().ExecContext(ctx, `delete from files where channel_id=?`, channelID); err != nil {
+		t.Fatal(err)
+	}
+	res, err := app.Scan(ctx, ScanOptions{Full: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res["active"].(int) != 1 {
+		t.Fatalf("active = %v", res["active"])
+	}
+	var messageID int
+	if err := app.DB.Raw().QueryRowContext(ctx, `select message_id from files where channel_id=? and canonical_path=? and status='active'`,
+		channelID, remote).Scan(&messageID); err != nil {
+		t.Fatal(err)
+	}
+	tgChID, _ := app.tgChannelID(ctx)
+	for _, m := range tg.Messages(tgChID) {
+		if m.Caption != "" && strings.Contains(m.Caption, "manifest=reply") && m.ID == messageID {
+			return
+		}
+	}
+	t.Fatalf("indexed message_id %d is not manifest-reply media (msgs=%d)", messageID, len(tg.Messages(tgChID)))
+}
+
+func TestStatusIncludesUploadLimit(t *testing.T) {
+	app, tg := testApp(t)
+	loginAndInit(t, app, tg)
+	res, err := app.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := res["upload_limit_bytes"]; !ok {
+		t.Fatalf("status = %v", res)
+	}
+	if res["authenticated"] != true {
+		t.Fatalf("status = %v", res)
+	}
+	_ = fmt.Sprint(res["upload_limit_bytes"])
 }

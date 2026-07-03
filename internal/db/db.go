@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/thedavidweng/tg-drive-cli/internal/apperr"
+	"github.com/thedavidweng/tg-drive-cli/internal/fsmodel"
 	_ "modernc.org/sqlite"
 )
 
@@ -288,11 +289,46 @@ func (d *DB) ActivePaths(ctx context.Context, channelID int64) ([]struct {
 
 // RunDirectoryGC removes derived directory nodes without active descendants.
 func (d *DB) RunDirectoryGC(ctx context.Context, channelID int64) error {
-	_, err := d.sql.ExecContext(ctx, `
-		delete from nodes where channel_id=? and type='dir' and derived=1 and ephemeral=0
-		and canonical_path not in (
-			select distinct substr(canonical_path, 1, instr(substr(canonical_path,2)||'/','/'))
-			from files where channel_id=? and status='active'
-		)`, channelID, channelID)
-	return err
+	dirRows, err := d.sql.QueryContext(ctx, `
+		select canonical_path from nodes
+		where channel_id=? and type='dir' and derived=1 and ephemeral=0`, channelID)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = dirRows.Close() }()
+	var dirs []string
+	for dirRows.Next() {
+		var p string
+		if err := dirRows.Scan(&p); err != nil {
+			return err
+		}
+		dirs = append(dirs, p)
+	}
+	if err := dirRows.Err(); err != nil {
+		return err
+	}
+	fileRows, err := d.sql.QueryContext(ctx, `
+		select canonical_path from files where channel_id=? and status='active'`, channelID)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = fileRows.Close() }()
+	var files []string
+	for fileRows.Next() {
+		var p string
+		if err := fileRows.Scan(&p); err != nil {
+			return err
+		}
+		files = append(files, p)
+	}
+	if err := fileRows.Err(); err != nil {
+		return err
+	}
+	for _, p := range fsmodel.GCDirectories(dirs, files) {
+		if _, err := d.sql.ExecContext(ctx, `
+			delete from nodes where channel_id=? and canonical_path=? and derived=1`, channelID, p); err != nil {
+			return err
+		}
+	}
+	return nil
 }

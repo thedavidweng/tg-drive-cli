@@ -104,6 +104,18 @@ func detectMIME(path string) string {
 	return mt
 }
 
+func (a *App) uploadLimit(ctx context.Context) int64 {
+	tgChID, err := a.tgChannelID(ctx)
+	if err != nil {
+		return a.Cfg.Limits.FreeUploadBytes
+	}
+	caps, err := a.TG.Doctor(ctx, tgChID)
+	if err != nil || caps == nil || caps.MaxUploadBytes == 0 {
+		return a.Cfg.Limits.FreeUploadBytes
+	}
+	return caps.MaxUploadBytes
+}
+
 // UploadFile uploads a single local file.
 func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, policy ConflictPolicy, noHash bool) (map[string]any, error) {
 	info, err := os.Stat(localPath)
@@ -113,7 +125,7 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 	if info.IsDir() {
 		return nil, apperr.New(apperr.ErrUsage, "use --recursive for directories")
 	}
-	limit := a.Cfg.Limits.FreeUploadBytes
+	limit := a.uploadLimit(ctx)
 	if info.Size() > limit {
 		return nil, apperr.New(apperr.ErrFileTooLarge, fmt.Sprintf("file exceeds %d bytes", limit))
 	}
@@ -139,6 +151,7 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 			case ConflictSkip:
 				return map[string]any{"path": dest, "skipped": true}, nil
 			case ConflictReplace:
+				break
 			case ConflictRename:
 				base := fsmodel.BaseName(dest)
 				dir := fsmodel.ParentPath(dest)
@@ -162,8 +175,25 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 			}
 		}
 	}
-	if err := fsmodel.CheckUploadConflict(dest, active); err != nil {
-		return nil, err
+	if policy != ConflictReplace {
+		if err := fsmodel.CheckUploadConflict(dest, active); err != nil {
+			return nil, err
+		}
+	}
+
+	var replaceFileID int64
+	var oldMsgID, oldManifestID sql.NullInt64
+	if policy == ConflictReplace {
+		switch err := a.DB.Raw().QueryRowContext(ctx, `
+			select id, message_id, manifest_message_id from files
+			where channel_id=? and canonical_path=? and status='active'`,
+			channelID, dest).Scan(&replaceFileID, &oldMsgID, &oldManifestID); err {
+		case sql.ErrNoRows:
+			replaceFileID = 0
+		case nil:
+		default:
+			return nil, apperr.Wrap(apperr.ErrDB, "lookup replace target", err)
+		}
 	}
 
 	owner := newOwnerToken()
@@ -205,17 +235,28 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 	}
 
 	var fileID int64
-	err = a.DB.WithTx(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `insert into files(channel_id,canonical_path,display_name,original_local_path,size,content_hash,mime,status,updated_at) values(?,?,?,?,?,?,?,'pending',?)`,
-			channelID, dest, displayName, localPath, info.Size(), contentHash, mimeType, now)
+	if replaceFileID > 0 {
+		fileID = replaceFileID
+		_, err = a.DB.Raw().ExecContext(ctx, `
+			update files set status='pending', display_name=?, original_local_path=?, size=?, content_hash=?, mime=?, updated_at=?
+			where id=?`,
+			displayName, localPath, info.Size(), contentHash, mimeType, now, fileID)
 		if err != nil {
-			return err
+			return nil, apperr.Wrap(apperr.ErrDB, "mark pending replace", err)
 		}
-		fileID, _ = res.LastInsertId()
-		return nil
-	})
-	if err != nil {
-		return nil, apperr.Wrap(apperr.ErrDB, "insert pending", err)
+	} else {
+		err = a.DB.WithTx(ctx, func(tx *sql.Tx) error {
+			res, err := tx.ExecContext(ctx, `insert into files(channel_id,canonical_path,display_name,original_local_path,size,content_hash,mime,status,updated_at) values(?,?,?,?,?,?,?,'pending',?)`,
+				channelID, dest, displayName, localPath, info.Size(), contentHash, mimeType, now)
+			if err != nil {
+				return err
+			}
+			fileID, _ = res.LastInsertId()
+			return nil
+		})
+		if err != nil {
+			return nil, apperr.Wrap(apperr.ErrDB, "insert pending", err)
+		}
 	}
 
 	f, err := os.Open(localPath)
@@ -245,6 +286,17 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 			return nil, mapTGErr(err)
 		}
 		manifestMsgID = &id
+	}
+
+	if replaceFileID > 0 {
+		if a.Cfg.Delete.Mode == "delete" {
+			if oldMsgID.Valid {
+				_ = a.TG.DeleteMessage(ctx, tgChID, int(oldMsgID.Int64))
+			}
+			if oldManifestID.Valid {
+				_ = a.TG.DeleteMessage(ctx, tgChID, int(oldManifestID.Int64))
+			}
+		}
 	}
 
 	err = a.DB.WithTx(ctx, func(tx *sql.Tx) error {

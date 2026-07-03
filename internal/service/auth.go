@@ -105,11 +105,16 @@ func (a *App) InitRoot(ctx context.Context, localRoot, channelTitle string, crea
 	if err != nil {
 		return nil, apperr.Wrap(apperr.ErrDB, "insert channel", err)
 	}
+	a.initScan(ctx)
 	return map[string]any{
 		"channel_id":    ch.ID,
 		"channel_title": ch.Title,
 		"local_root":    localRoot,
 	}, nil
+}
+
+func (a *App) initScan(ctx context.Context) {
+	_, _ = a.Scan(ctx, ScanOptions{Full: true})
 }
 
 // Share returns invite link and hashtag for a path.

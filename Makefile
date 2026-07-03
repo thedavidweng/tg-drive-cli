@@ -22,6 +22,7 @@ test:
 test-core-wasm:
 	GOOS=js GOARCH=wasm go test -c ./core/...
 	GOOS=js GOARCH=wasm go build ./core/...
+	rm -f *.test
 
 test-race:
 	go test -race ./...
@@ -44,6 +45,7 @@ ci-local: fmt-check vet test test-race test-core-wasm
 
 clean:
 	rm -rf $(DIST_DIR)
+	rm -f *.test
 
 run-doctor: build
 	./$(DIST_DIR)/$(BINARY_NAME) doctor

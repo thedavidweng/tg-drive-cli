@@ -17,6 +17,7 @@ import (
 	"github.com/thedavidweng/tg-drive-cli/core/fsmodel"
 	"github.com/thedavidweng/tg-drive-cli/core/manifest"
 	"github.com/thedavidweng/tg-drive-cli/core/pathcodec"
+	"github.com/thedavidweng/tg-drive-cli/core/ports"
 	"lukechampine.com/blake3"
 )
 
@@ -383,22 +384,21 @@ func (a *App) DownloadFile(ctx context.Context, remotePath, localDest string, po
 	if err != nil {
 		return apperr.Wrap(apperr.ErrDB, "lookup file", err)
 	}
-	if _, err := os.Stat(localDest); err == nil {
+	if _, err := a.files().Stat(ctx, localDest); err == nil {
 		switch policy {
 		case ConflictSkip:
 			return nil
 		case ConflictReplace:
 		case ConflictRename:
-			localDest = autoRenameLocal(localDest)
+			localDest = autoRenameLocal(ctx, a.files(), localDest)
 		default:
 			return apperr.New(apperr.ErrLocalPathExists, localDest)
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(localDest), 0o755); err != nil {
+	if err := a.files().MkdirAll(ctx, filepath.Dir(localDest), 0o755); err != nil {
 		return err
 	}
-	tmp := localDest + ".tmp"
-	f, err := os.Create(tmp)
+	tmp, f, err := a.files().CreateTemp(ctx, localDest)
 	if err != nil {
 		return err
 	}
@@ -411,42 +411,42 @@ func (a *App) DownloadFile(ctx context.Context, remotePath, localDest string, po
 	}
 	if err := a.TG.DownloadMedia(ctx, tgChID, messageID, w); err != nil {
 		_ = f.Close()
-		_ = os.Remove(tmp)
+		_ = a.files().Remove(ctx, tmp)
 		return mapTGErr(err)
 	}
 	if err := f.Close(); err != nil {
-		_ = os.Remove(tmp)
+		_ = a.files().Remove(ctx, tmp)
 		return err
 	}
 	if size > 0 {
-		info, err := os.Stat(tmp)
+		info, err := a.files().Stat(ctx, tmp)
 		if err != nil {
-			_ = os.Remove(tmp)
+			_ = a.files().Remove(ctx, tmp)
 			return err
 		}
-		if info.Size() != size {
-			_ = os.Remove(tmp)
+		if info.Size != size {
+			_ = a.files().Remove(ctx, tmp)
 			return apperr.New(apperr.ErrTelegramRPC, "size mismatch")
 		}
 	}
 	if hashEnabled {
 		got := "blake3:" + hex.EncodeToString(h.Sum(nil))
 		if got != hash {
-			_ = os.Remove(tmp)
+			_ = a.files().Remove(ctx, tmp)
 			return apperr.New(apperr.ErrTelegramRPC, "content hash mismatch")
 		}
 	}
-	if err := os.Rename(tmp, localDest); err != nil {
-		_ = os.Remove(tmp)
+	if err := a.files().Rename(ctx, tmp, localDest); err != nil {
+		_ = a.files().Remove(ctx, tmp)
 		return err
 	}
 	return nil
 }
 
-func autoRenameLocal(path string) string {
+func autoRenameLocal(ctx context.Context, files ports.FileSystem, path string) string {
 	for i := 1; i < 1000; i++ {
 		candidate := strings.TrimSuffix(path, filepath.Ext(path)) + fmt.Sprintf(" (%d)", i) + filepath.Ext(path)
-		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+		if _, err := files.Stat(ctx, candidate); err != nil {
 			return candidate
 		}
 	}

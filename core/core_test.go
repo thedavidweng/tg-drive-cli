@@ -15,7 +15,7 @@ var forbiddenImports = []string{
 	"path/filepath",
 	"database/sql",
 	"net/http",
-	"github.com/gotd/td",
+	"prefix:github.com/gotd/td/",
 	"modernc.org/sqlite",
 	"github.com/spf13/cobra",
 	"github.com/thedavidweng/tg-drive-cli/adapters/native/sqlitestore",
@@ -46,6 +46,12 @@ func TestCorePackagesAvoidForbiddenImports(t *testing.T) {
 		for _, imp := range f.Imports {
 			p := strings.Trim(imp.Path.Value, `"`)
 			for _, bad := range forbiddenImports {
+				if strings.HasPrefix(bad, "prefix:") {
+					if strings.HasPrefix(p, strings.TrimPrefix(bad, "prefix:")) {
+						t.Errorf("%s imports forbidden package %s", path, p)
+					}
+					continue
+				}
 				if p == bad {
 					t.Errorf("%s imports forbidden package %s", path, bad)
 				}

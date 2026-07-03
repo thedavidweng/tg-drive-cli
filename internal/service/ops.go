@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -446,7 +448,7 @@ func (a *App) DownloadFile(ctx context.Context, remotePath, localDest string, po
 func autoRenameLocal(ctx context.Context, files ports.FileSystem, path string) string {
 	for i := 1; i < 1000; i++ {
 		candidate := strings.TrimSuffix(path, filepath.Ext(path)) + fmt.Sprintf(" (%d)", i) + filepath.Ext(path)
-		if _, err := files.Stat(ctx, candidate); err != nil {
+		if _, err := files.Stat(ctx, candidate); errors.Is(err, fs.ErrNotExist) {
 			return candidate
 		}
 	}

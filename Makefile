@@ -12,6 +12,10 @@ build:
 	mkdir -p $(DIST_DIR)
 	go build -trimpath -o $(DIST_DIR)/$(BINARY_NAME) ./cmd/td
 
+build-wasm:
+	mkdir -p $(DIST_DIR)
+	GOOS=js GOARCH=wasm go build -trimpath -o $(DIST_DIR)/td.wasm ./cmd/td-wasm
+
 test:
 	go test ./...
 

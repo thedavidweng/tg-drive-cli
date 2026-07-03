@@ -33,6 +33,8 @@ jobs:
         run: make test-race
       - name: Build
         run: make build
+      - name: Build WASM stub
+        run: make build-wasm
       - name: Upload coverage
         uses: codecov/codecov-action@v5
         with:

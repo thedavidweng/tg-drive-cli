@@ -8,7 +8,7 @@ require (
 	github.com/gotd/td v0.159.0
 	github.com/mozillazg/go-pinyin v0.21.0
 	github.com/mozillazg/go-unidecode v0.2.0
-	github.com/pelletier/go-toml/v2 v2.4.2
+	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/text v0.38.0
 	lukechampine.com/blake3 v1.4.1

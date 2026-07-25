@@ -64,13 +64,6 @@ func hasChinese(s string) bool {
 	return false
 }
 
-// TagForSegment returns hashtag for a segment under parent slug chain.
-func TagForSegment(parentSlugParts []string, segment string) string {
-	slug := SegmentSlug(segment, 5)
-	parts := append(append([]string(nil), parentSlugParts...), slug)
-	return fmt.Sprintf("#td_%s", strings.Join(parts, "_"))
-}
-
 // SlugMapping stores segment slug info.
 type SlugMapping struct {
 	ParentCanonical string
@@ -79,8 +72,15 @@ type SlugMapping struct {
 	HashLen         int
 }
 
-// GenerateChain builds shallow-to-deep hashtag chain for a path.
-// Parent levels use accumulated segment slugs, never raw path segments.
+// SlugKey builds the lookup key used by GenerateChain's existing map.
+func SlugKey(parentCanonical, segment string) string {
+	return parentCanonical + "|" + segment
+}
+
+// GenerateChain builds the shallow-to-deep hashtag chain for a canonical path.
+// existing maps SlugKey(parent, segment) -> slug, preloaded from
+// path_segment_slugs. Tag N is "#td_" + the first N segment slugs joined by
+// "_", so every generated tag stays within the Telegram-safe charset.
 func GenerateChain(canonical string, existing map[string]string) ([]string, []SlugMapping, error) {
 	if canonical == "/" {
 		return nil, nil, nil
@@ -89,19 +89,19 @@ func GenerateChain(canonical string, existing map[string]string) ([]string, []Sl
 	parent := "/"
 	var tags []string
 	var mappings []SlugMapping
-	var slugParts []string
-	used := map[string]bool{}
+	var slugChain []string
 	for _, seg := range parts[:len(parts)-1] {
-		key := parent + "|" + seg
+		key := SlugKey(parent, seg)
 		slug, ok := existing[key]
-		hashLen := 5
 		if !ok {
+			taken := slugsInParent(existing, parent)
+			hashLen := 5
 			slug = SegmentSlug(seg, hashLen)
-			for used[slug] {
+			if taken[slug] {
 				hashLen = 8
 				slug = SegmentSlug(seg, hashLen)
-				if hashLen > 8 {
-					return nil, nil, apperr.New(apperr.ErrSlugCollision, "slug collision")
+				if taken[slug] {
+					return nil, nil, apperr.New(apperr.ErrSlugCollision, fmt.Sprintf("slug collision for segment %q under %s", seg, parent))
 				}
 			}
 			mappings = append(mappings, SlugMapping{
@@ -112,9 +112,8 @@ func GenerateChain(canonical string, existing map[string]string) ([]string, []Sl
 			})
 			existing[key] = slug
 		}
-		used[slug] = true
-		slugParts = append(slugParts, slug)
-		tags = append(tags, fmt.Sprintf("#td_%s", strings.Join(slugParts, "_")))
+		slugChain = append(slugChain, slug)
+		tags = append(tags, "#td_"+strings.Join(slugChain, "_"))
 		if parent == "/" {
 			parent = "/" + seg
 		} else {
@@ -122,4 +121,16 @@ func GenerateChain(canonical string, existing map[string]string) ([]string, []Sl
 		}
 	}
 	return tags, mappings, nil
+}
+
+// slugsInParent collects slugs already assigned to other segments of parent.
+func slugsInParent(existing map[string]string, parent string) map[string]bool {
+	out := map[string]bool{}
+	prefix := parent + "|"
+	for k, v := range existing {
+		if strings.HasPrefix(k, prefix) {
+			out[v] = true
+		}
+	}
+	return out
 }

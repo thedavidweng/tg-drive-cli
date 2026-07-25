@@ -124,7 +124,7 @@ func TestDeleteFile(t *testing.T) {
 	local := filepath.Join(t.TempDir(), "a.txt")
 	_ = os.WriteFile(local, []byte("hello"), 0o644)
 	_, _ = app.UploadFile(ctx, local, "/del.txt", ConflictFail, false)
-	if err := app.DeleteFile(ctx, "/del.txt"); err != nil {
+	if _, err := app.DeleteFile(ctx, "/del.txt", DeleteOptions{}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -386,7 +386,7 @@ func TestScanRejectsFileDirConflict(t *testing.T) {
 	var scanErrors int
 	if err := app.DB.Raw().QueryRowContext(ctx, `
 		select count(*) from scan_errors where channel_id=? and status='pending' and error_code=?`,
-		channelID, apperr.ErrPathInvalid).Scan(&scanErrors); err != nil {
+		channelID, apperr.ErrPathAncestorIsFile).Scan(&scanErrors); err != nil {
 		t.Fatal(err)
 	}
 	if scanErrors == 0 {

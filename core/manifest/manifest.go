@@ -171,6 +171,16 @@ func RenderCaption(m FileMeta, budget, margin int) (CaptionResult, error) {
 var compactRe = regexp.MustCompile(`td:v1\s+(.+)`)
 var kvRe = regexp.MustCompile(`(\w+)=([^\s]+)`)
 
+// RenderTombstoneCaption renders the redacted media caption for a deleted file.
+func RenderTombstoneCaption(displayName, canonicalPath string) string {
+	return fmt.Sprintf("%s\n\ntd:v1 deleted=true p=%s", displayName, b64(canonicalPath))
+}
+
+// RenderTombstoneManifest renders the redacted manifest reply for a deleted file.
+func RenderTombstoneManifest(canonicalPath string) string {
+	return fmt.Sprintf("td-manifest:v1\ndeleted=true\np=%s", b64(canonicalPath))
+}
+
 // ParsedMeta is parsed td metadata.
 type ParsedMeta struct {
 	CanonicalPath string
@@ -182,6 +192,7 @@ type ParsedMeta struct {
 	Created       string
 	Tags          []string
 	ManifestReply bool
+	Deleted       bool
 }
 
 func decodeB64(s string) (string, error) {
@@ -204,6 +215,13 @@ func ParseCompact(line string) (ParsedMeta, error) {
 	kvs := map[string]string{}
 	for _, kv := range kvRe.FindAllStringSubmatch(m[1], -1) {
 		kvs[kv[1]] = kv[2]
+	}
+	if kvs["deleted"] == "true" {
+		meta := ParsedMeta{Deleted: true}
+		if p, ok := kvs["p"]; ok {
+			meta.CanonicalPath, _ = decodeB64(p)
+		}
+		return meta, nil
 	}
 	p, okP := kvs["p"]
 	n, okN := kvs["n"]
@@ -245,6 +263,13 @@ func ParseManifestReply(text string) (ParsedMeta, error) {
 		if i := strings.Index(line, "="); i > 0 {
 			kvs[line[:i]] = line[i+1:]
 		}
+	}
+	if kvs["deleted"] == "true" {
+		meta := ParsedMeta{Deleted: true}
+		if p, ok := kvs["p"]; ok {
+			meta.CanonicalPath, _ = decodeB64(p)
+		}
+		return meta, nil
 	}
 	p, okP := kvs["p"]
 	n, okN := kvs["n"]

@@ -16,6 +16,11 @@ const (
 	ErrChannelPermission          = "ERR_CHANNEL_PERMISSION"
 	ErrPathInvalid                = "ERR_PATH_INVALID"
 	ErrPathExists                 = "ERR_PATH_EXISTS"
+	ErrPathIsDirectory            = "ERR_PATH_IS_DIRECTORY"
+	ErrPathAncestorIsFile         = "ERR_PATH_ANCESTOR_IS_FILE"
+	ErrPathConflict               = "ERR_PATH_CONFLICT"
+	ErrEmptyDirsUnsupported       = "ERR_EMPTY_DIRS_UNSUPPORTED"
+	ErrOrphanedUpload             = "ERR_ORPHANED_UPLOAD"
 	ErrLocalPathExists            = "ERR_LOCAL_PATH_EXISTS"
 	ErrLocalNotFound              = "ERR_LOCAL_NOT_FOUND"
 	ErrRemoteNotFound             = "ERR_REMOTE_NOT_FOUND"
@@ -71,8 +76,10 @@ func ExitCode(err error) int {
 	}
 	switch ae.Code {
 	case ErrUsage, ErrFlagConflict, ErrPathInvalid, ErrPathExists,
+		ErrPathIsDirectory, ErrPathAncestorIsFile, ErrPathConflict,
 		ErrLocalPathExists, ErrLocalNotFound, ErrRemoteNotFound,
-		ErrDirectoryMoveUnsupported, ErrDirectoryDeleteUnsupported, ErrSlugCollision:
+		ErrDirectoryMoveUnsupported, ErrDirectoryDeleteUnsupported,
+		ErrCrossChannelMove, ErrEmptyDirsUnsupported, ErrSlugCollision:
 		return 2
 	case ErrAuthRequired, ErrConfigMissing, ErrConfigInvalid:
 		return 3
@@ -80,7 +87,7 @@ func ExitCode(err error) int {
 		ErrMessageNotEditable, ErrTelegramRateLimited, ErrTelegramRPC:
 		return 4
 	case ErrDB, ErrScanFailed, ErrManifestInvalid, ErrOperationLocked,
-		ErrRepairRequired, ErrCaptionTooLong:
+		ErrRepairRequired, ErrCaptionTooLong, ErrOrphanedUpload:
 		return 5
 	default:
 		return 1

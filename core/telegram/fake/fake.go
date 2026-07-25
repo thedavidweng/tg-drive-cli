@@ -22,6 +22,11 @@ type Client struct {
 	code     string
 	password string
 	failCode bool
+
+	failUpload bool
+	failReply  bool
+	failDelete bool
+	denyPerms  bool
 }
 
 // New creates a fake client.
@@ -41,6 +46,18 @@ func (c *Client) SetCredentials(code, password string) {
 }
 
 func (c *Client) SetFailCode(v bool) { c.failCode = v }
+
+// SetFailUpload makes UploadMedia fail (test hook).
+func (c *Client) SetFailUpload(v bool) { c.failUpload = v }
+
+// SetFailReply makes SendTextReply fail (test hook).
+func (c *Client) SetFailReply(v bool) { c.failReply = v }
+
+// SetFailDelete makes DeleteMessage fail (test hook).
+func (c *Client) SetFailDelete(v bool) { c.failDelete = v }
+
+// SetDenyPermissions makes mutating calls return PermissionDeniedError (test hook).
+func (c *Client) SetDenyPermissions(v bool) { c.denyPerms = v }
 
 func (c *Client) Login(ctx context.Context, apiID int64, apiHash, phone string, codeFn, passwordFn func() (string, error)) (*telegram.User, error) {
 	if apiID == 0 || apiHash == "" || phone == "" {
@@ -129,6 +146,12 @@ func (c *Client) UploadMedia(ctx context.Context, req telegram.UploadRequest) (*
 	if !c.loggedIn {
 		return nil, &telegram.AuthRequiredError{}
 	}
+	if c.denyPerms {
+		return nil, &telegram.PermissionDeniedError{}
+	}
+	if c.failUpload {
+		return nil, fmt.Errorf("upload failed")
+	}
 	data, err := io.ReadAll(req.Reader)
 	if err != nil {
 		return nil, err
@@ -146,6 +169,9 @@ func (c *Client) UploadMedia(ctx context.Context, req telegram.UploadRequest) (*
 func (c *Client) SendTextReply(ctx context.Context, channelID int64, replyTo int, text string) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.failReply {
+		return 0, fmt.Errorf("reply failed")
+	}
 	id := c.nextID
 	c.nextID++
 	rt := replyTo
@@ -156,6 +182,9 @@ func (c *Client) SendTextReply(ctx context.Context, channelID int64, replyTo int
 func (c *Client) EditCaption(ctx context.Context, channelID int64, messageID int, caption string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.denyPerms {
+		return &telegram.PermissionDeniedError{}
+	}
 	for i, m := range c.messages[channelID] {
 		if m.ID == messageID {
 			if m.NotEditable {
@@ -183,6 +212,12 @@ func (c *Client) EditText(ctx context.Context, channelID int64, messageID int, t
 func (c *Client) DeleteMessage(ctx context.Context, channelID int64, messageID int) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.denyPerms {
+		return &telegram.PermissionDeniedError{}
+	}
+	if c.failDelete {
+		return fmt.Errorf("delete failed")
+	}
 	msgs := c.messages[channelID]
 	for i, m := range msgs {
 		if m.ID == messageID {

@@ -53,5 +53,6 @@ run-doctor: build
 goreleaser-check:
 	goreleaser check
 
+# Local snapshot skips cosign signing: keyless signing needs CI OIDC.
 snapshot:
-	goreleaser release --snapshot --clean
+	goreleaser release --snapshot --clean --skip=sign

@@ -1,3 +1,0 @@
-/a_b/c.txt
-/a/b_c.txt
-/a/b/c.txt

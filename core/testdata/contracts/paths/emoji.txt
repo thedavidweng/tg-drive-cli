@@ -1,0 +1,4 @@
+# Emoji path cases (canonical form)
+/emoji/📷.jpg
+/emoji/📷/x.jpg
+/🎉/party.mp4

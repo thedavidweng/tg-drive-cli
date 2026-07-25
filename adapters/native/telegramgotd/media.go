@@ -194,8 +194,15 @@ func (c *Client) UploadMedia(ctx context.Context, req tgtelegram.UploadRequest) 
 				return nil
 			}
 			lastErr = mapRPCError(err)
-			if fw, ok := lastErr.(*tgtelegram.FloodWaitError); ok && c.waitFlood {
-				time.Sleep(time.Duration(fw.Seconds) * time.Second)
+			if fw, ok := lastErr.(*tgtelegram.FloodWaitError); ok {
+				if !c.waitFlood {
+					return lastErr
+				}
+				wait := time.Duration(fw.Seconds) * time.Second
+				if wait > c.maxWait {
+					return lastErr
+				}
+				time.Sleep(wait)
 				continue
 			}
 			if attempt < maxRetries {

@@ -92,6 +92,7 @@ type MediaClient interface {
 	EditCaption(ctx context.Context, channelID int64, messageID int, caption string) error
 	EditText(ctx context.Context, channelID int64, messageID int, text string) error
 	DeleteMessage(ctx context.Context, channelID int64, messageID int) error
+	// DownloadMedia streams the media body of a message into dst.
 	DownloadMedia(ctx context.Context, channelID int64, messageID int, dst io.Writer) error
 	Doctor(ctx context.Context, channelID int64) (*Capabilities, error)
 }

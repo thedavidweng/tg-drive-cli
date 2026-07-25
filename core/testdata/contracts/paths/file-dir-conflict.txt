@@ -1,0 +1,9 @@
+# existing_path existing_type new_dest expect
+# expect: ok | conflict
+/a file /a/b.txt conflict
+/a/b.txt file /a conflict
+/a dir /a conflict
+/a/b.txt file /a/b.txt conflict
+/a dir /a/b.txt ok
+/x/y.txt file /x/z.txt ok
+/dots/file.name.with.dots.tar.gz file /dots/other.txt ok

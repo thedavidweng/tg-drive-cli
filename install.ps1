@@ -9,7 +9,7 @@ $arch = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { "x86_64"
 $version = (Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest").tag_name
 $asset = "${Binary}_windows_${arch}.zip"
 $url = "https://github.com/$Repo/releases/download/$version/$asset"
-$installDir = if ($env:TD_INSTALL_DIR) { $env:TD_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "tg-drive-cliin" }
+$installDir = if ($env:TD_INSTALL_DIR) { $env:TD_INSTALL_DIR } else { Join-Path (Join-Path $env:LOCALAPPDATA "tg-drive-cli") "bin" }
 $tmpDir = Join-Path $env:TEMP "tg-drive-cli-install-$([guid]::NewGuid().ToString('N').Substring(0,8))"
 New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
 New-Item -ItemType Directory -Path $installDir -Force | Out-Null

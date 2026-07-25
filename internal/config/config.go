@@ -14,14 +14,15 @@ import (
 
 // Config matches docs/contracts/config-contract.md.
 type Config struct {
-	Telegram TelegramConfig `toml:"telegram"`
-	Storage  StorageConfig  `toml:"storage"`
-	Caption  CaptionConfig  `toml:"caption"`
-	Hash     HashConfig     `toml:"hash"`
-	Delete   DeleteConfig   `toml:"delete"`
-	Limits   LimitsConfig   `toml:"limits"`
-	Locks    LocksConfig    `toml:"locks"`
-	Roots    []RootConfig   `toml:"roots"`
+	Telegram  TelegramConfig  `toml:"telegram"`
+	Storage   StorageConfig   `toml:"storage"`
+	Caption   CaptionConfig   `toml:"caption"`
+	Hash      HashConfig      `toml:"hash"`
+	Delete    DeleteConfig    `toml:"delete"`
+	Limits    LimitsConfig    `toml:"limits"`
+	Locks     LocksConfig     `toml:"locks"`
+	RateLimit RateLimitConfig `toml:"rate_limit"`
+	Roots     []RootConfig    `toml:"roots"`
 }
 
 type TelegramConfig struct {
@@ -58,6 +59,11 @@ type LimitsConfig struct {
 
 type LocksConfig struct {
 	TTLSeconds int `toml:"ttl_seconds"`
+}
+
+type RateLimitConfig struct {
+	DefaultWait    bool `toml:"default_wait"`
+	MaxWaitSeconds int  `toml:"max_wait_seconds"`
 }
 
 type RootConfig struct {
@@ -103,7 +109,8 @@ func Defaults() Config {
 			FreeUploadBytes:    2147483648,
 			PremiumUploadBytes: 4294967296,
 		},
-		Locks: LocksConfig{TTLSeconds: 900},
+		Locks:     LocksConfig{TTLSeconds: 900},
+		RateLimit: RateLimitConfig{DefaultWait: false, MaxWaitSeconds: 300},
 	}
 }
 
@@ -228,6 +235,10 @@ func GetValue(cfg Config, key string) (any, error) {
 		return cfg.Hash.Enabled, nil
 	case "hash.algorithm":
 		return cfg.Hash.Algorithm, nil
+	case "rate_limit.default_wait":
+		return cfg.RateLimit.DefaultWait, nil
+	case "rate_limit.max_wait_seconds":
+		return cfg.RateLimit.MaxWaitSeconds, nil
 	default:
 		return nil, apperr.New(apperr.ErrUsage, fmt.Sprintf("unknown config key: %s", key))
 	}
@@ -261,6 +272,18 @@ func SetValue(cfg *Config, key, value string) error {
 			return apperr.Wrap(apperr.ErrConfigInvalid, "hash.enabled", err)
 		}
 		cfg.Hash.Enabled = b
+	case "rate_limit.default_wait":
+		b, err := strconv.ParseBool(value)
+		if err != nil {
+			return apperr.Wrap(apperr.ErrConfigInvalid, "rate_limit.default_wait", err)
+		}
+		cfg.RateLimit.DefaultWait = b
+	case "rate_limit.max_wait_seconds":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 {
+			return apperr.New(apperr.ErrConfigInvalid, "rate_limit.max_wait_seconds must be a non-negative integer")
+		}
+		cfg.RateLimit.MaxWaitSeconds = n
 	default:
 		return apperr.New(apperr.ErrUsage, fmt.Sprintf("unknown config key: %s", key))
 	}
@@ -290,6 +313,7 @@ func RedactConfigMap(cfg Config, showSecrets bool) map[string]any {
 		"telegram.api_id", "telegram.api_hash", "telegram.phone",
 		"storage.db_path", "storage.session_path", "delete.mode",
 		"hash.enabled", "hash.algorithm",
+		"rate_limit.default_wait", "rate_limit.max_wait_seconds",
 	}
 	out := make(map[string]any, len(keys))
 	for _, k := range keys {

@@ -118,3 +118,53 @@ func TestLockAcquireRelease(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestStaleLockTakeover(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lock.db")
+	d, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = d.Close() }()
+	ctx := context.Background()
+	key := LockKey(1, "/stale")
+	// Acquire with a TTL already in the past.
+	if err := d.AcquireLock(ctx, key, "dead-owner", -time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.AcquireLock(ctx, key, "new-owner", time.Minute); err != nil {
+		t.Fatalf("stale lock not stolen: %v", err)
+	}
+	var owner string
+	if err := d.Raw().QueryRow(`select owner_token from operation_locks where key=?`, key).Scan(&owner); err != nil {
+		t.Fatal(err)
+	}
+	if owner != "new-owner" {
+		t.Fatalf("owner = %q, want new-owner", owner)
+	}
+}
+
+func TestReleaseLockOwnerTokenGuard(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lock.db")
+	d, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = d.Close() }()
+	ctx := context.Background()
+	key := LockKey(1, "/guarded")
+	if err := d.AcquireLock(ctx, key, "owner1", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	// Wrong token must not release the lock.
+	if err := d.ReleaseLock(ctx, key, "intruder"); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := d.Raw().QueryRow(`select count(*) from operation_locks where key=?`, key).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatal("lock released by non-owner")
+	}
+}

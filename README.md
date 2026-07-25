@@ -100,7 +100,13 @@ td auth logout    # drop the local session
 
 `td auth login` reads `api_id`/`api_hash` from flags, `TD_*` env vars, or the
 config file, prompts for anything missing, sends a login code to your phone,
-handles a 2FA password when required, and persists the session.
+handles a 2FA password when required, and persists the session. You only log
+in once: later commands reuse the saved session.
+
+Re-running `td auth login` while a code is still pending reuses that code
+instead of requesting a new one (Telegram flood-waits accounts that request
+codes repeatedly — up to 24 hours). Use `td auth login --resend` to explicitly
+request a fresh code. A mistyped code re-prompts without sending a new one.
 
 Default locations (override with `TD_CONFIG`, `TD_SESSION`, `TD_DB` or the
 `--config`, `--session`, `--db` flags):
@@ -464,6 +470,18 @@ make ci-local                 # fmt-check, vet, tests, race tests
 make build                    # ./dist/td
 ./scripts/generate-completions.sh   # write shell completions into completions/
 TD_FAKE_TELEGRAM=1 go test ./...    # in-memory fake Telegram client (no network)
+```
+
+To try the full CLI workflow offline — no Telegram account, no network — point
+the fake client at a state file so it persists across commands (login code is
+`12345`):
+
+```sh
+export TD_FAKE_TELEGRAM=1 TD_FAKE_TELEGRAM_STATE=/tmp/td-demo/fake.json
+export TD_API_ID=1 TD_API_HASH=hash TD_PHONE=+1000
+td auth login   # enter code 12345
+td init ./files --create-channel
+td cp ./files/a.txt /a.txt && td ls /
 ```
 
 See `PRODUCT_SPEC.md` for the full product/storage contract,

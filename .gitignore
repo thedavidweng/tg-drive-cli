@@ -9,3 +9,6 @@ local_cache.db
 session.json
 .env
 .DS_Store
+
+# smoke test output
+testdata/restore/

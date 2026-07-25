@@ -42,7 +42,9 @@ func testApp(t *testing.T) (*App, *fake.Client) {
 func loginAndInit(t *testing.T, app *App, tg *fake.Client) {
 	t.Helper()
 	ctx := context.Background()
-	_, err := tg.Login(ctx, 1, "hash", "+1000", func() (string, error) { return "12345", nil }, func() (string, error) { return "", nil })
+	_, err := tg.Login(ctx, 1, "hash", "+1000",
+		func(telegram.CodePrompt) (string, error) { return "12345", nil },
+		func() (string, error) { return "", nil }, telegram.LoginOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +155,7 @@ func TestDownloadFile(t *testing.T) {
 	_ = os.WriteFile(local, []byte("hello"), 0o644)
 	_, _ = app.UploadFile(ctx, local, "/get.txt", ConflictFail, false)
 	dest := filepath.Join(t.TempDir(), "out.txt")
-	if err := app.DownloadFile(ctx, "/get.txt", dest, ConflictFail); err != nil {
+	if _, err := app.DownloadFile(ctx, "/get.txt", dest, ConflictFail); err != nil {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(dest)
@@ -172,7 +174,9 @@ func TestAuthStatus(t *testing.T) {
 	if status["authenticated"] != false {
 		t.Fatalf("status = %v", status)
 	}
-	_, _ = tg.Login(ctx, 1, "hash", "+1000", func() (string, error) { return "12345", nil }, func() (string, error) { return "", nil })
+	_, _ = tg.Login(ctx, 1, "hash", "+1000",
+		func(telegram.CodePrompt) (string, error) { return "12345", nil },
+		func() (string, error) { return "", nil }, telegram.LoginOptions{})
 	status, err = app.AuthStatus(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -239,7 +243,7 @@ func TestReplaceUpload(t *testing.T) {
 		t.Fatal(err)
 	}
 	dest := filepath.Join(t.TempDir(), "out.txt")
-	if err := app.DownloadFile(ctx, "/replace.txt", dest, ConflictFail); err != nil {
+	if _, err := app.DownloadFile(ctx, "/replace.txt", dest, ConflictFail); err != nil {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(dest)
@@ -417,4 +421,177 @@ func TestStatusIncludesUploadLimit(t *testing.T) {
 		t.Fatalf("status = %v", res)
 	}
 	_ = fmt.Sprint(res["upload_limit_bytes"])
+}
+
+func TestMapTGErrFloodWaitDetails(t *testing.T) {
+	err := mapTGErr(&telegram.FloodWaitError{Seconds: 85286})
+	ae, ok := apperr.As(err)
+	if !ok {
+		t.Fatalf("not an AppError: %v", err)
+	}
+	if ae.Code != apperr.ErrTelegramRateLimited {
+		t.Fatalf("code = %s", ae.Code)
+	}
+	if !strings.Contains(ae.Message, "23h41m26s") {
+		t.Fatalf("message should contain human duration, got %q", ae.Message)
+	}
+	if got := ae.Details["retry_after_seconds"]; got != 85286 {
+		t.Fatalf("retry_after_seconds = %v", got)
+	}
+	if _, ok := ae.Details["retry_at"]; !ok {
+		t.Fatal("retry_at missing from details")
+	}
+}
+
+func TestAuthLoginReportsAlreadyAuthenticated(t *testing.T) {
+	app, _ := testApp(t)
+	app.Cfg.Telegram.APIID = 1
+	app.Cfg.Telegram.APIHash = "hash"
+	app.Cfg.Telegram.Phone = "+1000"
+	ctx := context.Background()
+	code := func(telegram.CodePrompt) (string, error) { return "12345", nil }
+	pw := func() (string, error) { return "", nil }
+
+	data, err := app.AuthLogin(ctx, code, pw, telegram.LoginOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data["already_authenticated"] != false {
+		t.Fatalf("first login already_authenticated = %v", data["already_authenticated"])
+	}
+	data, err = app.AuthLogin(ctx, code, pw, telegram.LoginOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data["already_authenticated"] != true {
+		t.Fatalf("second login already_authenticated = %v", data["already_authenticated"])
+	}
+}
+
+func TestMapTGErrLoginErrorCodes(t *testing.T) {
+	cases := []struct {
+		err  error
+		code string
+	}{
+		{&telegram.CodeInvalidError{Attempts: 3}, apperr.ErrAuthFailed},
+		{&telegram.PasswordInvalidError{}, apperr.ErrAuthFailed},
+		{&telegram.CodeExpiredError{}, apperr.ErrAuthFailed},
+		{&telegram.PhoneInvalidError{}, apperr.ErrConfigInvalid},
+	}
+	for _, tc := range cases {
+		ae, ok := apperr.As(mapTGErr(tc.err))
+		if !ok {
+			t.Fatalf("%T: not an AppError", tc.err)
+		}
+		if ae.Code != tc.code {
+			t.Fatalf("%T: code = %s, want %s", tc.err, ae.Code, tc.code)
+		}
+	}
+}
+
+func TestInitRootIdempotentCreate(t *testing.T) {
+	app, tg := testApp(t)
+	ctx := context.Background()
+	_, _ = tg.Login(ctx, 1, "hash", "+1000",
+		func(telegram.CodePrompt) (string, error) { return "12345", nil },
+		func() (string, error) { return "", nil }, telegram.LoginOptions{})
+	root := t.TempDir()
+	first, err := app.InitRoot(ctx, root, "", "My Drive", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := app.InitRoot(ctx, root, "", "My Drive", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second["already_initialized"] != true {
+		t.Fatalf("second init should be a no-op, got %v", second)
+	}
+	if first["channel_id"] != second["channel_id"] {
+		t.Fatalf("channel changed across re-init: %v -> %v", first["channel_id"], second["channel_id"])
+	}
+}
+
+func TestUploadToRootKeepsBasename(t *testing.T) {
+	app, tg := testApp(t)
+	loginAndInit(t, app, tg)
+	ctx := context.Background()
+	local := filepath.Join(t.TempDir(), "readme.txt")
+	_ = os.WriteFile(local, []byte("hi"), 0o644)
+	data, err := app.UploadFile(ctx, local, "/", ConflictFail, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data["path"] != "/readme.txt" {
+		t.Fatalf("path = %v, want /readme.txt", data["path"])
+	}
+}
+
+func TestDownloadIntoDirectory(t *testing.T) {
+	app, tg := testApp(t)
+	loginAndInit(t, app, tg)
+	ctx := context.Background()
+	local := filepath.Join(t.TempDir(), "a.txt")
+	_ = os.WriteFile(local, []byte("hello"), 0o644)
+	_, _ = app.UploadFile(ctx, local, "/a.txt", ConflictFail, false)
+	dir := t.TempDir()
+	res, err := app.DownloadFile(ctx, "/a.txt", dir, ConflictFail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Dest != filepath.Join(dir, "a.txt") {
+		t.Fatalf("dest = %q", res.Dest)
+	}
+	data, _ := os.ReadFile(res.Dest)
+	if string(data) != "hello" {
+		t.Fatalf("data = %q", data)
+	}
+}
+
+func TestDownloadSkipExistingReported(t *testing.T) {
+	app, tg := testApp(t)
+	loginAndInit(t, app, tg)
+	ctx := context.Background()
+	local := filepath.Join(t.TempDir(), "a.txt")
+	_ = os.WriteFile(local, []byte("hello"), 0o644)
+	_, _ = app.UploadFile(ctx, local, "/a.txt", ConflictFail, false)
+	dest := filepath.Join(t.TempDir(), "out.txt")
+	_ = os.WriteFile(dest, []byte("LOCAL"), 0o644)
+	res, err := app.DownloadFile(ctx, "/a.txt", dest, ConflictSkip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Skipped {
+		t.Fatal("expected Skipped=true")
+	}
+	data, _ := os.ReadFile(dest)
+	if string(data) != "LOCAL" {
+		t.Fatalf("local file overwritten: %q", data)
+	}
+}
+
+func TestListDirNotFoundErrors(t *testing.T) {
+	app, tg := testApp(t)
+	loginAndInit(t, app, tg)
+	ctx := context.Background()
+	_, err := app.ListDir(ctx, "/does-not-exist")
+	if code := appErrCode(t, err); code != apperr.ErrRemoteNotFound {
+		t.Fatalf("code = %s, want ERR_REMOTE_NOT_FOUND", code)
+	}
+}
+
+func TestListDirOfFileListsFile(t *testing.T) {
+	app, tg := testApp(t)
+	loginAndInit(t, app, tg)
+	ctx := context.Background()
+	local := filepath.Join(t.TempDir(), "a.txt")
+	_ = os.WriteFile(local, []byte("hello"), 0o644)
+	_, _ = app.UploadFile(ctx, local, "/a.txt", ConflictFail, false)
+	entries, err := app.ListDir(ctx, "/a.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Type != "file" || entries[0].Name != "a.txt" {
+		t.Fatalf("entries = %+v", entries)
+	}
 }

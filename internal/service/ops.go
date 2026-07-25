@@ -85,6 +85,28 @@ func (a *App) ListDir(ctx context.Context, remotePath string) ([]LSEntry, error)
 		seen[fullPath] = true
 		out = append(out, LSEntry{Name: childName, Path: fullPath, Type: typ, Size: size, Status: status, Ephemeral: ephemeral == 1})
 	}
+	if len(out) == 0 && p != "/" {
+		// Nothing under p: it is either a file (list it, like Unix ls), an
+		// empty directory (empty listing), or absent (error).
+		var name, status string
+		var size int64
+		err := a.DB.Raw().QueryRowContext(ctx, `select display_name, coalesce(size,0), status from files where channel_id=? and canonical_path=? and status='active'`, channelID, p).Scan(&name, &size, &status)
+		switch err {
+		case nil:
+			return []LSEntry{{Name: name, Path: p, Type: "file", Size: size, Status: status}}, nil
+		case sql.ErrNoRows:
+			var one int
+			dirErr := a.DB.Raw().QueryRowContext(ctx, `select 1 from nodes where channel_id=? and canonical_path=? and type='dir'`, channelID, p).Scan(&one)
+			if dirErr == sql.ErrNoRows {
+				return nil, apperr.New(apperr.ErrRemoteNotFound, fmt.Sprintf("remote path %q not found", p))
+			}
+			if dirErr != nil {
+				return nil, apperr.Wrap(apperr.ErrDB, "ls", dirErr)
+			}
+		default:
+			return nil, apperr.Wrap(apperr.ErrDB, "ls", err)
+		}
+	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Type != out[j].Type {
 			return out[i].Type == "dir"
@@ -522,48 +544,64 @@ func nullIfEmpty(s string) any {
 	return s
 }
 
+// DownloadResult reports what DownloadFile actually did.
+type DownloadResult struct {
+	Path    string `json:"path"`    // remote canonical path
+	Dest    string `json:"local"`   // local destination actually written
+	Size    int64  `json:"size"`    // remote size in bytes
+	Skipped bool   `json:"skipped"` // destination existed and --skip-existing was set
+}
+
 // DownloadFile downloads a remote file to local path, streaming through a
 // temp file and verifying size/hash before the atomic rename.
-func (a *App) DownloadFile(ctx context.Context, remotePath, localDest string, policy ConflictPolicy) error {
+func (a *App) DownloadFile(ctx context.Context, remotePath, localDest string, policy ConflictPolicy) (*DownloadResult, error) {
 	p, err := fsmodel.NormalizeCanonicalPath(remotePath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	channelID, _, err := a.channelID(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	tgChID, err := a.tgChannelID(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var messageID int
 	var size int64
 	var hash string
 	err = a.DB.Raw().QueryRowContext(ctx, `select message_id, size, content_hash from files where channel_id=? and canonical_path=? and status='active'`, channelID, p).Scan(&messageID, &size, &hash)
 	if err == sql.ErrNoRows {
-		return apperr.New(apperr.ErrRemoteNotFound, p)
+		return nil, apperr.New(apperr.ErrRemoteNotFound, fmt.Sprintf("remote path %q not found", p))
 	}
 	if err != nil {
-		return apperr.Wrap(apperr.ErrDB, "lookup file", err)
+		return nil, apperr.Wrap(apperr.ErrDB, "lookup file", err)
+	}
+	// cp convention: a destination that ends with a separator or names an
+	// existing directory keeps the remote file's basename.
+	if strings.HasSuffix(localDest, "/") || strings.HasSuffix(localDest, string(os.PathSeparator)) {
+		localDest = filepath.Join(localDest, fsmodel.BaseName(p))
+	} else if info, err := a.files().Stat(ctx, localDest); err == nil && info.IsDir {
+		localDest = filepath.Join(localDest, fsmodel.BaseName(p))
 	}
 	if _, err := a.files().Stat(ctx, localDest); err == nil {
 		switch policy {
 		case ConflictSkip:
-			return nil
+			return &DownloadResult{Path: p, Dest: localDest, Size: size, Skipped: true}, nil
 		case ConflictReplace:
 		case ConflictRename:
 			localDest = autoRenameLocal(ctx, a.files(), localDest)
 		default:
-			return apperr.New(apperr.ErrLocalPathExists, localDest)
+			return nil, apperr.New(apperr.ErrLocalPathExists,
+				fmt.Sprintf("local file %q already exists (use --replace, --skip-existing, or --auto-rename)", localDest))
 		}
 	}
 	if err := a.files().MkdirAll(ctx, filepath.Dir(localDest), 0o755); err != nil {
-		return err
+		return nil, err
 	}
 	tmp, f, err := a.files().CreateTemp(ctx, localDest)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	hashEnabled := hash != "" && a.Cfg.Hash.Enabled && strings.HasPrefix(hash, "blake3:")
 	var w io.Writer = f
@@ -575,35 +613,35 @@ func (a *App) DownloadFile(ctx context.Context, remotePath, localDest string, po
 	if err := a.TG.DownloadMedia(ctx, tgChID, messageID, w); err != nil {
 		_ = f.Close()
 		_ = a.files().Remove(ctx, tmp)
-		return mapTGErr(err)
+		return nil, mapTGErr(err)
 	}
 	if err := f.Close(); err != nil {
 		_ = a.files().Remove(ctx, tmp)
-		return err
+		return nil, err
 	}
 	if size > 0 {
 		info, err := a.files().Stat(ctx, tmp)
 		if err != nil {
 			_ = a.files().Remove(ctx, tmp)
-			return err
+			return nil, err
 		}
 		if info.Size != size {
 			_ = a.files().Remove(ctx, tmp)
-			return apperr.New(apperr.ErrTelegramRPC, "size mismatch")
+			return nil, apperr.New(apperr.ErrTelegramRPC, "size mismatch")
 		}
 	}
 	if hashEnabled {
 		got := "blake3:" + hex.EncodeToString(h.Sum(nil))
 		if got != hash {
 			_ = a.files().Remove(ctx, tmp)
-			return apperr.New(apperr.ErrTelegramRPC, "content hash mismatch")
+			return nil, apperr.New(apperr.ErrTelegramRPC, "content hash mismatch")
 		}
 	}
 	if err := a.files().Rename(ctx, tmp, localDest); err != nil {
 		_ = a.files().Remove(ctx, tmp)
-		return err
+		return nil, err
 	}
-	return nil
+	return &DownloadResult{Path: p, Dest: localDest, Size: size}, nil
 }
 
 func autoRenameLocal(ctx context.Context, files ports.FileSystem, path string) string {
@@ -669,7 +707,7 @@ func (a *App) MoveFile(ctx context.Context, from, to string) error {
 			src, channelID).Scan(&otherChannel); scanErr == nil {
 			return apperr.New(apperr.ErrCrossChannelMove, "source file belongs to a different channel; V1 supports same-channel moves only")
 		}
-		return apperr.New(apperr.ErrRemoteNotFound, src)
+		return apperr.New(apperr.ErrRemoteNotFound, fmt.Sprintf("remote path %q not found", src))
 	}
 	if err != nil {
 		return apperr.Wrap(apperr.ErrDB, "lookup source", err)
@@ -713,7 +751,7 @@ func (a *App) MoveFile(ctx context.Context, from, to string) error {
 		return err
 	}
 	if !messageID.Valid {
-		return apperr.New(apperr.ErrRemoteNotFound, src)
+		return apperr.New(apperr.ErrRemoteNotFound, fmt.Sprintf("remote path %q not found", src))
 	}
 	// Manifest handling before the caption edit, so a failure here leaves the
 	// message fully consistent with the old path.
@@ -837,7 +875,7 @@ func (a *App) DeleteFile(ctx context.Context, remotePath string, opts DeleteOpti
 	var messageID, manifestID sql.NullInt64
 	err = a.DB.Raw().QueryRowContext(ctx, `select id, message_id, manifest_message_id from files where channel_id=? and canonical_path=? and status='active'`, channelID, p).Scan(&fileID, &messageID, &manifestID)
 	if err == sql.ErrNoRows {
-		return nil, apperr.New(apperr.ErrRemoteNotFound, p)
+		return nil, apperr.New(apperr.ErrRemoteNotFound, fmt.Sprintf("remote path %q not found", p))
 	}
 	if err != nil {
 		return nil, apperr.Wrap(apperr.ErrDB, "lookup file", err)
@@ -1102,13 +1140,13 @@ func (a *App) RepairPath(ctx context.Context, remotePath string) (map[string]any
 	err = a.DB.Raw().QueryRowContext(ctx, `select id, message_id, manifest_message_id, display_name, coalesce(size,0), coalesce(content_hash,''), coalesce(mime,'') from files where channel_id=? and canonical_path=? and status='active'`,
 		channelID, p).Scan(&fileID, &messageID, &manifestID, &displayName, &size, &contentHash, &mimeType)
 	if err == sql.ErrNoRows {
-		return nil, apperr.New(apperr.ErrRemoteNotFound, p)
+		return nil, apperr.New(apperr.ErrRemoteNotFound, fmt.Sprintf("remote path %q not found", p))
 	}
 	if err != nil {
 		return nil, apperr.Wrap(apperr.ErrDB, "lookup file", err)
 	}
 	if !messageID.Valid {
-		return nil, apperr.New(apperr.ErrRemoteNotFound, p)
+		return nil, apperr.New(apperr.ErrRemoteNotFound, fmt.Sprintf("remote path %q not found", p))
 	}
 	tags, slugMaps, err := pathcodec.GenerateChain(p, a.loadSlugMap(ctx, channelID))
 	if err != nil {
@@ -1205,7 +1243,7 @@ func (a *App) UploadRecursive(ctx context.Context, localDir, remoteDir string, p
 	}
 	info, err := os.Stat(localDir)
 	if err != nil {
-		return nil, apperr.New(apperr.ErrLocalNotFound, localDir)
+		return nil, apperr.New(apperr.ErrLocalNotFound, fmt.Sprintf("local directory %q not found", localDir))
 	}
 	if !info.IsDir() {
 		return nil, apperr.New(apperr.ErrUsage, "recursive upload requires a directory source")
@@ -1225,7 +1263,7 @@ func (a *App) UploadRecursive(ctx context.Context, localDir, remoteDir string, p
 		return nil, apperr.Wrap(apperr.ErrLocalNotFound, "walk local directory", err)
 	}
 	sort.Strings(files)
-	uploaded, failed := 0, 0
+	uploaded, skipped, failed := 0, 0, 0
 	var errs []string
 	for _, f := range files {
 		rel, _ := filepath.Rel(localDir, f)
@@ -1234,7 +1272,7 @@ func (a *App) UploadRecursive(ctx context.Context, localDir, remoteDir string, p
 			dest += "/"
 		}
 		dest += filepath.ToSlash(rel)
-		_, err := a.UploadFile(ctx, f, dest, policy, noHash)
+		data, err := a.UploadFile(ctx, f, dest, policy, noHash)
 		if err != nil {
 			failed++
 			errs = append(errs, err.Error())
@@ -1243,9 +1281,13 @@ func (a *App) UploadRecursive(ctx context.Context, localDir, remoteDir string, p
 			}
 			continue
 		}
+		if data["skipped"] == true {
+			skipped++
+			continue
+		}
 		uploaded++
 	}
-	return map[string]any{"uploaded": uploaded, "failed": failed, "errors": errs}, nil
+	return map[string]any{"uploaded": uploaded, "skipped": skipped, "failed": failed, "errors": errs}, nil
 }
 
 // DownloadRecursive downloads a directory tree.
@@ -1268,7 +1310,7 @@ func (a *App) DownloadRecursive(ctx context.Context, remotePath, localDir string
 			}
 			continue
 		}
-		if err := a.DownloadFile(ctx, e.Path, localPath, policy); err != nil && !continueOnError {
+		if _, err := a.DownloadFile(ctx, e.Path, localPath, policy); err != nil && !continueOnError {
 			return err
 		}
 	}

@@ -24,6 +24,23 @@ All JSON command output uses an envelope.
 }
 ```
 
+`ERR_TELEGRAM_RATE_LIMITED` errors carry machine-readable retry hints in
+`details`:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "ERR_TELEGRAM_RATE_LIMITED",
+    "message": "telegram rate limited this account: retry after 23h41m26s (at 2026-07-26 13:15 PDT)",
+    "details": {
+      "retry_after_seconds": 85286,
+      "retry_at": "2026-07-26T20:15:00Z"
+    }
+  }
+}
+```
+
 ## Version
 
 ```json

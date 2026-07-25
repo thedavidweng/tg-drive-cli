@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"time"
 )
@@ -11,6 +12,45 @@ type User struct {
 	ID          int64
 	Phone       string
 	DisplayName string
+}
+
+// CodePrompt tells the login code callback why it is being invoked, so the
+// caller can render an accurate prompt.
+type CodePrompt struct {
+	// Attempt is the 1-based entry attempt for the current code. Attempt > 1
+	// means the previous entry was rejected as invalid.
+	Attempt int
+	// MaxAttempts is how many entry attempts are allowed for this code.
+	MaxAttempts int
+	// Reused is true when the prompt is for a code sent by an earlier login
+	// invocation (no new code was sent this run).
+	Reused bool
+	// Resent is true when a fresh code was just sent because the previous
+	// one expired.
+	Resent bool
+	// SentAt is when the code was sent, if known.
+	SentAt time.Time
+}
+
+// CodeFunc supplies the login code sent by Telegram.
+type CodeFunc func(prompt CodePrompt) (string, error)
+
+// PasswordFunc supplies the 2FA password.
+type PasswordFunc func() (string, error)
+
+// LoginOptions controls the interactive login flow.
+type LoginOptions struct {
+	// ForceNewCode requests a fresh code even when a previously sent code is
+	// still reusable.
+	ForceNewCode bool
+}
+
+// LoginResult is returned after a successful login.
+type LoginResult struct {
+	User User
+	// AlreadyAuthorized is true when the session was already authenticated
+	// and no code exchange happened.
+	AlreadyAuthorized bool
 }
 
 // Channel represents a Telegram channel.
@@ -72,7 +112,7 @@ type Client interface {
 
 // AuthClient handles authentication.
 type AuthClient interface {
-	Login(ctx context.Context, apiID int64, apiHash, phone string, codeFn, passwordFn func() (string, error)) (*User, error)
+	Login(ctx context.Context, apiID int64, apiHash, phone string, codeFn CodeFunc, passwordFn PasswordFunc, opts LoginOptions) (*LoginResult, error)
 	Status(ctx context.Context) (*User, bool, error)
 	Logout(ctx context.Context) error
 }
@@ -107,7 +147,38 @@ type FloodWaitError struct {
 	Seconds int
 }
 
-func (e *FloodWaitError) Error() string { return "flood wait" }
+func (e *FloodWaitError) Error() string {
+	return fmt.Sprintf("flood wait: retry after %s", (time.Duration(e.Seconds) * time.Second).String())
+}
+
+// CodeInvalidError means the login code was rejected after all retry attempts.
+type CodeInvalidError struct{ Attempts int }
+
+func (e *CodeInvalidError) Error() string {
+	return fmt.Sprintf("login code invalid after %d attempts", e.Attempts)
+}
+
+// PasswordInvalidError means the 2FA password was rejected.
+type PasswordInvalidError struct{}
+
+func (e *PasswordInvalidError) Error() string { return "2FA password invalid" }
+
+// CodeExpiredError means the login code expired and the automatic resend was
+// already used up.
+type CodeExpiredError struct{}
+
+func (e *CodeExpiredError) Error() string {
+	return "login code expired; run `td auth login` to request a fresh code"
+}
+
+// PhoneInvalidError means Telegram rejected the configured phone number. The
+// number itself is deliberately not included: phone numbers are redacted
+// everywhere else in the CLI output.
+type PhoneInvalidError struct{}
+
+func (e *PhoneInvalidError) Error() string {
+	return "telegram rejected the configured phone number (telegram.phone): use international format, e.g. +15551234567"
+}
 
 type PermissionDeniedError struct{}
 

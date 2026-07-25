@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	apperr "github.com/thedavidweng/tg-drive-cli/core/errors"
@@ -148,6 +150,11 @@ type DB struct {
 
 // Open opens or creates the database with required pragmas.
 func Open(path string) (*DB, error) {
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return nil, apperr.Wrap(apperr.ErrDB, "create database directory", err)
+		}
+	}
 	sqlDB, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, apperr.Wrap(apperr.ErrDB, "open database", err)

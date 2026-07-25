@@ -12,16 +12,17 @@ import (
 
 // Client is an in-memory fake Telegram client for tests.
 type Client struct {
-	mu       sync.Mutex
-	user     *telegram.User
-	loggedIn bool
-	channels map[int64]*telegram.Channel
-	messages map[int64][]telegram.Message
-	nextID   int
-	nextChID int64
-	code     string
-	password string
-	failCode bool
+	mu        sync.Mutex
+	statePath string // non-empty: persist state across processes (NewPersistent)
+	user      *telegram.User
+	loggedIn  bool
+	channels  map[int64]*telegram.Channel
+	messages  map[int64][]telegram.Message
+	nextID    int
+	nextChID  int64
+	code      string
+	password  string
+	failCode  bool
 
 	failUpload bool
 	failReply  bool
@@ -59,16 +60,23 @@ func (c *Client) SetFailDelete(v bool) { c.failDelete = v }
 // SetDenyPermissions makes mutating calls return PermissionDeniedError (test hook).
 func (c *Client) SetDenyPermissions(v bool) { c.denyPerms = v }
 
-func (c *Client) Login(ctx context.Context, apiID int64, apiHash, phone string, codeFn, passwordFn func() (string, error)) (*telegram.User, error) {
+func (c *Client) Login(ctx context.Context, apiID int64, apiHash, phone string, codeFn telegram.CodeFunc, passwordFn telegram.PasswordFunc, opts telegram.LoginOptions) (*telegram.LoginResult, error) {
 	if apiID == 0 || apiHash == "" || phone == "" {
 		return nil, &telegram.AuthRequiredError{}
 	}
-	code, err := codeFn()
+	c.mu.Lock()
+	if c.loggedIn {
+		user := *c.user
+		c.mu.Unlock()
+		return &telegram.LoginResult{User: user, AlreadyAuthorized: true}, nil
+	}
+	c.mu.Unlock()
+	code, err := codeFn(telegram.CodePrompt{Attempt: 1})
 	if err != nil {
 		return nil, err
 	}
 	if c.failCode || code != c.code {
-		return nil, fmt.Errorf("invalid code")
+		return nil, &telegram.CodeInvalidError{Attempts: 1}
 	}
 	if c.password != "" {
 		pw, err := passwordFn()
@@ -76,14 +84,15 @@ func (c *Client) Login(ctx context.Context, apiID int64, apiHash, phone string, 
 			return nil, err
 		}
 		if pw != c.password {
-			return nil, fmt.Errorf("invalid password")
+			return nil, &telegram.PasswordInvalidError{}
 		}
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.loggedIn = true
 	c.user = &telegram.User{ID: 42, Phone: phone, DisplayName: "Test User"}
-	return c.user, nil
+	c.save()
+	return &telegram.LoginResult{User: *c.user}, nil
 }
 
 func (c *Client) Status(ctx context.Context) (*telegram.User, bool, error) {
@@ -100,6 +109,7 @@ func (c *Client) Logout(ctx context.Context) error {
 	defer c.mu.Unlock()
 	c.loggedIn = false
 	c.user = nil
+	c.save()
 	return nil
 }
 
@@ -112,6 +122,7 @@ func (c *Client) CreateChannel(ctx context.Context, title string) (*telegram.Cha
 	c.nextChID++
 	ch := &telegram.Channel{ID: c.nextChID, Title: title, InviteLink: fmt.Sprintf("https://t.me/+fake%d", c.nextChID)}
 	c.channels[ch.ID] = ch
+	c.save()
 	return ch, nil
 }
 
@@ -163,6 +174,7 @@ func (c *Client) UploadMedia(ctx context.Context, req telegram.UploadRequest) (*
 	c.nextID++
 	msg := telegram.Message{ID: id, Caption: req.Caption, FileName: req.FileName, FileSize: req.Size, MIME: req.MIME, Data: data}
 	c.messages[req.ChannelID] = append(c.messages[req.ChannelID], msg)
+	c.save()
 	return &telegram.UploadResult{MessageID: id}, nil
 }
 
@@ -176,6 +188,7 @@ func (c *Client) SendTextReply(ctx context.Context, channelID int64, replyTo int
 	c.nextID++
 	rt := replyTo
 	c.messages[channelID] = append(c.messages[channelID], telegram.Message{ID: id, Text: text, ReplyTo: &rt})
+	c.save()
 	return id, nil
 }
 
@@ -191,6 +204,7 @@ func (c *Client) EditCaption(ctx context.Context, channelID int64, messageID int
 				return &telegram.MessageNotEditableError{}
 			}
 			c.messages[channelID][i].Caption = caption
+			c.save()
 			return nil
 		}
 	}
@@ -203,6 +217,7 @@ func (c *Client) EditText(ctx context.Context, channelID int64, messageID int, t
 	for i, m := range c.messages[channelID] {
 		if m.ID == messageID {
 			c.messages[channelID][i].Text = text
+			c.save()
 			return nil
 		}
 	}
@@ -222,6 +237,7 @@ func (c *Client) DeleteMessage(ctx context.Context, channelID int64, messageID i
 	for i, m := range msgs {
 		if m.ID == messageID {
 			c.messages[channelID] = append(msgs[:i], msgs[i+1:]...)
+			c.save()
 			return nil
 		}
 	}

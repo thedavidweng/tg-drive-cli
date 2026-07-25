@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,7 +19,7 @@ import (
 )
 
 // AuthLogin performs interactive login.
-func (a *App) AuthLogin(ctx context.Context, codeFn, passwordFn func() (string, error)) (map[string]any, error) {
+func (a *App) AuthLogin(ctx context.Context, codeFn telegram.CodeFunc, passwordFn telegram.PasswordFunc, opts telegram.LoginOptions) (map[string]any, error) {
 	if a.Cfg.Telegram.APIID == 0 || a.Cfg.Telegram.APIHash == "" {
 		return nil, apperr.New(apperr.ErrConfigMissing, "telegram.api_id and telegram.api_hash required")
 	}
@@ -25,19 +27,21 @@ func (a *App) AuthLogin(ctx context.Context, codeFn, passwordFn func() (string, 
 	if phone == "" {
 		return nil, apperr.New(apperr.ErrConfigMissing, "telegram.phone required")
 	}
-	user, err := a.TG.Login(ctx, a.Cfg.Telegram.APIID, a.Cfg.Telegram.APIHash, phone, codeFn, passwordFn)
+	res, err := a.TG.Login(ctx, a.Cfg.Telegram.APIID, a.Cfg.Telegram.APIHash, phone, codeFn, passwordFn, opts)
 	if err != nil {
 		return nil, mapTGErr(err)
 	}
+	user := res.User
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, _ = a.DB.Raw().ExecContext(ctx, `
 		insert into accounts(tg_user_id,phone,display_name,created_at,updated_at) values(?,?,?,?,?)
 		on conflict(tg_user_id) do update set phone=excluded.phone, display_name=excluded.display_name, updated_at=excluded.updated_at`,
 		fmt.Sprintf("%d", user.ID), user.Phone, user.DisplayName, now, now)
 	return map[string]any{
-		"user_id":      user.ID,
-		"display_name": user.DisplayName,
-		"phone":        config.RedactValue("telegram.phone", user.Phone, false),
+		"user_id":               user.ID,
+		"display_name":          user.DisplayName,
+		"phone":                 config.RedactValue("telegram.phone", user.Phone, false),
+		"already_authenticated": res.AlreadyAuthorized,
 	}, nil
 }
 
@@ -70,7 +74,20 @@ func (a *App) InitRoot(ctx context.Context, localRoot, channelTitle string, crea
 		return nil, mapTGErr(err)
 	}
 	if !ok {
-		return nil, apperr.New(apperr.ErrAuthRequired, "login required")
+		return nil, apperr.New(apperr.ErrAuthRequired, "not logged in; run: td auth login")
+	}
+	// Re-running init on an already-bound root must not mint another channel:
+	// channel creation is expensive on a real account and cannot be undone
+	// from here.
+	if create != "" {
+		if existing := a.findRootBinding(ctx, user.ID, localRoot); existing != nil {
+			return map[string]any{
+				"channel_id":          existing.ID,
+				"channel_title":       existing.Title,
+				"local_root":          localRoot,
+				"already_initialized": true,
+			}, nil
+		}
 	}
 	var ch *telegram.Channel
 	switch {
@@ -118,6 +135,39 @@ func (a *App) InitRoot(ctx context.Context, localRoot, channelTitle string, crea
 
 func (a *App) initScan(ctx context.Context) {
 	_, _ = a.Scan(ctx, ScanOptions{Full: true})
+}
+
+// findRootBinding returns the channel already bound to localRoot for the
+// given account, comparing absolute paths.
+func (a *App) findRootBinding(ctx context.Context, tgUserID int64, localRoot string) *telegram.Channel {
+	absRoot, err := filepath.Abs(localRoot)
+	if err != nil {
+		return nil
+	}
+	rows, err := a.DB.Raw().QueryContext(ctx, `
+		select c.tg_channel_id, c.title, c.root_local_path
+		from channels c join accounts a on a.id = c.account_id
+		where a.tg_user_id = ?`, fmt.Sprintf("%d", tgUserID))
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var idStr, title, root string
+		if rows.Scan(&idStr, &title, &root) != nil {
+			continue
+		}
+		absStored, err := filepath.Abs(root)
+		if err != nil || absStored != absRoot {
+			continue
+		}
+		id, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil {
+			continue
+		}
+		return &telegram.Channel{ID: id, Title: title}
+	}
+	return nil
 }
 
 // Share returns invite link and hashtag for a path.
@@ -171,16 +221,20 @@ func (a *App) Share(ctx context.Context, remotePath string) (map[string]any, err
 // Doctor runs capability checks.
 func (a *App) Doctor(ctx context.Context) (map[string]any, error) {
 	checks := map[string]string{}
+	hints := map[string]string{}
+	out := map[string]any{}
 
 	if a.Cfg.Telegram.APIID != 0 && a.Cfg.Telegram.APIHash != "" {
 		checks["config"] = "pass"
 	} else {
 		checks["config"] = "warn"
+		hints["config"] = "telegram.api_id / api_hash not set; run: td auth setup"
 	}
 	if _, err := os.Stat(a.Cfg.Storage.SessionPath); err == nil {
 		checks["session_file"] = "pass"
 	} else {
 		checks["session_file"] = "warn"
+		hints["session_file"] = fmt.Sprintf("no session file at %s; run: td auth login", a.Cfg.Storage.SessionPath)
 	}
 	checks["caption_counter"] = captionCounterSelfTest()
 	checks["path_codec"] = pathCodecSelfTest()
@@ -189,16 +243,19 @@ func (a *App) Doctor(ctx context.Context) (map[string]any, error) {
 	switch {
 	case err != nil:
 		checks["auth"] = "fail"
+		hints["auth"] = "could not reach Telegram; check network, then run: td auth login"
 	case ok:
 		checks["auth"] = "pass"
 	default:
 		checks["auth"] = "fail"
+		hints["auth"] = "not logged in; run: td auth login"
 	}
 	_ = user
 
 	if a.DB != nil {
 		if _, err := a.DB.JournalMode(ctx); err != nil {
 			checks["db"] = "fail"
+			hints["db"] = fmt.Sprintf("database error at %s; check storage.db_path", a.Cfg.Storage.DBPath)
 		} else {
 			checks["db"] = "pass"
 		}
@@ -209,6 +266,7 @@ func (a *App) Doctor(ctx context.Context) (map[string]any, error) {
 	channelID, _, chErr := a.channelID(ctx)
 	if chErr != nil {
 		checks["channel"] = "fail"
+		hints["channel"] = "no channel bound; run: td init <local-root> --create-channel"
 		checks["upload"] = "unknown"
 		checks["delete"] = "unknown"
 		checks["invite_link"] = "unknown"
@@ -225,18 +283,25 @@ func (a *App) Doctor(ctx context.Context) (map[string]any, error) {
 			checks["delete"] = boolCheck(caps.DeleteOK)
 			checks["invite_link"] = boolCheck(caps.InviteLinkOK)
 			checks["edit_old_caption"] = boolCheck(caps.EditOldCaptionOK)
+			out["max_upload_bytes"] = caps.MaxUploadBytes
 			switch {
 			case caps.MaxUploadBytes >= a.Cfg.Limits.PremiumUploadBytes:
 				checks["file_size_limit"] = "pass"
 			case caps.MaxUploadBytes >= a.Cfg.Limits.FreeUploadBytes:
 				checks["file_size_limit"] = "warn"
+				hints["file_size_limit"] = fmt.Sprintf("free-tier upload limit (%d bytes); Telegram Premium raises it", caps.MaxUploadBytes)
 			default:
 				checks["file_size_limit"] = "fail"
+				hints["file_size_limit"] = "upload limit below the expected free tier; check account status"
 			}
 			_, _ = a.DB.Raw().ExecContext(ctx, `update channels set updated_at=? where id=?`, time.Now().UTC().Format(time.RFC3339), channelID)
 		}
 	}
-	return map[string]any{"checks": checks}, nil
+	out["checks"] = checks
+	if len(hints) > 0 {
+		out["hints"] = hints
+	}
+	return out, nil
 }
 
 func boolCheck(ok bool) string {

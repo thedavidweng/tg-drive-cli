@@ -10,6 +10,7 @@ import (
 	"mime"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -77,7 +78,7 @@ func (a *App) channelID(ctx context.Context) (int64, string, error) {
 	} else {
 		err = a.DB.Raw().QueryRowContext(ctx, `select id, tg_channel_id, title from channels limit 1`).Scan(&id, &tgID, &title)
 		if err == sql.ErrNoRows {
-			return 0, "", apperr.New(apperr.ErrChannelNotFound, "no channel configured; run td init")
+			return 0, "", apperr.New(apperr.ErrChannelNotFound, "no channel configured; run: td init <local-root> --create-channel")
 		}
 	}
 	return id, tgID, err
@@ -171,7 +172,7 @@ func (a *App) uploadLimit(ctx context.Context) int64 {
 func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, policy ConflictPolicy, noHash bool) (map[string]any, error) {
 	info, err := os.Stat(localPath)
 	if err != nil {
-		return nil, apperr.New(apperr.ErrLocalNotFound, localPath)
+		return nil, apperr.New(apperr.ErrLocalNotFound, fmt.Sprintf("local file %q not found", localPath))
 	}
 	if info.IsDir() {
 		return nil, apperr.New(apperr.ErrUsage, "use --recursive for directories")
@@ -180,9 +181,17 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 	if info.Size() > limit {
 		return nil, apperr.New(apperr.ErrFileTooLarge, fmt.Sprintf("file exceeds %d bytes", limit))
 	}
+	// cp convention: a destination that is "/" or ends with "/" is a
+	// directory; keep the source file's basename.
+	if remotePath == "/" || strings.HasSuffix(remotePath, "/") {
+		remotePath = strings.TrimRight(remotePath, "/") + "/" + filepath.Base(localPath)
+	}
 	dest, err := fsmodel.NormalizeCanonicalPath(remotePath)
 	if err != nil {
 		return nil, err
+	}
+	if dest == "/" {
+		return nil, apperr.New(apperr.ErrPathInvalid, "destination must include a file name")
 	}
 	channelID, tgIDStr, err := a.channelID(ctx)
 	if err != nil {
@@ -195,6 +204,17 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 	active, err := a.activePaths(ctx, channelID)
 	if err != nil {
 		return nil, err
+	}
+	// A destination naming an existing remote directory also keeps the
+	// source basename.
+	for _, ap := range active {
+		if ap.Canonical == dest && ap.IsDir {
+			dest, err = fsmodel.NormalizeCanonicalPath(dest + "/" + filepath.Base(localPath))
+			if err != nil {
+				return nil, err
+			}
+			break
+		}
 	}
 	for _, ap := range active {
 		if ap.Canonical == dest && !ap.IsDir {
@@ -227,7 +247,8 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 					}
 				}
 			default:
-				return nil, apperr.New(apperr.ErrPathExists, dest)
+				return nil, apperr.New(apperr.ErrPathExists,
+					fmt.Sprintf("remote file %q already exists (use --replace, --skip-existing, or --auto-rename)", dest))
 			}
 		}
 	}
@@ -430,15 +451,27 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 }
 
 func mapTGErr(err error) error {
-	switch err.(type) {
+	switch e := err.(type) {
 	case *telegram.AuthRequiredError:
-		return apperr.New(apperr.ErrAuthRequired, err.Error())
+		return apperr.New(apperr.ErrAuthRequired, "not logged in; run: td auth login")
+	case *telegram.CodeInvalidError, *telegram.PasswordInvalidError, *telegram.CodeExpiredError:
+		return apperr.New(apperr.ErrAuthFailed, err.Error())
+	case *telegram.PhoneInvalidError:
+		return apperr.New(apperr.ErrConfigInvalid, err.Error())
 	case *telegram.FileTooLargeError:
 		return apperr.New(apperr.ErrFileTooLarge, err.Error())
 	case *telegram.PermissionDeniedError:
 		return apperr.New(apperr.ErrChannelPermission, err.Error())
 	case *telegram.FloodWaitError:
-		return apperr.New(apperr.ErrTelegramRateLimited, err.Error())
+		wait := time.Duration(e.Seconds) * time.Second
+		retryAt := time.Now().Add(wait)
+		return apperr.New(apperr.ErrTelegramRateLimited,
+			fmt.Sprintf("telegram rate limited this account: retry after %s (at %s)",
+				wait, retryAt.Format("2006-01-02 15:04 MST"))).
+			WithDetails(map[string]any{
+				"retry_after_seconds": e.Seconds,
+				"retry_at":            retryAt.UTC().Format(time.RFC3339),
+			})
 	case *telegram.MessageNotEditableError:
 		return apperr.New(apperr.ErrMessageNotEditable, err.Error())
 	default:

@@ -104,7 +104,7 @@ func TestReplaceFailureKeepsOldActive(t *testing.T) {
 		t.Fatalf("old row status = %q, want active", got)
 	}
 	dest := filepath.Join(t.TempDir(), "out.txt")
-	if err := app.DownloadFile(ctx, "/keep.txt", dest, ConflictFail); err != nil {
+	if _, err := app.DownloadFile(ctx, "/keep.txt", dest, ConflictFail); err != nil {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(dest)
@@ -514,19 +514,19 @@ func TestDownloadConflictFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Default fails.
-	err := app.DownloadFile(ctx, "/dl.txt", dest, ConflictFail)
+	_, err := app.DownloadFile(ctx, "/dl.txt", dest, ConflictFail)
 	if code := appErrCode(t, err); code != apperr.ErrLocalPathExists {
 		t.Fatalf("code = %s, want ERR_LOCAL_PATH_EXISTS", code)
 	}
 	// Skip keeps local content.
-	if err := app.DownloadFile(ctx, "/dl.txt", dest, ConflictSkip); err != nil {
+	if _, err := app.DownloadFile(ctx, "/dl.txt", dest, ConflictSkip); err != nil {
 		t.Fatal(err)
 	}
 	if data, _ := os.ReadFile(dest); string(data) != "local-content" {
 		t.Fatalf("skip overwrote local file: %q", data)
 	}
 	// Auto-rename writes " (1)".
-	if err := app.DownloadFile(ctx, "/dl.txt", dest, ConflictRename); err != nil {
+	if _, err := app.DownloadFile(ctx, "/dl.txt", dest, ConflictRename); err != nil {
 		t.Fatal(err)
 	}
 	renamed := filepath.Join(destDir, "dl (1).txt")
@@ -534,7 +534,7 @@ func TestDownloadConflictFlags(t *testing.T) {
 		t.Fatalf("auto-rename content = %q", data)
 	}
 	// Replace overwrites.
-	if err := app.DownloadFile(ctx, "/dl.txt", dest, ConflictReplace); err != nil {
+	if _, err := app.DownloadFile(ctx, "/dl.txt", dest, ConflictReplace); err != nil {
 		t.Fatal(err)
 	}
 	if data, _ := os.ReadFile(dest); string(data) != "remote-content" {
@@ -746,7 +746,9 @@ func TestReplaceTombstoneModeRedactsOldMessage(t *testing.T) {
 	}
 }
 
-func TestReplaceOntoDirectoryRejected(t *testing.T) {
+func TestUploadOntoDirectoryKeepsBasename(t *testing.T) {
+	// cp convention (matching MoveDestination): a destination naming an
+	// existing directory places the file inside it under its basename.
 	app, tg := testApp(t)
 	loginAndInit(t, app, tg)
 	ctx := context.Background()
@@ -754,9 +756,13 @@ func TestReplaceOntoDirectoryRejected(t *testing.T) {
 	if _, err := app.UploadFile(ctx, local, "/repdir/f.txt", ConflictFail, false); err != nil {
 		t.Fatal(err)
 	}
-	_, err := app.UploadFile(ctx, local, "/repdir", ConflictReplace, false)
-	if code := appErrCode(t, err); code != apperr.ErrPathIsDirectory {
-		t.Fatalf("code = %s, want ERR_PATH_IS_DIRECTORY", code)
+	data, err := app.UploadFile(ctx, local, "/repdir", ConflictFail, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "/repdir/" + filepath.Base(local)
+	if data["path"] != want {
+		t.Fatalf("path = %v, want %v", data["path"], want)
 	}
 }
 

@@ -168,3 +168,16 @@ func TestReleaseLockOwnerTokenGuard(t *testing.T) {
 		t.Fatal("lock released by non-owner")
 	}
 }
+
+func TestOpenCreatesMissingParentDirs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested", "data", "cache.db")
+	d, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = d.Close() }()
+	var version int
+	if err := d.Raw().QueryRow(`select version from schema_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+}

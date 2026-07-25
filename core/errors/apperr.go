@@ -10,6 +10,7 @@ const (
 	ErrUsage                      = "ERR_USAGE"
 	ErrFlagConflict               = "ERR_FLAG_CONFLICT"
 	ErrAuthRequired               = "ERR_AUTH_REQUIRED"
+	ErrAuthFailed                 = "ERR_AUTH_FAILED"
 	ErrConfigMissing              = "ERR_CONFIG_MISSING"
 	ErrConfigInvalid              = "ERR_CONFIG_INVALID"
 	ErrChannelNotFound            = "ERR_CHANNEL_NOT_FOUND"
@@ -81,7 +82,7 @@ func ExitCode(err error) int {
 		ErrDirectoryMoveUnsupported, ErrDirectoryDeleteUnsupported,
 		ErrCrossChannelMove, ErrEmptyDirsUnsupported, ErrSlugCollision:
 		return 2
-	case ErrAuthRequired, ErrConfigMissing, ErrConfigInvalid:
+	case ErrAuthRequired, ErrAuthFailed, ErrConfigMissing, ErrConfigInvalid:
 		return 3
 	case ErrChannelNotFound, ErrChannelPermission, ErrFileTooLarge,
 		ErrMessageNotEditable, ErrTelegramRateLimited, ErrTelegramRPC:

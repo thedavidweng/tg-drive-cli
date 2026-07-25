@@ -17,6 +17,14 @@
 - manifest rendering/parsing
 - caption fallback
 
+## Offline trial mode
+
+Set `TD_FAKE_TELEGRAM=1` to run the CLI against the in-memory fake Telegram
+client (no network). Add `TD_FAKE_TELEGRAM_STATE=<path>` to persist the fake's
+state (login, channels, uploaded bytes) across invocations, which makes the
+complete workflow — login (code `12345`), init, cp, ls, get, mv, rm, scan,
+share — runnable end to end without a real account.
+
 ## Integration tests with fake Telegram
 
 - upload single file

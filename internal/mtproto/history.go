@@ -19,10 +19,7 @@ func (c *Client) History(ctx context.Context, channelID int64, afterID int, limi
 		}
 		offsetID := 0
 		const pageSize = 100
-		for {
-			if limit > 0 && len(out) >= limit {
-				break
-			}
+		for limit <= 0 || len(out) < limit {
 			batch := pageSize
 			if limit > 0 && limit-len(out) < batch {
 				batch = limit - len(out)
@@ -35,24 +32,60 @@ func (c *Client) History(ctx context.Context, channelID int64, afterID int, limi
 			if err != nil {
 				return mapRPCError(err)
 			}
-			batchMsgs := extractMessages(msgs)
-			if len(batchMsgs) == 0 {
+			// Pagination must be driven by the RAW page (including service
+			// messages the media filter drops), or scans stop early.
+			rawIDs := extractRawIDs(msgs)
+			if len(rawIDs) == 0 {
 				break
 			}
-			for _, msg := range batchMsgs {
+			minID := rawIDs[0]
+			for _, id := range rawIDs {
+				if id < minID {
+					minID = id
+				}
+			}
+			for _, msg := range extractMessages(msgs) {
 				if msg.ID <= afterID {
 					continue
 				}
 				out = append(out, messageFromTG(msg))
 			}
-			if len(batchMsgs) < batch {
+			if len(rawIDs) < batch || minID <= afterID+1 {
 				break
 			}
-			offsetID = batchMsgs[len(batchMsgs)-1].ID
+			offsetID = minID
 		}
 		return nil
 	})
 	return out, err
+}
+
+// extractRawIDs returns IDs of every message in the page, including service
+// and empty messages, for pagination bookkeeping.
+func extractRawIDs(msgs tg.MessagesMessagesClass) []int {
+	var list []tg.MessageClass
+	switch v := msgs.(type) {
+	case *tg.MessagesMessages:
+		list = v.Messages
+	case *tg.MessagesMessagesSlice:
+		list = v.Messages
+	case *tg.MessagesChannelMessages:
+		list = v.Messages
+	default:
+		return nil
+	}
+	out := make([]int, 0, len(list))
+	for _, m := range list {
+		switch v := m.(type) {
+		case *tg.Message:
+			out = append(out, v.ID)
+		case *tg.MessageService:
+			out = append(out, v.ID)
+		case *tg.MessageEmpty:
+			out = append(out, v.ID)
+		}
+	}
+	return out
 }
 
 func extractMessages(msgs tg.MessagesMessagesClass) []*tg.Message {
@@ -77,20 +110,22 @@ func extractMessages(msgs tg.MessagesMessagesClass) []*tg.Message {
 }
 
 func messageFromTG(msg *tg.Message) tgtelegram.Message {
-	out := tgtelegram.Message{
-		ID:      msg.ID,
-		Caption: msg.Message,
+	out := tgtelegram.Message{ID: msg.ID}
+	// Media messages carry their body as Caption; plain text messages
+	// (e.g. td-manifest:v1 replies) carry it as Text. Scan depends on this
+	// distinction to route manifest replies through the manifest parser.
+	if msg.Media == nil {
+		out.Text = msg.Message
+	} else {
+		out.Caption = msg.Message
 	}
-	if msg.Media != nil {
-		switch media := msg.Media.(type) {
-		case *tg.MessageMediaDocument:
-			if doc, ok := media.Document.(*tg.Document); ok {
-				out.FileSize = doc.Size
-				out.MIME = doc.MimeType
-				for _, attr := range doc.Attributes {
-					if fn, ok := attr.(*tg.DocumentAttributeFilename); ok {
-						out.FileName = fn.FileName
-					}
+	if media, ok := msg.Media.(*tg.MessageMediaDocument); ok {
+		if doc, ok := media.Document.(*tg.Document); ok {
+			out.FileSize = doc.Size
+			out.MIME = doc.MimeType
+			for _, attr := range doc.Attributes {
+				if fn, ok := attr.(*tg.DocumentAttributeFilename); ok {
+					out.FileName = fn.FileName
 				}
 			}
 		}

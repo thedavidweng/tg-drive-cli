@@ -12,6 +12,7 @@ import (
 // Renderer writes human or JSON output.
 type Renderer struct {
 	JSON   bool
+	Quiet  bool
 	Stdout io.Writer
 	Stderr io.Writer
 }
@@ -55,7 +56,7 @@ func (r *Renderer) Success(data any) error {
 
 // SuccessLine writes a human line regardless of JSON mode helper.
 func (r *Renderer) SuccessLine(format string, args ...any) error {
-	if r.JSON {
+	if r.JSON || r.Quiet {
 		return nil
 	}
 	_, err := fmt.Fprintf(r.Stdout, format+"\n", args...)
@@ -66,7 +67,8 @@ func (r *Renderer) SuccessLine(format string, args ...any) error {
 func (r *Renderer) Error(err error) error {
 	ae, ok := apperr.As(err)
 	if !ok {
-		ae = apperr.New(apperr.ErrUsage, err.Error())
+		// Uncategorized errors keep exit code 1 per the CLI contract.
+		ae = apperr.New("ERR_UNKNOWN", err.Error())
 	}
 	if r.JSON {
 		env := errorEnvelope{

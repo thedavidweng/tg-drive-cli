@@ -114,7 +114,7 @@ func TestDeleteFile(t *testing.T) {
 	local := filepath.Join(t.TempDir(), "a.txt")
 	_ = os.WriteFile(local, []byte("hello"), 0o644)
 	_, _ = app.UploadFile(ctx, local, "/del.txt", ConflictFail, false)
-	if err := app.DeleteFile(ctx, "/del.txt"); err != nil {
+	if _, err := app.DeleteFile(ctx, "/del.txt", DeleteOptions{}); err != nil {
 		t.Fatal(err)
 	}
 }

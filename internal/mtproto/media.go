@@ -1,10 +1,10 @@
 package mtproto
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"io"
 	"strconv"
 	"time"
 
@@ -194,8 +194,15 @@ func (c *Client) UploadMedia(ctx context.Context, req tgtelegram.UploadRequest) 
 				return nil
 			}
 			lastErr = mapRPCError(err)
-			if fw, ok := lastErr.(*tgtelegram.FloodWaitError); ok && c.waitFlood {
-				time.Sleep(time.Duration(fw.Seconds) * time.Second)
+			if fw, ok := lastErr.(*tgtelegram.FloodWaitError); ok {
+				if !c.waitFlood {
+					return lastErr
+				}
+				wait := time.Duration(fw.Seconds) * time.Second
+				if wait > c.maxWait {
+					return lastErr
+				}
+				time.Sleep(wait)
 				continue
 			}
 			if attempt < maxRetries {
@@ -291,9 +298,8 @@ func (c *Client) DeleteMessage(ctx context.Context, channelID int64, messageID i
 	})
 }
 
-func (c *Client) DownloadMedia(ctx context.Context, channelID int64, messageID int) ([]byte, error) {
-	var data []byte
-	err := c.run(ctx, func(ctx context.Context, api *tg.Client, _ *telegram.Client) error {
+func (c *Client) DownloadMediaTo(ctx context.Context, channelID int64, messageID int, w io.Writer) error {
+	return c.run(ctx, func(ctx context.Context, api *tg.Client, _ *telegram.Client) error {
 		peer, err := c.resolveChannelPeer(ctx, api, strconv.FormatInt(channelID, 10))
 		if err != nil {
 			return err
@@ -318,15 +324,11 @@ func (c *Client) DownloadMedia(ctx context.Context, channelID int64, messageID i
 			return errors.New("unsupported document type")
 		}
 		dl := downloader.NewDownloader()
-		var buf bytes.Buffer
-		_, err = dl.Download(api, doc.AsInputDocumentFileLocation("")).WithVerify(true).Stream(ctx, &buf)
-		if err != nil {
+		if _, err := dl.Download(api, doc.AsInputDocumentFileLocation("")).WithVerify(true).Stream(ctx, w); err != nil {
 			return mapRPCError(err)
 		}
-		data = buf.Bytes()
 		return nil
 	})
-	return data, err
 }
 
 func firstMessage(msgs tg.MessagesMessagesClass) (*tg.Message, error) {

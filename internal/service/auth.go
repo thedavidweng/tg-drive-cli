@@ -4,11 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/thedavidweng/tg-drive-cli/internal/apperr"
 	"github.com/thedavidweng/tg-drive-cli/internal/config"
 	"github.com/thedavidweng/tg-drive-cli/internal/fsmodel"
+	"github.com/thedavidweng/tg-drive-cli/internal/manifest"
 	"github.com/thedavidweng/tg-drive-cli/internal/pathcodec"
 	"github.com/thedavidweng/tg-drive-cli/internal/telegram"
 )
@@ -140,14 +143,22 @@ func (a *App) Share(ctx context.Context, remotePath string) (map[string]any, err
 		select pt.tag from path_tags pt join files f on f.id=pt.file_id
 		where f.channel_id=? and f.canonical_path=? and f.status='active' order by pt.depth limit 1`, channelID, p).Scan(&tag)
 	if tag == "" {
-		existing := map[string]string{}
-		tags, _, _ := pathcodec.GenerateChain(p, existing)
+		// Share targets a directory subtree: include a synthetic leaf so the
+		// chain covers the full shared path, then take the deepest tag.
+		chainPath := p
+		if chainPath != "/" {
+			chainPath += "/_"
+		}
+		tags, _, _ := pathcodec.GenerateChain(chainPath, a.loadSlugMap(ctx, channelID))
 		if len(tags) > 0 {
 			tag = tags[len(tags)-1]
 		}
 	}
+	var title string
+	_ = a.DB.Raw().QueryRowContext(ctx, `select title from channels where id=?`, channelID).Scan(&title)
 	return map[string]any{
 		"path":        p,
+		"channel":     title,
 		"invite_link": link,
 		"hashtag":     tag,
 	}, nil
@@ -156,6 +167,20 @@ func (a *App) Share(ctx context.Context, remotePath string) (map[string]any, err
 // Doctor runs capability checks.
 func (a *App) Doctor(ctx context.Context) (map[string]any, error) {
 	checks := map[string]string{}
+
+	if a.Cfg.Telegram.APIID != 0 && a.Cfg.Telegram.APIHash != "" {
+		checks["config"] = "pass"
+	} else {
+		checks["config"] = "warn"
+	}
+	if _, err := os.Stat(a.Cfg.Storage.SessionPath); err == nil {
+		checks["session_file"] = "pass"
+	} else {
+		checks["session_file"] = "warn"
+	}
+	checks["caption_counter"] = captionCounterSelfTest()
+	checks["path_codec"] = pathCodecSelfTest()
+
 	user, ok, err := a.TG.Status(ctx)
 	switch {
 	case err != nil:
@@ -215,6 +240,49 @@ func boolCheck(ok bool) string {
 		return "pass"
 	}
 	return "fail"
+}
+
+// captionCounterSelfTest verifies UTF-16 code unit counting on fixed vectors.
+func captionCounterSelfTest() string {
+	vectors := []struct {
+		s    string
+		want int
+	}{
+		{"", 0},
+		{"abc", 3},
+		{"中文", 2},
+		{"📷", 2},
+		{"a📷b", 4},
+	}
+	for _, v := range vectors {
+		if manifest.UTF16Units(v.s) != v.want {
+			return "fail"
+		}
+	}
+	return "pass"
+}
+
+// pathCodecSelfTest verifies slug generation stays inside the Telegram-safe
+// hashtag charset on fixed vectors.
+func pathCodecSelfTest() string {
+	for _, p := range []string{"/My Photos/2024/x.jpg", "/图片/2024/x.jpg", "/emoji/📷/x.jpg", "/a_b/c/x.txt"} {
+		tags, _, err := pathcodec.GenerateChain(p, map[string]string{})
+		if err != nil {
+			return "fail"
+		}
+		for _, tag := range tags {
+			if !strings.HasPrefix(tag, "#td_") {
+				return "fail"
+			}
+			for _, r := range tag[1:] {
+				safe := r == '_' || (r >= '0' && r <= '9') || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z')
+				if !safe {
+					return "fail"
+				}
+			}
+		}
+	}
+	return "pass"
 }
 
 // Ensure imports used

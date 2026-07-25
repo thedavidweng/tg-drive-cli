@@ -10,7 +10,7 @@ import (
 	"mime"
 	"os"
 	"path/filepath"
-	"strings"
+	"sync"
 	"time"
 
 	"github.com/thedavidweng/tg-drive-cli/internal/apperr"
@@ -25,10 +25,16 @@ import (
 
 // App is the main application service.
 type App struct {
-	Cfg    config.Config
-	DB     *db.DB
-	TG     telegram.Client
-	Render func() bool // returns json mode
+	Cfg config.Config
+	DB  *db.DB
+	TG  telegram.Client
+	// Channel optionally selects a configured channel by title or Telegram ID
+	// (from --channel / TD_CHANNEL). Empty selects the first configured one.
+	Channel string
+	Render  func() bool // returns json mode
+
+	limitMu     sync.Mutex
+	cachedLimit int64
 }
 
 // ConflictPolicy for uploads/downloads.
@@ -50,9 +56,18 @@ func newOwnerToken() string {
 func (a *App) channelID(ctx context.Context) (int64, string, error) {
 	var id int64
 	var tgID, title string
-	err := a.DB.Raw().QueryRowContext(ctx, `select id, tg_channel_id, title from channels limit 1`).Scan(&id, &tgID, &title)
-	if err == sql.ErrNoRows {
-		return 0, "", apperr.New(apperr.ErrChannelNotFound, "no channel configured; run td init")
+	var err error
+	if a.Channel != "" {
+		err = a.DB.Raw().QueryRowContext(ctx, `select id, tg_channel_id, title from channels where title=? or tg_channel_id=? limit 1`,
+			a.Channel, a.Channel).Scan(&id, &tgID, &title)
+		if err == sql.ErrNoRows {
+			return 0, "", apperr.New(apperr.ErrChannelNotFound, "channel not found: "+a.Channel)
+		}
+	} else {
+		err = a.DB.Raw().QueryRowContext(ctx, `select id, tg_channel_id, title from channels limit 1`).Scan(&id, &tgID, &title)
+		if err == sql.ErrNoRows {
+			return 0, "", apperr.New(apperr.ErrChannelNotFound, "no channel configured; run td init")
+		}
 	}
 	return id, tgID, err
 }
@@ -104,16 +119,38 @@ func detectMIME(path string) string {
 	return mt
 }
 
-func (a *App) uploadLimit(ctx context.Context) int64 {
-	tgChID, err := a.tgChannelID(ctx)
+// loadSlugMap preloads persisted segment slug mappings for collision-aware
+// chain generation.
+func (a *App) loadSlugMap(ctx context.Context, channelID int64) map[string]string {
+	out := map[string]string{}
+	rows, err := a.DB.Raw().QueryContext(ctx, `select parent_canonical_path, segment, slug from path_segment_slugs where channel_id=?`, channelID)
 	if err != nil {
-		return a.Cfg.Limits.FreeUploadBytes
+		return out
 	}
-	caps, err := a.TG.Doctor(ctx, tgChID)
-	if err != nil || caps == nil || caps.MaxUploadBytes == 0 {
-		return a.Cfg.Limits.FreeUploadBytes
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var parent, seg, slug string
+		if rows.Scan(&parent, &seg, &slug) == nil {
+			out[pathcodec.SlugKey(parent, seg)] = slug
+		}
 	}
-	return caps.MaxUploadBytes
+	return out
+}
+
+func (a *App) uploadLimit(ctx context.Context) int64 {
+	a.limitMu.Lock()
+	defer a.limitMu.Unlock()
+	if a.cachedLimit > 0 {
+		return a.cachedLimit
+	}
+	limit := a.Cfg.Limits.FreeUploadBytes
+	if tgChID, err := a.tgChannelID(ctx); err == nil {
+		if caps, err := a.TG.Doctor(ctx, tgChID); err == nil && caps != nil && caps.MaxUploadBytes > 0 {
+			limit = caps.MaxUploadBytes
+		}
+	}
+	a.cachedLimit = limit
+	return limit
 }
 
 // UploadFile uploads a single local file.
@@ -154,10 +191,15 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 				break
 			case ConflictRename:
 				base := fsmodel.BaseName(dest)
-				dir := fsmodel.ParentPath(dest)
+				prefix := fsmodel.ParentPath(dest)
+				if prefix != "/" {
+					prefix += "/"
+				}
 				for i := 1; i < 1000; i++ {
-					candidate := dir + "/" + strings.TrimSuffix(base, filepath.Ext(base)) + fmt.Sprintf(" (%d)", i) + filepath.Ext(base)
-					candidate, _ = fsmodel.NormalizeCanonicalPath(candidate)
+					candidate, err := fsmodel.NormalizeCanonicalPath(prefix + fsmodel.ConflictRenameCandidate(base, i))
+					if err != nil {
+						return nil, err
+					}
 					exists := false
 					for _, p := range active {
 						if p.Canonical == candidate {
@@ -175,10 +217,20 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 			}
 		}
 	}
-	if policy != ConflictReplace {
-		if err := fsmodel.CheckUploadConflict(dest, active); err != nil {
-			return nil, err
+	// File/dir invariants always apply; under --replace the file being
+	// replaced is excluded so replacing it is not itself a conflict.
+	checkSet := active
+	if policy == ConflictReplace {
+		checkSet = make([]fsmodel.ActivePath, 0, len(active))
+		for _, ap := range active {
+			if !ap.IsDir && ap.Canonical == dest {
+				continue
+			}
+			checkSet = append(checkSet, ap)
 		}
+	}
+	if err := fsmodel.CheckUploadConflict(dest, checkSet); err != nil {
+		return nil, err
 	}
 
 	var replaceFileID int64
@@ -213,8 +265,7 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 	mimeType := detectMIME(localPath)
 	displayName := fsmodel.BaseName(dest)
 
-	existingSlugs := map[string]string{}
-	tags, slugMaps, err := pathcodec.GenerateChain(dest, existingSlugs)
+	tags, slugMaps, err := pathcodec.GenerateChain(dest, a.loadSlugMap(ctx, channelID))
 	if err != nil {
 		return nil, err
 	}
@@ -234,29 +285,21 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 		return nil, err
 	}
 
+	// Always insert a fresh pending row. Under --replace the old active row
+	// stays untouched until the new upload fully succeeds, so a failed upload
+	// can never lose the existing index entry.
 	var fileID int64
-	if replaceFileID > 0 {
-		fileID = replaceFileID
-		_, err = a.DB.Raw().ExecContext(ctx, `
-			update files set status='pending', display_name=?, original_local_path=?, size=?, content_hash=?, mime=?, updated_at=?
-			where id=?`,
-			displayName, localPath, info.Size(), contentHash, mimeType, now, fileID)
+	err = a.DB.WithTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `insert into files(channel_id,canonical_path,display_name,original_local_path,size,content_hash,mime,status,updated_at) values(?,?,?,?,?,?,?,'pending',?)`,
+			channelID, dest, displayName, localPath, info.Size(), contentHash, mimeType, now)
 		if err != nil {
-			return nil, apperr.Wrap(apperr.ErrDB, "mark pending replace", err)
+			return err
 		}
-	} else {
-		err = a.DB.WithTx(ctx, func(tx *sql.Tx) error {
-			res, err := tx.ExecContext(ctx, `insert into files(channel_id,canonical_path,display_name,original_local_path,size,content_hash,mime,status,updated_at) values(?,?,?,?,?,?,?,'pending',?)`,
-				channelID, dest, displayName, localPath, info.Size(), contentHash, mimeType, now)
-			if err != nil {
-				return err
-			}
-			fileID, _ = res.LastInsertId()
-			return nil
-		})
-		if err != nil {
-			return nil, apperr.Wrap(apperr.ErrDB, "insert pending", err)
-		}
+		fileID, _ = res.LastInsertId()
+		return nil
+	})
+	if err != nil {
+		return nil, apperr.Wrap(apperr.ErrDB, "insert pending", err)
 	}
 
 	f, err := os.Open(localPath)
@@ -281,25 +324,28 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 	if capRes.NeedsManifestReply {
 		id, err := a.TG.SendTextReply(ctx, tgChID, up.MessageID, capRes.ManifestReply)
 		if err != nil {
-			_ = a.TG.DeleteMessage(ctx, tgChID, up.MessageID)
+			// Roll back the media message. If the rollback delete succeeds the
+			// pending row is dropped and the original error surfaces; if it
+			// fails, the uploaded media is recorded as orphaned for repair.
+			if delErr := a.TG.DeleteMessage(ctx, tgChID, up.MessageID); delErr == nil {
+				_, _ = a.DB.Raw().ExecContext(ctx, `delete from files where id=?`, fileID)
+				return nil, mapTGErr(err)
+			}
 			_, _ = a.DB.Raw().ExecContext(ctx, `update files set status='orphaned', message_id=?, updated_at=? where id=?`, up.MessageID, now, fileID)
-			return nil, mapTGErr(err)
+			return nil, apperr.New(apperr.ErrOrphanedUpload, fmt.Sprintf("manifest reply failed and media message %d could not be rolled back; run td repair --orphaned", up.MessageID))
 		}
 		manifestMsgID = &id
 	}
 
-	if replaceFileID > 0 {
-		if a.Cfg.Delete.Mode == "delete" {
-			if oldMsgID.Valid {
-				_ = a.TG.DeleteMessage(ctx, tgChID, int(oldMsgID.Int64))
+	err = a.DB.WithTx(ctx, func(tx *sql.Tx) error {
+		if replaceFileID > 0 {
+			if err := a.DB.ClearNodeID(ctx, tx, replaceFileID); err != nil {
+				return err
 			}
-			if oldManifestID.Valid {
-				_ = a.TG.DeleteMessage(ctx, tgChID, int(oldManifestID.Int64))
+			if _, err := tx.ExecContext(ctx, `update files set status='superseded', updated_at=? where id=? and status='active'`, now, replaceFileID); err != nil {
+				return err
 			}
 		}
-	}
-
-	err = a.DB.WithTx(ctx, func(tx *sql.Tx) error {
 		var mfID any
 		if manifestMsgID != nil {
 			mfID = *manifestMsgID
@@ -333,6 +379,28 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 	})
 	if err != nil {
 		return nil, apperr.Wrap(apperr.ErrDB, "commit upload", err)
+	}
+
+	// Clean up the replaced Telegram message only after the DB state
+	// committed; best effort — the old row is already superseded. In
+	// tombstone mode the old message must be redacted, never left claiming
+	// the path with its original content.
+	if replaceFileID > 0 {
+		if a.Cfg.Delete.Mode == "tombstone" {
+			if oldMsgID.Valid {
+				_ = a.TG.EditCaption(ctx, tgChID, int(oldMsgID.Int64), manifest.RenderTombstoneCaption(displayName, dest))
+			}
+			if oldManifestID.Valid {
+				_ = a.TG.EditText(ctx, tgChID, int(oldManifestID.Int64), manifest.RenderTombstoneManifest(dest))
+			}
+		} else {
+			if oldMsgID.Valid {
+				_ = a.TG.DeleteMessage(ctx, tgChID, int(oldMsgID.Int64))
+			}
+			if oldManifestID.Valid {
+				_ = a.TG.DeleteMessage(ctx, tgChID, int(oldManifestID.Int64))
+			}
+		}
 	}
 
 	return map[string]any{

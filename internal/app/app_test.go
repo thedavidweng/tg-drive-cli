@@ -27,13 +27,28 @@ func TestVersionJSON(t *testing.T) {
 }
 
 func TestInvalidCommandExit2(t *testing.T) {
-	cmd := exec.Command("go", "run", filepath.Join("..", "..", "cmd", "td"), "no-such-command")
+	// go run does not propagate the child's exit code, so build a real binary.
+	bin := filepath.Join(t.TempDir(), "td")
+	build := exec.Command("go", "build", "-o", bin, filepath.Join("..", "..", "cmd", "td"))
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	cmd := exec.Command(bin, "no-such-command")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	err := cmd.Run()
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if exit, ok := err.(*exec.ExitError); !ok || !exit.Exited() {
+	exit, ok := err.(*exec.ExitError)
+	if !ok || !exit.Exited() {
 		t.Fatalf("err = %v", err)
+	}
+	if exit.ExitCode() != 2 {
+		t.Fatalf("exit code = %d, want 2 (stderr: %s)", exit.ExitCode(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "unknown command") {
+		t.Fatalf("stderr = %q", stderr.String())
 	}
 }
 

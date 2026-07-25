@@ -2,6 +2,7 @@ package fsmodel
 
 import (
 	"path"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -99,22 +100,25 @@ type ActivePath struct {
 	IsDir     bool
 }
 
-// CheckUploadConflict rejects file/dir collisions.
+// CheckUploadConflict rejects file/dir collisions for a destination file path.
+// Uploading beneath an existing directory is allowed; conflicts are:
+// destination already exists, an ancestor of the destination is a file, or the
+// destination sits at a directory position (has active descendants).
 func CheckUploadConflict(dest string, active []ActivePath) error {
 	dest = strings.TrimSuffix(dest, "/")
 	for _, a := range active {
 		p := strings.TrimSuffix(a.Canonical, "/")
 		if p == dest {
 			if a.IsDir {
-				return apperr.New(apperr.ErrPathExists, "directory exists at destination")
+				return apperr.New(apperr.ErrPathIsDirectory, "destination is a directory: "+dest)
 			}
-			return apperr.New(apperr.ErrPathExists, "file exists at destination")
-		}
-		if a.IsDir && strings.HasPrefix(dest+"/", p+"/") {
-			return apperr.New(apperr.ErrPathInvalid, "cannot upload under existing file path")
+			return apperr.New(apperr.ErrPathExists, "file exists at destination: "+dest)
 		}
 		if !a.IsDir && strings.HasPrefix(dest+"/", p+"/") {
-			return apperr.New(apperr.ErrPathInvalid, "cannot upload: file blocks descendant path")
+			return apperr.New(apperr.ErrPathAncestorIsFile, "ancestor path is a file: "+p)
+		}
+		if strings.HasPrefix(p+"/", dest+"/") {
+			return apperr.New(apperr.ErrPathIsDirectory, "destination has active descendants: "+dest)
 		}
 	}
 	return nil
@@ -146,6 +150,32 @@ func IsDirectorySource(from string, active []ActivePath) bool {
 		}
 	}
 	return false
+}
+
+// compoundExtensions are known multi-part extensions kept together when
+// generating conflict rename candidates.
+var compoundExtensions = []string{
+	".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst", ".user.js", ".min.js", ".d.ts",
+}
+
+// SplitExtension splits a file name into stem and extension, keeping known
+// compound extensions (e.g. archive.tar.gz -> "archive", ".tar.gz") together.
+func SplitExtension(name string) (stem, ext string) {
+	lower := strings.ToLower(name)
+	for _, ce := range compoundExtensions {
+		if strings.HasSuffix(lower, ce) && len(name) > len(ce) {
+			return name[:len(name)-len(ce)], name[len(name)-len(ce):]
+		}
+	}
+	ext = path.Ext(name)
+	return strings.TrimSuffix(name, ext), ext
+}
+
+// ConflictRenameCandidate returns the nth rename candidate for a name:
+// beach.jpg -> "beach (1).jpg", archive.tar.gz -> "archive (1).tar.gz".
+func ConflictRenameCandidate(name string, n int) string {
+	stem, ext := SplitExtension(name)
+	return stem + " (" + strconv.Itoa(n) + ")" + ext
 }
 
 // DeriveDirectoryNodes returns directory nodes implied by file paths.

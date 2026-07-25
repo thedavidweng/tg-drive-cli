@@ -257,6 +257,13 @@ func (a *App) Scan(ctx context.Context, opts ScanOptions) (map[string]any, error
 	if err != nil {
 		return nil, err
 	}
+	if opts.Full {
+		// A full scan rebuilds from Telegram alone: the conflict pre-check
+		// must only see paths indexed during THIS pass, never the stale
+		// pre-scan index (a stale active file whose path became a directory
+		// would otherwise reject its valid children).
+		scanActive = nil
+	}
 	scanSlugs, err := a.loadExistingSlugs(ctx, channelID)
 	if err != nil {
 		return nil, err

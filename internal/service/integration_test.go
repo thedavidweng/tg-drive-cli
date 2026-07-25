@@ -834,3 +834,42 @@ func TestDirectoryGCAfterDelete(t *testing.T) {
 		t.Fatal("empty derived directory not garbage collected")
 	}
 }
+
+func TestFullScanIgnoresStaleIndexForConflicts(t *testing.T) {
+	app, tg := testApp(t)
+	loginAndInit(t, app, tg)
+	ctx := context.Background()
+	channelID, _, _ := app.channelID(ctx)
+	tgChID, _ := app.tgChannelID(ctx)
+	// Stale index state: an active FILE at /notes whose message no longer
+	// exists on Telegram; the real channel now holds files UNDER /notes/.
+	_, err := app.DB.Raw().Exec(`insert into files(channel_id,message_id,canonical_path,display_name,status,updated_at)
+		values(?,9999,'/notes','notes','active','2020-01-01T00:00:00Z')`, channelID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"a.txt", "b.txt"} {
+		caption := name + "\nnotes/\n\ntd:v1 p=" + b64url("/notes/"+name) + " n=" + b64url(name) + " s=1 h=- m=-"
+		if _, err := tg.UploadMedia(ctx, uploadReq(tgChID, name, caption, strings.NewReader("x"))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := app.Scan(ctx, ScanOptions{Full: true}); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"/notes/a.txt", "/notes/b.txt"} {
+		if got := fileStatus(t, app, p); got != "active" {
+			t.Fatalf("%s status = %q, want active", p, got)
+		}
+	}
+	var staleStatus string
+	_ = app.DB.Raw().QueryRow(`select status from files where canonical_path='/notes' and message_id=9999`).Scan(&staleStatus)
+	if staleStatus != "missing" {
+		t.Fatalf("stale /notes status = %q, want missing", staleStatus)
+	}
+	var bogus int
+	_ = app.DB.Raw().QueryRow(`select count(*) from scan_errors where status='pending'`).Scan(&bogus)
+	if bogus != 0 {
+		t.Fatalf("bogus scan errors = %d", bogus)
+	}
+}

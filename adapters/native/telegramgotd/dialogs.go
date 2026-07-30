@@ -22,6 +22,8 @@ func formatTDChannelTitle(name string) string {
 
 const tdChannelAbout = "Telegram Drive Storage Folder\n[telegram-drive-folder]"
 
+var errResolveDone = errors.New("channel resolved")
+
 func channelTitleMatches(want, actual string) bool {
 	want = strings.TrimSpace(want)
 	actual = strings.TrimSpace(actual)
@@ -58,10 +60,11 @@ func (c *Client) resolveChannelPeer(ctx context.Context, api *tg.Client, titleOr
 		idStr := fmt.Sprintf("%d", pch.ChannelID)
 		if idStr == titleOrID || channelTitleMatches(titleOrID, title) {
 			found = &tg.InputPeerChannel{ChannelID: pch.ChannelID, AccessHash: pch.AccessHash}
+			return errResolveDone
 		}
 		return nil
 	})
-	if err != nil {
+	if err != nil && !errors.Is(err, errResolveDone) {
 		return nil, mapRPCError(err)
 	}
 	if found != nil {

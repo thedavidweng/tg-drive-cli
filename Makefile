@@ -1,7 +1,7 @@
 BINARY_NAME=td
 DIST_DIR=dist
 
-.PHONY: all bootstrap build test test-race test-core-wasm clean lint fmt fmt-check vet ci-local snapshot goreleaser-check run-doctor
+.PHONY: all bootstrap build test test-race test-core-wasm clean lint fmt fmt-check vet ci-local mod-tidy mod-tidy-check snapshot goreleaser-check run-doctor
 
 all: ci-local build
 
@@ -42,6 +42,12 @@ lint: fmt-check vet
 	golangci-lint run
 
 ci-local: fmt-check vet test test-race test-core-wasm
+
+mod-tidy:
+	go mod tidy
+
+mod-tidy-check: mod-tidy
+	git diff --exit-code -- go.mod go.sum
 
 clean:
 	rm -rf $(DIST_DIR)

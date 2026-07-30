@@ -324,7 +324,7 @@ func (c *Client) DownloadMedia(ctx context.Context, channelID int64, messageID i
 			return errors.New("unsupported document type")
 		}
 		dl := downloader.NewDownloader()
-		_, err = dl.Download(api, doc.AsInputDocumentFileLocation("")).WithVerify(true).Stream(ctx, dst)
+		_, err = dl.Download(api, doc.AsInputDocumentFileLocation("")).Stream(ctx, dst)
 		return mapRPCError(err)
 	})
 }

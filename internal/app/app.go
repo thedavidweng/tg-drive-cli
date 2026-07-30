@@ -372,10 +372,10 @@ func newDoctorCmd(opts *runtimeOpts) *cobra.Command {
 				if hint := hints[name]; hint != "" {
 					line += " — " + hint
 				}
-				fmt.Fprintln(out, line)
+				_, _ = fmt.Fprintln(out, line)
 			}
 			if maxBytes, ok := data["max_upload_bytes"].(int64); ok {
-				fmt.Fprintf(out, "%-18s %s\n", "max_upload", humanSize(maxBytes))
+				_, _ = fmt.Fprintf(out, "%-18s %s\n", "max_upload", humanSize(maxBytes))
 			}
 			return nil
 		},
@@ -421,7 +421,7 @@ func newConfigCmd(opts *runtimeOpts) *cobra.Command {
 			if opts.json {
 				return r.Success(map[string]any{args[0]: config.RedactValue(args[0], v, showSecrets), "config_path": configPath})
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "%v\n", config.RedactValue(args[0], v, showSecrets))
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%v\n", config.RedactValue(args[0], v, showSecrets))
 			return nil
 		},
 	}
@@ -446,7 +446,7 @@ func newConfigCmd(opts *runtimeOpts) *cobra.Command {
 			if opts.json {
 				return r.Success(map[string]string{"key": args[0], "status": "set"})
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "set %s\n", args[0])
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "set %s\n", args[0])
 			return nil
 		},
 	}
@@ -488,7 +488,7 @@ func newAuthCmd(opts *runtimeOpts) *cobra.Command {
 					"status":       "configured",
 				})
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "saved Telegram API credentials to %s\nnext: td auth login\n", configPath)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "saved Telegram API credentials to %s\nnext: td auth login\n", configPath)
 			return nil
 		},
 	}
@@ -567,10 +567,10 @@ func newAuthCmd(opts *runtimeOpts) *cobra.Command {
 				return r.Success(data)
 			}
 			if data["already_authenticated"] == true {
-				fmt.Fprintf(cmd.OutOrStdout(), "already logged in as %v (use `td auth logout` to switch accounts)\n", data["display_name"])
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "already logged in as %v (use `td auth logout` to switch accounts)\n", data["display_name"])
 			} else {
-				fmt.Fprintf(cmd.OutOrStdout(), "logged in as %v; session saved to %s\n", data["display_name"], cfg.Storage.SessionPath)
-				fmt.Fprintln(cmd.OutOrStdout(), "other td commands now reuse this session; next: td init <local-root> --create-channel")
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "logged in as %v; session saved to %s\n", data["display_name"], cfg.Storage.SessionPath)
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "other td commands now reuse this session; next: td init <local-root> --create-channel")
 			}
 			return nil
 		},
@@ -594,9 +594,9 @@ func newAuthCmd(opts *runtimeOpts) *cobra.Command {
 				return r.Success(data)
 			}
 			if data["authenticated"] == true {
-				fmt.Fprintf(cmd.OutOrStdout(), "logged in as %v (%v)\n", data["display_name"], data["phone"])
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "logged in as %v (%v)\n", data["display_name"], data["phone"])
 			} else {
-				fmt.Fprintln(cmd.OutOrStdout(), "not logged in; run: td auth setup, then td auth login")
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "not logged in; run: td auth setup, then td auth login")
 			}
 			return nil
 		},
@@ -617,7 +617,7 @@ func newAuthCmd(opts *runtimeOpts) *cobra.Command {
 			if opts.json {
 				return r.Success(map[string]string{"status": "logged_out"})
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), "logged out")
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "logged out")
 			return nil
 		},
 	}
@@ -666,11 +666,11 @@ func newInitCmd(opts *runtimeOpts) *cobra.Command {
 			}
 			out := cmd.OutOrStdout()
 			if data["already_initialized"] == true {
-				fmt.Fprintf(out, "already initialized: %v is bound to channel %q (id %v)\n", data["local_root"], data["channel_title"], data["channel_id"])
-				fmt.Fprintln(out, "use --bind-channel to rebind, or init a different directory")
+				_, _ = fmt.Fprintf(out, "already initialized: %v is bound to channel %q (id %v)\n", data["local_root"], data["channel_title"], data["channel_id"])
+				_, _ = fmt.Fprintln(out, "use --bind-channel to rebind, or init a different directory")
 			} else {
-				fmt.Fprintf(out, "initialized %v -> channel %q (id %v)\n", data["local_root"], data["channel_title"], data["channel_id"])
-				fmt.Fprintln(out, "next: td cp <local-file> /<remote-path>")
+				_, _ = fmt.Fprintf(out, "initialized %v -> channel %q (id %v)\n", data["local_root"], data["channel_title"], data["channel_id"])
+				_, _ = fmt.Fprintln(out, "next: td cp <local-file> /<remote-path>")
 			}
 			return nil
 		},
@@ -734,7 +734,7 @@ func newScanCmd(opts *runtimeOpts) *cobra.Command {
 			if warn, ok := data["full_scan_warning"].(string); ok && warn != "" {
 				fmt.Fprintln(os.Stderr, "warning: "+warn)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "scan complete (%v): %v active, %v deleted, %v invalid, %v missing\n",
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "scan complete (%v): %v active, %v deleted, %v invalid, %v missing\n",
 				data["mode"], data["active"], data["deleted"], data["invalid"], data["missing"])
 			return nil
 		},

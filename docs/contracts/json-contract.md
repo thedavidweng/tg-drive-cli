@@ -55,7 +55,7 @@ All JSON command output uses an envelope.
 }
 ```
 
-## Upload result
+## Upload result (single file)
 
 ```json
 {
@@ -66,7 +66,26 @@ All JSON command output uses an envelope.
     "message_id": 8821,
     "manifest_message_id": null,
     "size": 2482911,
-    "hash": "blake3:fullhexvalue"
+    "hash": "blake3:fullhexvalue",
+    "invite_link": "https://t.me/+Abc123"
+  }
+}
+```
+
+The `invite_link` field is omitted when the channel has no public/join link.
+
+## Recursive upload result
+
+```json
+{
+  "ok": true,
+  "data": {
+    "uploaded": 42,
+    "skipped": 1,
+    "failed": 0,
+    "errors": [],
+    "channel_id": "123456789",
+    "invite_link": "https://t.me/+Abc123"
   }
 }
 ```

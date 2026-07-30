@@ -16,6 +16,11 @@ import (
 	tgtelegram "github.com/thedavidweng/tg-drive-cli/core/telegram"
 )
 
+type cachedInvite struct {
+	link   string
+	expiry time.Time
+}
+
 // Client is a gotd-backed Telegram client. It lazily opens one MTProto
 // connection and reuses it for every call until Close.
 type Client struct {
@@ -29,6 +34,9 @@ type Client struct {
 	channelHash   map[int64]int64  // channel ID -> access hash
 	channelTitle  map[string]int64 // normalized title -> channel ID
 	channelTitles map[int64]string // channel ID -> title
+
+	inviteMu    sync.Mutex
+	inviteCache map[int64]cachedInvite
 
 	connMu sync.Mutex
 	conn   *conn
@@ -57,6 +65,7 @@ func New(apiID int64, apiHash, sessionPath string, waitFlood bool, maxWait time.
 		channelHash:   make(map[int64]int64),
 		channelTitle:  make(map[string]int64),
 		channelTitles: make(map[int64]string),
+		inviteCache:   make(map[int64]cachedInvite),
 	}
 }
 

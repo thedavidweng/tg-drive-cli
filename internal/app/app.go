@@ -933,7 +933,11 @@ func newCpCmd(opts *runtimeOpts) *cobra.Command {
 					return r.Error(err)
 				}
 				if !opts.json {
-					return r.SuccessLine("uploaded %v files (%v skipped, %v failed)", data["uploaded"], data["skipped"], data["failed"])
+					_ = r.SuccessLine("uploaded %v files (%v skipped, %v failed)", data["uploaded"], data["skipped"], data["failed"])
+					if link, ok := data["invite_link"].(string); ok && link != "" {
+						return r.SuccessLine("invite: %s", link)
+					}
+					return nil
 				}
 				return r.Success(data)
 			}
@@ -949,9 +953,14 @@ func newCpCmd(opts *runtimeOpts) *cobra.Command {
 					return r.SuccessLine("skipped %s (already exists; use --replace to overwrite)", data["path"])
 				}
 				if size, ok := data["size"].(int64); ok {
-					return r.SuccessLine("uploaded %s (%s)", data["path"], humanSize(size))
+					_ = r.SuccessLine("uploaded %s (%s)", data["path"], humanSize(size))
+				} else {
+					_ = r.SuccessLine("uploaded %s", data["path"])
 				}
-				return r.SuccessLine("uploaded %s", data["path"])
+				if link, ok := data["invite_link"].(string); ok && link != "" {
+					return r.SuccessLine("invite: %s", link)
+				}
+				return nil
 			}
 			return r.Success(data)
 		},

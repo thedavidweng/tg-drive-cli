@@ -440,14 +440,18 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 		}
 	}
 
-	return map[string]any{
+	data := map[string]any{
 		"path":                dest,
 		"channel_id":          tgIDStr,
 		"message_id":          up.MessageID,
 		"manifest_message_id": manifestMsgID,
 		"size":                info.Size(),
 		"hash":                contentHash,
-	}, nil
+	}
+	if link, err := a.TG.GetInviteLink(ctx, tgChID); err == nil && link != "" {
+		data["invite_link"] = link
+	}
+	return data, nil
 }
 
 func mapTGErr(err error) error {

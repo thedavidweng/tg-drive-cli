@@ -1135,7 +1135,8 @@ Failure handling:
 Default output:
 
 ```text
-uploaded /Pictures/2024/beach.jpg
+uploaded /Pictures/2024/beach.jpg (2.4 MB)
+invite: https://t.me/+Abc123
 ```
 
 JSON output:
@@ -1143,14 +1144,19 @@ JSON output:
 ```json
 {
   "ok": true,
-  "path": "/Pictures/2024/beach.jpg",
-  "channel_id": "123456789",
-  "message_id": 8821,
-  "manifest_message_id": null,
-  "size": 2482911,
-  "hash": "blake3:6bb8f35e8a..."
+  "data": {
+    "path": "/Pictures/2024/beach.jpg",
+    "channel_id": "123456789",
+    "message_id": 8821,
+    "manifest_message_id": null,
+    "size": 2482911,
+    "hash": "blake3:6bb8f35e8a...",
+    "invite_link": "https://t.me/+Abc123"
+  }
 }
 ```
+
+The `invite_link` field is omitted when the channel has no public/join link.
 
 Recursive upload:
 

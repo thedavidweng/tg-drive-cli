@@ -1287,7 +1287,14 @@ func (a *App) UploadRecursive(ctx context.Context, localDir, remoteDir string, p
 		}
 		uploaded++
 	}
-	return map[string]any{"uploaded": uploaded, "skipped": skipped, "failed": failed, "errors": errs}, nil
+	data := map[string]any{"uploaded": uploaded, "skipped": skipped, "failed": failed, "errors": errs}
+	if tgChID, err := a.tgChannelID(ctx); err == nil {
+		if link, err := a.TG.GetInviteLink(ctx, tgChID); err == nil && link != "" {
+			data["invite_link"] = link
+			data["channel_id"] = fmt.Sprintf("%d", tgChID)
+		}
+	}
+	return data, nil
 }
 
 // DownloadRecursive downloads a directory tree.

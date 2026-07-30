@@ -87,7 +87,16 @@ func (c *Client) BindChannel(ctx context.Context, titleOrID string) (*tgtelegram
 	return c.ResolveChannel(ctx, titleOrID)
 }
 
+const inviteCacheTTL = 5 * time.Minute
+
 func (c *Client) GetInviteLink(ctx context.Context, channelID int64) (string, error) {
+	c.inviteMu.Lock()
+	if e, ok := c.inviteCache[channelID]; ok && e.expiry.After(time.Now()) {
+		c.inviteMu.Unlock()
+		return e.link, nil
+	}
+	c.inviteMu.Unlock()
+
 	var link string
 	err := c.run(ctx, func(ctx context.Context, api *tg.Client, _ *telegram.Client) error {
 		peer, err := c.resolveChannelPeer(ctx, api, strconv.FormatInt(channelID, 10))
@@ -112,10 +121,34 @@ func (c *Client) GetInviteLink(ctx context.Context, channelID int64) (string, er
 		link = l
 		return nil
 	})
+	if err == nil && link != "" {
+		c.inviteMu.Lock()
+		c.inviteCache[channelID] = cachedInvite{link: link, expiry: time.Now().Add(inviteCacheTTL)}
+		c.inviteMu.Unlock()
+	}
 	return link, err
 }
 
 func (c *Client) exportInvite(ctx context.Context, api *tg.Client, ch *tg.Channel) (string, error) {
+	// Public channels are accessed by username.
+	if ch.Username != "" {
+		return "https://t.me/" + ch.Username, nil
+	}
+
+	// Try to read the existing primary invite without minting a new one.
+	full, err := api.ChannelsGetFullChannel(ctx, &tg.InputChannel{ChannelID: ch.ID, AccessHash: ch.AccessHash})
+	if err != nil {
+		return "", mapRPCError(err)
+	}
+	if chFull, ok := full.FullChat.(*tg.ChannelFull); ok {
+		if inv, ok := chFull.GetExportedInvite(); ok {
+			if exp, ok := inv.(*tg.ChatInviteExported); ok && exp.Link != "" {
+				return exp.Link, nil
+			}
+		}
+	}
+
+	// No existing invite, fall back to creating one.
 	exported, err := api.MessagesExportChatInvite(ctx, &tg.MessagesExportChatInviteRequest{
 		Peer: channelPeer(ch.ID, ch.AccessHash),
 	})

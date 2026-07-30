@@ -34,7 +34,7 @@ func (c *Client) CreateChannel(ctx context.Context, title string) (*tgtelegram.C
 		if err != nil {
 			return err
 		}
-		c.rememberChannel(ch.ID, ch.AccessHash)
+		c.RegisterChannelInfo(ch.ID, ch.AccessHash, ch.Title)
 		_, _ = api.MessagesSetHistoryTTL(ctx, &tg.MessagesSetHistoryTTLRequest{
 			Peer:   channelPeer(ch.ID, ch.AccessHash),
 			Period: 0,
@@ -69,7 +69,7 @@ func (c *Client) ResolveChannel(ctx context.Context, titleOrID string) (*tgteleg
 		if err != nil {
 			return err
 		}
-		c.rememberChannel(ch.ID, ch.AccessHash)
+		c.RegisterChannelInfo(ch.ID, ch.AccessHash, ch.Title)
 		link, _ := c.exportInvite(ctx, api, ch)
 		out = &tgtelegram.Channel{
 			ID:         ch.ID,
@@ -104,6 +104,7 @@ func (c *Client) GetInviteLink(ctx context.Context, channelID int64) (string, er
 		if err != nil {
 			return err
 		}
+		c.RegisterChannelInfo(ch.ID, ch.AccessHash, ch.Title)
 		l, err := c.exportInvite(ctx, api, ch)
 		if err != nil {
 			return err
@@ -194,16 +195,9 @@ func (c *Client) UploadMedia(ctx context.Context, req tgtelegram.UploadRequest) 
 				return nil
 			}
 			lastErr = mapRPCError(err)
-			if fw, ok := lastErr.(*tgtelegram.FloodWaitError); ok {
-				if !c.waitFlood {
-					return lastErr
-				}
-				wait := time.Duration(fw.Seconds) * time.Second
-				if wait > c.maxWait {
-					return lastErr
-				}
-				time.Sleep(wait)
-				continue
+			if _, ok := lastErr.(*tgtelegram.FloodWaitError); ok {
+				// RateLimiter has already handled or rejected the flood wait.
+				return lastErr
 			}
 			if attempt < maxRetries {
 				time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)

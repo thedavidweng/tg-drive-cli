@@ -171,6 +171,7 @@ func (c *Client) Doctor(ctx context.Context, channelID int64) (*tgtelegram.Capab
 			caps.ChannelOK = false
 			return nil
 		}
+		c.RegisterChannelInfo(ch.ID, ch.AccessHash, ch.Title)
 		if ch.Creator {
 			caps.UploadOK = true
 			caps.DeleteOK = true

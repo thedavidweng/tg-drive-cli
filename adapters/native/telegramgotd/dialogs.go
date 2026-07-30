@@ -43,6 +43,10 @@ func (c *Client) resolveChannelPeer(ctx context.Context, api *tg.Client, titleOr
 			return &tg.InputPeerChannel{ChannelID: id, AccessHash: hash}, nil
 		}
 		titleOrID = strconv.FormatInt(id, 10)
+	} else if id, ok := c.channelByTitle(titleOrID); ok {
+		if hash, ok := c.channelAccessHash(id); ok {
+			return &tg.InputPeerChannel{ChannelID: id, AccessHash: hash}, nil
+		}
 	}
 
 	var found *tg.InputPeerChannel
@@ -57,6 +61,7 @@ func (c *Client) resolveChannelPeer(ctx context.Context, api *tg.Client, titleOr
 		if ch, ok := elem.Entities.Channel(pch.ChannelID); ok {
 			title = ch.Title
 		}
+		c.rememberChannelTitle(pch.ChannelID, title)
 		idStr := fmt.Sprintf("%d", pch.ChannelID)
 		if idStr == titleOrID || channelTitleMatches(titleOrID, title) {
 			found = &tg.InputPeerChannel{ChannelID: pch.ChannelID, AccessHash: pch.AccessHash}

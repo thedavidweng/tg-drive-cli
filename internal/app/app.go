@@ -227,18 +227,18 @@ func (o *runtimeOpts) telegramClient(cfg config.Config, database *sqlitestore.DB
 	}
 	client := telegramgotd.New(cfg.Telegram.APIID, cfg.Telegram.APIHash, cfg.Storage.SessionPath,
 		o.effectiveWait(cfg), time.Duration(cfg.RateLimit.MaxWaitSeconds)*time.Second)
-	rows, err := database.Raw().Query(`select tg_channel_id, access_hash from channels where access_hash is not null and access_hash != ''`)
+	rows, err := database.Raw().Query(`select tg_channel_id, access_hash, title from channels where access_hash is not null and access_hash != ''`)
 	if err == nil {
 		defer func() { _ = rows.Close() }()
 		for rows.Next() {
-			var tgID, hash string
-			if err := rows.Scan(&tgID, &hash); err != nil {
+			var tgID, hash, title string
+			if err := rows.Scan(&tgID, &hash, &title); err != nil {
 				continue
 			}
 			chID, err1 := strconv.ParseInt(tgID, 10, 64)
 			accHash, err2 := strconv.ParseInt(hash, 10, 64)
 			if err1 == nil && err2 == nil {
-				client.RegisterChannelAccessHash(chID, accHash)
+				client.RegisterChannelInfo(chID, accHash, title)
 			}
 		}
 	}

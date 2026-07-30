@@ -4,7 +4,6 @@ go 1.26
 
 require (
 	github.com/go-faster/errors v0.7.1
-	github.com/gotd/contrib v0.25.0
 	github.com/gotd/td v0.161.0
 	github.com/mozillazg/go-pinyin v0.21.0
 	github.com/mozillazg/go-unidecode v0.2.0
@@ -34,6 +33,7 @@ require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/klauspost/compress v1.19.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.11 // indirect
+	github.com/kr/pretty v0.3.1 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.22 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect

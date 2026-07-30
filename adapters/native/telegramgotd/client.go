@@ -11,10 +11,8 @@ import (
 	"time"
 
 	"github.com/go-faster/errors"
-	"github.com/gotd/contrib/middleware/floodwait"
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/tg"
-	"github.com/gotd/td/tgerr"
 	tgtelegram "github.com/thedavidweng/tg-drive-cli/core/telegram"
 )
 
@@ -27,8 +25,10 @@ type Client struct {
 	waitFlood   bool
 	maxWait     time.Duration
 
-	mu          sync.Mutex
-	channelHash map[int64]int64 // channel ID -> access hash
+	mu            sync.Mutex
+	channelHash   map[int64]int64  // channel ID -> access hash
+	channelTitle  map[string]int64 // normalized title -> channel ID
+	channelTitles map[int64]string // channel ID -> title
 
 	connMu sync.Mutex
 	conn   *conn
@@ -49,12 +49,14 @@ func New(apiID int64, apiHash, sessionPath string, waitFlood bool, maxWait time.
 		maxWait = 300 * time.Second
 	}
 	return &Client{
-		apiID:       int(apiID),
-		apiHash:     apiHash,
-		sessionPath: sessionPath,
-		waitFlood:   waitFlood,
-		maxWait:     maxWait,
-		channelHash: make(map[int64]int64),
+		apiID:         int(apiID),
+		apiHash:       apiHash,
+		sessionPath:   sessionPath,
+		waitFlood:     waitFlood,
+		maxWait:       maxWait,
+		channelHash:   make(map[int64]int64),
+		channelTitle:  make(map[string]int64),
+		channelTitles: make(map[int64]string),
 	}
 }
 
@@ -90,11 +92,7 @@ func (c *Client) ensureConn(ctx context.Context) (*conn, error) {
 	opts := telegram.Options{
 		SessionStorage: &telegram.FileSessionStorage{Path: c.sessionPath},
 		NoUpdates:      true,
-	}
-	var waiter *floodwait.Waiter
-	if c.waitFlood {
-		waiter = floodwait.NewWaiter().WithMaxWait(c.maxWait)
-		opts.Middlewares = append(opts.Middlewares, waiter)
+		Middlewares:    []telegram.Middleware{NewRateLimiter(c.waitFlood, c.maxWait).Middleware()},
 	}
 	client := telegram.NewClient(c.apiID, c.apiHash, opts)
 	runCtx, cancel := context.WithCancel(context.Background())
@@ -106,18 +104,11 @@ func (c *Client) ensureConn(ctx context.Context) (*conn, error) {
 	}
 	go func() {
 		defer close(cn.done)
-		run := func(ctx context.Context) error {
-			return client.Run(ctx, func(ctx context.Context) error {
-				close(cn.ready)
-				<-ctx.Done()
-				return ctx.Err()
-			})
-		}
-		if waiter != nil {
-			cn.err = waiter.Run(runCtx, run)
-		} else {
-			cn.err = run(runCtx)
-		}
+		cn.err = client.Run(runCtx, func(ctx context.Context) error {
+			close(cn.ready)
+			<-ctx.Done()
+			return ctx.Err()
+		})
 	}()
 	select {
 	case <-cn.ready:
@@ -166,6 +157,13 @@ func (c *Client) rememberChannel(id, accessHash int64) {
 	c.channelHash[id] = accessHash
 }
 
+func (c *Client) rememberChannelTitle(id int64, title string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.channelTitle[normalizeChannelTitle(title)] = id
+	c.channelTitles[id] = title
+}
+
 func (c *Client) channelAccessHash(channelID int64) (int64, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -182,12 +180,25 @@ func (c *Client) RegisterChannelAccessHash(channelID, accessHash int64) {
 	c.setChannelAccessHash(channelID, accessHash)
 }
 
+// RegisterChannelInfo seeds peer cache from DB including the title so that
+// subsequent title-based resolution does not have to walk the dialog list.
+func (c *Client) RegisterChannelInfo(channelID, accessHash int64, title string) {
+	c.setChannelAccessHash(channelID, accessHash)
+	c.rememberChannelTitle(channelID, title)
+}
+
+func (c *Client) channelByTitle(title string) (int64, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	id, ok := c.channelTitle[normalizeChannelTitle(title)]
+	return id, ok
+}
+
+func normalizeChannelTitle(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
+
 func mapRPCError(err error) error {
 	if err == nil {
 		return nil
-	}
-	if wait, ok := tgerr.AsFloodWait(err); ok {
-		return &tgtelegram.FloodWaitError{Seconds: int(wait.Seconds())}
 	}
 	msg := strings.ToLower(err.Error())
 	switch {

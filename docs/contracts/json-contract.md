@@ -7,7 +7,14 @@ All JSON command output uses an envelope.
 ```json
 {
   "ok": true,
-  "data": {}
+  "data": {},
+  "meta": {
+    "command": "cp",
+    "duration_ms": 125,
+    "schema_version": "2026-07-29",
+    "request_id": "...",
+    "warnings": []
+  }
 }
 ```
 
@@ -19,7 +26,16 @@ All JSON command output uses an envelope.
   "error": {
     "code": "ERR_CODE",
     "message": "human readable message",
+    "category": "api",
+    "retryable": true,
+    "retry_after_ms": 5000,
     "details": {}
+  },
+  "meta": {
+    "command": "cp",
+    "duration_ms": 10,
+    "schema_version": "2026-07-29",
+    "request_id": "..."
   }
 }
 ```
@@ -73,6 +89,15 @@ All JSON command output uses an envelope.
 ```
 
 The `invite_link` field is omitted when the channel has no public/join link.
+
+## NDJSON event stream
+
+Long-running commands such as `td cp --events` emit one JSON envelope per line:
+
+```json
+{"ok":true,"data":{"file_name":"big.bin","part":5,"part_size":524288,"uploaded":2621440,"total":4294967296},"meta":{"command":"cp.progress","duration_ms":120,"schema_version":"2026-07-29","request_id":"..."}}
+{"ok":true,"data":{"path":"/big.bin","message_id":1234,"size":4294967296},"meta":{"command":"cp","duration_ms":4200,"schema_version":"2026-07-29","request_id":"..."}}
+```
 
 ## Channel list
 

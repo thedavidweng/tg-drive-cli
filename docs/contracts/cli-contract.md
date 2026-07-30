@@ -38,9 +38,14 @@ td cp <local> <remote-path>
   [--replace] [--skip-existing] [--auto-rename] [--no-hash]
   [--recursive] [--continue-on-error] [--include-empty-dirs]
   [--upload-threads <n>] [--upload-part-size-kb <n>]
+  [--confirm] [--dry-run] [--events]
 td get <remote-path> <local-dest>
+  [--replace] [--skip-existing] [--auto-rename] [--continue-on-error]
 td mv <remote-from> <remote-to>
+  [--confirm] [--dry-run]
 td rm <remote-path>
+  [--tombstone] [--allow-stale-manifest]
+  [--confirm] [--dry-run]
 td share [remote-path]
 td repair [path]
 td repair --pending
@@ -102,6 +107,7 @@ ERR_MESSAGE_NOT_EDITABLE
 ERR_SCAN_FAILED
 ERR_TELEGRAM_RATE_LIMITED
 ERR_TELEGRAM_RPC
+ERR_CONFIRMATION_REQUIRED
 ERR_DB
 ERR_OPERATION_LOCKED
 ERR_ORPHANED_UPLOAD
@@ -119,3 +125,4 @@ ERR_SLUG_COLLISION
 | 3 | Auth/config error | `ERR_AUTH_REQUIRED`, `ERR_AUTH_FAILED`, `ERR_CONFIG_MISSING`, `ERR_CONFIG_INVALID` |
 | 4 | Telegram/platform error | `ERR_CHANNEL_NOT_FOUND`, `ERR_CHANNEL_PERMISSION`, `ERR_FILE_TOO_LARGE`, `ERR_MESSAGE_NOT_EDITABLE`, `ERR_TELEGRAM_RATE_LIMITED`, `ERR_TELEGRAM_RPC` |
 | 5 | DB/index/repair error | `ERR_DB`, `ERR_SCAN_FAILED`, `ERR_MANIFEST_INVALID`, `ERR_OPERATION_LOCKED`, `ERR_ORPHANED_UPLOAD`, `ERR_REPAIR_REQUIRED`, `ERR_CAPTION_TOO_LONG` |
+| 10 | Confirmation/safety error | `ERR_CONFIRMATION_REQUIRED` |

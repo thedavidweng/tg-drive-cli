@@ -3,6 +3,7 @@ package apperr
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 // Error codes from docs/contracts/cli-contract.md.
@@ -39,13 +40,31 @@ const (
 	ErrOperationLocked            = "ERR_OPERATION_LOCKED"
 	ErrRepairRequired             = "ERR_REPAIR_REQUIRED"
 	ErrSlugCollision              = "ERR_SLUG_COLLISION"
+	ErrConfirmationRequired       = "ERR_CONFIRMATION_REQUIRED"
+)
+
+// Category groups errors by high-level cause for programmatic handling.
+type Category string
+
+const (
+	CatAuth       Category = "auth"
+	CatConfig     Category = "config"
+	CatValidation Category = "validation"
+	CatAPI        Category = "api"
+	CatPlatform   Category = "platform"
+	CatInternal   Category = "internal"
+	CatSafety     Category = "safety"
 )
 
 // AppError is a structured application error with stable code and exit mapping.
 type AppError struct {
-	Code    string
-	Message string
-	Details map[string]any
+	Code         string         `json:"code"`
+	Message      string         `json:"message"`
+	Category     Category       `json:"category"`
+	Retryable    bool           `json:"retryable"`
+	RetryAfter   time.Duration  `json:"-"`
+	RetryAfterMS int64          `json:"retry_after_ms,omitempty"`
+	Details      map[string]any `json:"details"`
 }
 
 func (e *AppError) Error() string {
@@ -55,9 +74,11 @@ func (e *AppError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Code, e.Message)
 }
 
-// New creates a new AppError.
+// New creates a new AppError with inferred category and retryability.
 func New(code, message string) *AppError {
-	return &AppError{Code: code, Message: message, Details: map[string]any{}}
+	e := &AppError{Code: code, Message: message, Details: map[string]any{}}
+	e.Category, e.Retryable = classify(code)
+	return e
 }
 
 // WithDetails returns a copy with details attached.
@@ -66,7 +87,43 @@ func (e *AppError) WithDetails(details map[string]any) *AppError {
 	if details != nil {
 		cp.Details = details
 	}
+	cp.RetryAfterMS = cp.RetryAfter.Milliseconds()
 	return &cp
+}
+
+// WithRetryAfter returns a copy with a retry-after duration.
+func (e *AppError) WithRetryAfter(d time.Duration) *AppError {
+	cp := *e
+	cp.RetryAfter = d
+	cp.RetryAfterMS = d.Milliseconds()
+	return &cp
+}
+
+func classify(code string) (Category, bool) {
+	switch code {
+	case ErrAuthRequired, ErrAuthFailed:
+		return CatAuth, false
+	case ErrConfigMissing, ErrConfigInvalid:
+		return CatConfig, false
+	case ErrUsage, ErrFlagConflict, ErrPathInvalid, ErrPathExists,
+		ErrPathIsDirectory, ErrPathAncestorIsFile, ErrPathConflict,
+		ErrLocalPathExists, ErrLocalNotFound, ErrRemoteNotFound,
+		ErrDirectoryMoveUnsupported, ErrDirectoryDeleteUnsupported,
+		ErrCrossChannelMove, ErrEmptyDirsUnsupported, ErrSlugCollision:
+		return CatValidation, false
+	case ErrChannelNotFound, ErrChannelPermission, ErrFileTooLarge,
+		ErrMessageNotEditable, ErrTelegramRateLimited, ErrTelegramRPC:
+		return CatAPI, code == ErrTelegramRateLimited || code == ErrTelegramRPC
+	case ErrCaptionTooLong:
+		return CatAPI, false
+	case ErrDB, ErrScanFailed, ErrManifestInvalid, ErrOperationLocked,
+		ErrRepairRequired, ErrOrphanedUpload:
+		return CatInternal, code == ErrOperationLocked
+	case ErrConfirmationRequired:
+		return CatSafety, false
+	default:
+		return CatInternal, false
+	}
 }
 
 // ExitCode maps error codes to process exit codes per cli-contract.
@@ -90,6 +147,8 @@ func ExitCode(err error) int {
 	case ErrDB, ErrScanFailed, ErrManifestInvalid, ErrOperationLocked,
 		ErrRepairRequired, ErrCaptionTooLong, ErrOrphanedUpload:
 		return 5
+	case ErrConfirmationRequired:
+		return 10
 	default:
 		return 1
 	}

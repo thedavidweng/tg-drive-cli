@@ -37,6 +37,8 @@ type App struct {
 	// (from --channel / TD_CHANNEL). Empty selects the first configured one.
 	Channel string
 	Render  func() bool // returns json mode
+	// Progress optionally receives upload part confirmations.
+	Progress telegram.UploadProgress
 
 	limitMu     sync.Mutex
 	cachedLimit int64
@@ -352,7 +354,7 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 	}
 	partSize := a.Cfg.Upload.PartSizeKB * 1024
 	resumableKey := fmt.Sprintf("file:%d", fileID)
-	up, err := a.TG.UploadMedia(ctx, telegram.UploadRequest{
+	req := telegram.UploadRequest{
 		ChannelID:      tgChID,
 		Caption:        capRes.Caption,
 		FileName:       displayName,
@@ -365,7 +367,11 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 		PartSize:       partSize,
 		ResumableKey:   resumableKey,
 		ResumableStore: a.DB,
-	})
+	}
+	if a.Progress != nil {
+		req.Progress = a.Progress
+	}
+	up, err := a.TG.UploadMedia(ctx, req)
 	if err != nil {
 		// Keep pending state only for resumable big uploads; small files and
 		// permission errors do not benefit from resuming.

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"github.com/thedavidweng/tg-drive-cli/adapters/native/localfs"
 	"github.com/thedavidweng/tg-drive-cli/adapters/native/sqlitestore"
@@ -92,6 +93,9 @@ Environment:
 	cmd.PersistentFlags().BoolVar(&opts.wait, "wait", false, "wait through safe Telegram flood waits")
 	cmd.PersistentFlags().BoolVar(&opts.noWait, "no-wait", false, "fail immediately on Telegram flood waits")
 	cmd.PersistentPreRunE = func(c *cobra.Command, args []string) error {
+		opts.start = time.Now()
+		opts.requestID = uuid.NewString()
+		opts.command = c.CommandPath()
 		if !c.Flags().Changed("json") && envBool("TD_JSON") {
 			opts.json = true
 		}
@@ -106,22 +110,35 @@ Environment:
 		return nil
 	}
 
-	cmd.AddCommand(newVersionCmd(opts))
-	cmd.AddCommand(newDoctorCmd(opts))
-	cmd.AddCommand(newConfigCmd(opts))
-	cmd.AddCommand(newAuthCmd(opts))
-	cmd.AddCommand(newChannelsCmd(opts))
-	cmd.AddCommand(newInitCmd(opts))
-	cmd.AddCommand(newStatusCmd(opts))
-	cmd.AddCommand(newScanCmd(opts))
-	cmd.AddCommand(newLsCmd(opts))
-	cmd.AddCommand(newTreeCmd(opts))
-	cmd.AddCommand(newCpCmd(opts))
-	cmd.AddCommand(newGetCmd(opts))
-	cmd.AddCommand(newMvCmd(opts))
-	cmd.AddCommand(newRmCmd(opts))
-	cmd.AddCommand(newShareCmd(opts))
-	cmd.AddCommand(newRepairCmd(opts))
+	cmd.AddGroup(&cobra.Group{ID: "core", Title: "Core"})
+	cmd.AddGroup(&cobra.Group{ID: "auth", Title: "Authentication"})
+	cmd.AddGroup(&cobra.Group{ID: "channels", Title: "Channels"})
+	cmd.AddGroup(&cobra.Group{ID: "files", Title: "Files"})
+	cmd.AddGroup(&cobra.Group{ID: "maintenance", Title: "Maintenance"})
+
+	add := func(c *cobra.Command, group string) *cobra.Command {
+		c.GroupID = group
+		cmd.AddCommand(c)
+		return c
+	}
+
+	add(newVersionCmd(opts), "core")
+	add(newDoctorCmd(opts), "core")
+	add(newConfigCmd(opts), "core")
+	add(newAuthCmd(opts), "auth")
+	add(newChannelsCmd(opts), "channels")
+	add(newInitCmd(opts), "files")
+	add(newStatusCmd(opts), "core")
+	add(newScanCmd(opts), "maintenance")
+	add(newLsCmd(opts), "files")
+	add(newTreeCmd(opts), "files")
+	add(newCpCmd(opts), "files")
+	add(newGetCmd(opts), "files")
+	add(newMvCmd(opts), "files")
+	add(newRmCmd(opts), "files")
+	add(newShareCmd(opts), "maintenance")
+	add(newRepairCmd(opts), "maintenance")
+	add(newCompletionCmd(opts), "core")
 
 	return cmd
 }
@@ -136,6 +153,9 @@ type runtimeOpts struct {
 	channel     string
 	wait        bool
 	noWait      bool
+	command     string
+	requestID   string
+	start       time.Time
 }
 
 func envBool(name string) bool {
@@ -164,6 +184,9 @@ func (o *runtimeOpts) effectiveWait(cfg config.Config) bool {
 func (o *runtimeOpts) renderer() *output.Renderer {
 	r := output.New(o.json)
 	r.Quiet = o.quiet
+	r.Command = o.command
+	r.RequestID = o.requestID
+	r.Start = o.start
 	return r
 }
 
@@ -320,6 +343,28 @@ func isLightweight(cmd *cobra.Command) bool {
 		}
 	}
 	return false
+}
+
+func newCompletionCmd(opts *runtimeOpts) *cobra.Command {
+	return &cobra.Command{
+		Use:   "completion [bash|zsh|fish|powershell]",
+		Short: "Generate shell completion scripts",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			switch args[0] {
+			case "bash":
+				return cmd.Root().GenBashCompletion(cmd.OutOrStdout())
+			case "zsh":
+				return cmd.Root().GenZshCompletion(cmd.OutOrStdout())
+			case "fish":
+				return cmd.Root().GenFishCompletion(cmd.OutOrStdout(), true)
+			case "powershell":
+				return cmd.Root().GenPowerShellCompletion(cmd.OutOrStdout())
+			default:
+				return opts.renderer().Error(apperr.New(apperr.ErrUsage, "valid shells: bash, zsh, fish, powershell"))
+			}
+		},
+	}
 }
 
 func newVersionCmd(opts *runtimeOpts) *cobra.Command {
@@ -1000,12 +1045,30 @@ func conflictPolicy(replace, skip, autoRename bool) (service.ConflictPolicy, err
 func newCpCmd(opts *runtimeOpts) *cobra.Command {
 	var recursive, replace, skip, autoRename, noHash, continueOnError, includeEmptyDirs bool
 	var uploadThreads, uploadPartSizeKB int
+	var confirm, dryRun, events bool
 	c := &cobra.Command{
 		Use:   "cp <local> <remote-path>",
 		Short: "Upload local file or directory",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r := opts.renderer()
+			policy, err := conflictPolicy(replace, skip, autoRename)
+			if err != nil {
+				return r.Error(err)
+			}
+			if dryRun {
+				plan := map[string]any{"local": args[0], "remote": args[1], "policy": string(policy)}
+				if replace {
+					plan["would_replace"] = args[1]
+				}
+				if events {
+					return r.Event("cp.dry-run", plan)
+				}
+				return r.Success(plan)
+			}
+			if replace && !confirm {
+				return r.Error(apperr.New(apperr.ErrConfirmationRequired, "replacing an existing remote file requires --confirm"))
+			}
 			app, cleanup, err := opts.openApp(cmd)
 			if err != nil {
 				return r.Error(err)
@@ -1017,14 +1080,18 @@ func newCpCmd(opts *runtimeOpts) *cobra.Command {
 			if cmd.Flags().Changed("upload-part-size-kb") && uploadPartSizeKB > 0 {
 				app.Cfg.Upload.PartSizeKB = uploadPartSizeKB
 			}
-			policy, err := conflictPolicy(replace, skip, autoRename)
-			if err != nil {
-				return r.Error(err)
+			if events {
+				app.Progress = func(ctx context.Context, state telegram.UploadProgressState) error {
+					return r.Event("cp.progress", state)
+				}
 			}
 			if recursive {
 				data, err := app.UploadRecursive(context.Background(), args[0], args[1], policy, continueOnError, noHash, includeEmptyDirs)
 				if err != nil {
 					return r.Error(err)
+				}
+				if events {
+					return r.Event("cp", data)
 				}
 				if !opts.json {
 					_ = r.SuccessLine("uploaded %v files (%v skipped, %v failed)", data["uploaded"], data["skipped"], data["failed"])
@@ -1041,6 +1108,9 @@ func newCpCmd(opts *runtimeOpts) *cobra.Command {
 			data, err := app.UploadFile(context.Background(), args[0], args[1], policy, noHash)
 			if err != nil {
 				return r.Error(err)
+			}
+			if events {
+				return r.Event("cp", data)
 			}
 			if !opts.json {
 				if data["skipped"] == true {
@@ -1068,6 +1138,9 @@ func newCpCmd(opts *runtimeOpts) *cobra.Command {
 	c.Flags().BoolVar(&includeEmptyDirs, "include-empty-dirs", false, "include empty directories (unsupported in V1)")
 	c.Flags().IntVar(&uploadThreads, "upload-threads", 0, "parallel upload goroutines (0 uses config)")
 	c.Flags().IntVar(&uploadPartSizeKB, "upload-part-size-kb", 0, "upload part size in KB (0 uses config)")
+	c.Flags().BoolVar(&confirm, "confirm", false, "confirm destructive operations such as --replace")
+	c.Flags().BoolVar(&dryRun, "dry-run", false, "preview the upload plan without executing")
+	c.Flags().BoolVar(&events, "events", false, "emit NDJSON progress events during upload")
 	return c
 }
 
@@ -1119,12 +1192,19 @@ func newGetCmd(opts *runtimeOpts) *cobra.Command {
 }
 
 func newMvCmd(opts *runtimeOpts) *cobra.Command {
-	return &cobra.Command{
+	var confirm, dryRun bool
+	c := &cobra.Command{
 		Use:   "mv <remote-from> <remote-to>",
 		Short: "Move or rename remote file",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r := opts.renderer()
+			if dryRun {
+				return r.Success(map[string]any{"would_move": args[0], "to": args[1]})
+			}
+			if !confirm {
+				return r.Error(apperr.New(apperr.ErrConfirmationRequired, "moving a remote file requires --confirm"))
+			}
 			app, cleanup, err := opts.openApp(cmd)
 			if err != nil {
 				return r.Error(err)
@@ -1139,16 +1219,25 @@ func newMvCmd(opts *runtimeOpts) *cobra.Command {
 			return r.Success(map[string]string{"from": args[0], "to": args[1]})
 		},
 	}
+	c.Flags().BoolVar(&confirm, "confirm", false, "confirm the move")
+	c.Flags().BoolVar(&dryRun, "dry-run", false, "preview what would be moved")
+	return c
 }
 
 func newRmCmd(opts *runtimeOpts) *cobra.Command {
-	var tombstone, allowStaleManifest bool
+	var tombstone, allowStaleManifest, confirm, dryRun bool
 	c := &cobra.Command{
 		Use:   "rm <remote-path>",
 		Short: "Delete remote file",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r := opts.renderer()
+			if dryRun {
+				return r.Success(map[string]any{"would_delete": args[0], "tombstone": tombstone})
+			}
+			if !confirm {
+				return r.Error(apperr.New(apperr.ErrConfirmationRequired, "deleting a remote file requires --confirm"))
+			}
 			app, cleanup, err := opts.openApp(cmd)
 			if err != nil {
 				return r.Error(err)
@@ -1172,6 +1261,8 @@ func newRmCmd(opts *runtimeOpts) *cobra.Command {
 	}
 	c.Flags().BoolVar(&tombstone, "tombstone", false, "tombstone instead of deleting the Telegram message")
 	c.Flags().BoolVar(&allowStaleManifest, "allow-stale-manifest", false, "do not fail when the manifest reply cannot be redacted")
+	c.Flags().BoolVar(&confirm, "confirm", false, "confirm the deletion")
+	c.Flags().BoolVar(&dryRun, "dry-run", false, "preview what would be deleted")
 	return c
 }
 

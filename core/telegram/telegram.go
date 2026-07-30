@@ -62,6 +62,42 @@ type Channel struct {
 	InviteLink string
 }
 
+// ListChannelsOptions filters channel listing.
+type ListChannelsOptions struct {
+	// OnlyDrive filters to channels whose title contains the [TD] suffix.
+	OnlyDrive bool
+}
+
+// UploadProgressState reports upload progress.
+type UploadProgressState struct {
+	FileName string
+	Part     int
+	PartSize int
+	Uploaded int64
+	Total    int64
+}
+
+// UploadProgress is called as each part is confirmed.
+type UploadProgress func(ctx context.Context, state UploadProgressState) error
+
+// ResumableStore persists part-level upload state for crash/resume recovery.
+type ResumableStore interface {
+	LoadUploadState(ctx context.Context, key string) (*UploadState, error)
+	SaveUploadState(ctx context.Context, key string, state *UploadState) error
+	DeleteUploadState(ctx context.Context, key string) error
+}
+
+// UploadState is persisted resumable state.
+type UploadState struct {
+	FileID         int64
+	PartSize       int
+	TotalParts     int
+	TotalBytes     int64
+	ContentHash    string
+	ConfirmedParts []int
+	ConfirmedBytes int64
+}
+
 // Message represents a channel message with optional media.
 type Message struct {
 	ID          int
@@ -77,12 +113,25 @@ type Message struct {
 
 // UploadRequest is a media upload request.
 type UploadRequest struct {
-	ChannelID int64
-	Caption   string
-	FileName  string
-	MIME      string
-	Size      int64
-	Reader    io.Reader
+	ChannelID   int64
+	Caption     string
+	FileName    string
+	MIME        string
+	Size        int64
+	ContentHash string
+	Reader      io.Reader
+	// Path is the local file path, used by resumable big-file uploads.
+	Path string
+	// Threads is the number of parallel upload goroutines. <=1 uses defaults.
+	Threads int
+	// PartSize sets the part size. <=0 uses defaults.
+	PartSize int
+	// Progress reports confirmed upload parts.
+	Progress UploadProgress
+	// ResumableKey identifies this upload in ResumableStore. Empty disables.
+	ResumableKey string
+	// ResumableStore persists part state for big-file resumption.
+	ResumableStore ResumableStore
 }
 
 // UploadResult is returned after upload.
@@ -123,6 +172,7 @@ type ChannelClient interface {
 	ResolveChannel(ctx context.Context, titleOrID string) (*Channel, error)
 	BindChannel(ctx context.Context, titleOrID string) (*Channel, error)
 	GetInviteLink(ctx context.Context, channelID int64) (string, error)
+	ListChannels(ctx context.Context, opts ListChannelsOptions) ([]Channel, error)
 }
 
 // MediaClient handles media operations.

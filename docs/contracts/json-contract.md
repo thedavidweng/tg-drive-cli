@@ -74,6 +74,19 @@ All JSON command output uses an envelope.
 
 The `invite_link` field is omitted when the channel has no public/join link.
 
+## Channel list
+
+```json
+{
+  "ok": true,
+  "data": {
+    "channels": [
+      {"id": 123456789, "title": "Pictures [TD]", "username": "", "invite_link": "https://t.me/+Abc123"}
+    ]
+  }
+}
+```
+
 ## Recursive upload result
 
 ```json

@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	apperr "github.com/thedavidweng/tg-drive-cli/core/errors"
 	"github.com/thedavidweng/tg-drive-cli/core/fsmodel"
 	"github.com/thedavidweng/tg-drive-cli/core/model"
 	"github.com/thedavidweng/tg-drive-cli/core/ports"
+	"github.com/thedavidweng/tg-drive-cli/core/telegram"
 	_ "modernc.org/sqlite"
 )
 
@@ -141,6 +144,18 @@ create table if not exists scan_errors (
   resolved_at text,
   unique(channel_id, message_id, error_code)
 );
+
+create table if not exists upload_progress (
+  key text primary key,
+  file_id integer not null,
+  content_hash text,
+  part_size integer not null,
+  total_parts integer not null,
+  total_bytes integer not null,
+  confirmed_parts text not null,
+  confirmed_bytes integer not null default 0,
+  updated_at text not null
+);
 `
 
 // DB wraps SQLite with migrations and helpers.
@@ -197,6 +212,72 @@ func (d *DB) init() error {
 // Close closes the database.
 func (d *DB) Close() error {
 	return d.sql.Close()
+}
+
+var _ telegram.ResumableStore = (*DB)(nil)
+
+func joinInts(nums []int) string {
+	if len(nums) == 0 {
+		return ""
+	}
+	s := make([]string, len(nums))
+	for i, n := range nums {
+		s[i] = strconv.Itoa(n)
+	}
+	return strings.Join(s, ",")
+}
+
+func splitInts(s string) []int {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]int, 0, len(parts))
+	for _, p := range parts {
+		n, err := strconv.Atoi(strings.TrimSpace(p))
+		if err != nil {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+// LoadUploadState loads resumable upload state.
+func (d *DB) LoadUploadState(ctx context.Context, key string) (*telegram.UploadState, error) {
+	var st telegram.UploadState
+	var confirmed string
+	err := d.sql.QueryRowContext(ctx, `
+		select file_id, content_hash, part_size, total_parts, total_bytes, confirmed_parts, confirmed_bytes, updated_at
+		from upload_progress where key=?`, key).Scan(
+		&st.FileID, &st.ContentHash, &st.PartSize, &st.TotalParts, &st.TotalBytes, &confirmed, &st.ConfirmedBytes, new(string))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	st.ConfirmedParts = splitInts(confirmed)
+	return &st, nil
+}
+
+// SaveUploadState persists resumable upload state.
+func (d *DB) SaveUploadState(ctx context.Context, key string, st *telegram.UploadState) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := d.sql.ExecContext(ctx, `
+		insert into upload_progress(key,file_id,content_hash,part_size,total_parts,total_bytes,confirmed_parts,confirmed_bytes,updated_at)
+		values(?,?,?,?,?,?,?,?,?)
+		on conflict(key) do update set file_id=excluded.file_id, content_hash=excluded.content_hash,
+			part_size=excluded.part_size, total_parts=excluded.total_parts, total_bytes=excluded.total_bytes,
+			confirmed_parts=excluded.confirmed_parts, confirmed_bytes=excluded.confirmed_bytes, updated_at=excluded.updated_at`,
+		key, st.FileID, st.ContentHash, st.PartSize, st.TotalParts, st.TotalBytes, joinInts(st.ConfirmedParts), st.ConfirmedBytes, now)
+	return err
+}
+
+// DeleteUploadState removes resumable upload state.
+func (d *DB) DeleteUploadState(ctx context.Context, key string) error {
+	_, err := d.sql.ExecContext(ctx, `delete from upload_progress where key=?`, key)
+	return err
 }
 
 // Raw returns underlying sql.DB.

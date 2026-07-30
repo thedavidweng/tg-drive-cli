@@ -110,6 +110,7 @@ Environment:
 	cmd.AddCommand(newDoctorCmd(opts))
 	cmd.AddCommand(newConfigCmd(opts))
 	cmd.AddCommand(newAuthCmd(opts))
+	cmd.AddCommand(newChannelsCmd(opts))
 	cmd.AddCommand(newInitCmd(opts))
 	cmd.AddCommand(newStatusCmd(opts))
 	cmd.AddCommand(newScanCmd(opts))
@@ -628,6 +629,7 @@ func newAuthCmd(opts *runtimeOpts) *cobra.Command {
 // createChannelDefault is the NoOptDefVal for a bare --create-channel:
 // derive the channel title from --channel or the local root's name.
 const createChannelDefault = "auto"
+const bindChannelPick = "?"
 
 func newInitCmd(opts *runtimeOpts) *cobra.Command {
 	var createCh, bindCh string
@@ -657,7 +659,32 @@ func newInitCmd(opts *runtimeOpts) *cobra.Command {
 					}
 				}
 			}
-			data, err := app.InitRoot(context.Background(), args[0], opts.channel, createCh, bindCh)
+			ctx := context.Background()
+			bindChannel := bindCh
+			if bindCh == bindChannelPick || (createCh == "" && bindCh == "" && opts.channel == "") {
+				chs, err := app.ListChannels(ctx, false)
+				if err != nil {
+					return r.Error(err)
+				}
+				if opts.json {
+					return r.Error(apperr.New(apperr.ErrChannelNotFound, "select a channel").WithDetails(map[string]any{"channels": channelsToMap(chs)}))
+				}
+				if len(chs) == 0 {
+					_, _ = fmt.Fprintln(os.Stderr, "no existing channels; use --create-channel or --bind-channel")
+					return r.Error(apperr.New(apperr.ErrChannelNotFound, "no existing channels"))
+				}
+				selected, err := selectChannelInteractively(bufio.NewReader(os.Stdin), chs)
+				if err != nil {
+					return r.Error(err)
+				}
+				if selected == nil {
+					return r.Error(apperr.New(apperr.ErrUsage, "channel selection required"))
+				}
+				bindChannel = selected.Title
+			} else if opts.channel != "" {
+				bindChannel = opts.channel
+			}
+			data, err := app.InitRoot(ctx, args[0], opts.channel, createCh, bindChannel)
 			if err != nil {
 				return r.Error(err)
 			}
@@ -677,7 +704,67 @@ func newInitCmd(opts *runtimeOpts) *cobra.Command {
 	}
 	c.Flags().StringVar(&createCh, "create-channel", "", "create a new channel; bare flag derives the title, or pass --create-channel=<title>")
 	c.Flags().Lookup("create-channel").NoOptDefVal = createChannelDefault
-	c.Flags().StringVar(&bindCh, "bind-channel", "", "bind an existing channel")
+	c.Flags().StringVar(&bindCh, "bind-channel", "", "bind an existing channel; bare flag lists and prompts")
+	c.Flags().Lookup("bind-channel").NoOptDefVal = bindChannelPick
+	return c
+}
+
+func selectChannelInteractively(reader *bufio.Reader, chs []telegram.Channel) (*telegram.Channel, error) {
+	_, _ = fmt.Fprintln(os.Stderr, "Select a channel:")
+	for i, ch := range chs {
+		_, _ = fmt.Fprintf(os.Stderr, "  %d. %s (id %d)\n", i+1, ch.Title, ch.ID)
+	}
+	_, _ = fmt.Fprint(os.Stderr, "Enter number: ")
+	s, _ := reader.ReadString('\n')
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || n < 1 || n > len(chs) {
+		return nil, apperr.New(apperr.ErrUsage, "invalid channel selection")
+	}
+	return &chs[n-1], nil
+}
+
+func channelsToMap(chs []telegram.Channel) []map[string]any {
+	out := make([]map[string]any, len(chs))
+	for i, ch := range chs {
+		out[i] = map[string]any{"id": ch.ID, "title": ch.Title, "username": ch.Username, "invite_link": ch.InviteLink}
+	}
+	return out
+}
+
+func newChannelsCmd(opts *runtimeOpts) *cobra.Command {
+	var onlyDrive bool
+	c := &cobra.Command{Use: "channels", Short: "List Telegram channels"}
+	groupUsage(opts, c)
+	list := &cobra.Command{
+		Use:   "list",
+		Short: "List channels",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			r := opts.renderer()
+			app, cleanup, err := opts.openApp(cmd)
+			if err != nil {
+				return r.Error(err)
+			}
+			defer cleanup()
+			chs, err := app.ListChannels(context.Background(), onlyDrive)
+			if err != nil {
+				return r.Error(err)
+			}
+			if opts.json {
+				return r.Success(map[string]any{"channels": channelsToMap(chs)})
+			}
+			out := cmd.OutOrStdout()
+			if len(chs) == 0 {
+				_, _ = fmt.Fprintln(out, "no channels")
+				return nil
+			}
+			for i, ch := range chs {
+				_, _ = fmt.Fprintf(out, "%3d. %s (id %d)\n", i+1, ch.Title, ch.ID)
+			}
+			return nil
+		},
+	}
+	list.Flags().BoolVar(&onlyDrive, "only-drive", false, "show only [TD] channels")
+	c.AddCommand(list)
 	return c
 }
 
@@ -912,6 +999,7 @@ func conflictPolicy(replace, skip, autoRename bool) (service.ConflictPolicy, err
 
 func newCpCmd(opts *runtimeOpts) *cobra.Command {
 	var recursive, replace, skip, autoRename, noHash, continueOnError, includeEmptyDirs bool
+	var uploadThreads, uploadPartSizeKB int
 	c := &cobra.Command{
 		Use:   "cp <local> <remote-path>",
 		Short: "Upload local file or directory",
@@ -923,6 +1011,12 @@ func newCpCmd(opts *runtimeOpts) *cobra.Command {
 				return r.Error(err)
 			}
 			defer cleanup()
+			if cmd.Flags().Changed("upload-threads") && uploadThreads > 0 {
+				app.Cfg.Upload.Threads = uploadThreads
+			}
+			if cmd.Flags().Changed("upload-part-size-kb") && uploadPartSizeKB > 0 {
+				app.Cfg.Upload.PartSizeKB = uploadPartSizeKB
+			}
 			policy, err := conflictPolicy(replace, skip, autoRename)
 			if err != nil {
 				return r.Error(err)
@@ -972,6 +1066,8 @@ func newCpCmd(opts *runtimeOpts) *cobra.Command {
 	c.Flags().BoolVar(&noHash, "no-hash", false, "skip content hash")
 	c.Flags().BoolVar(&continueOnError, "continue-on-error", false, "continue on upload errors")
 	c.Flags().BoolVar(&includeEmptyDirs, "include-empty-dirs", false, "include empty directories (unsupported in V1)")
+	c.Flags().IntVar(&uploadThreads, "upload-threads", 0, "parallel upload goroutines (0 uses config)")
+	c.Flags().IntVar(&uploadPartSizeKB, "upload-part-size-kb", 0, "upload part size in KB (0 uses config)")
 	return c
 }
 

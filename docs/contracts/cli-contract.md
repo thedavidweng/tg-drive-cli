@@ -24,13 +24,20 @@ td auth setup
 td auth login [--resend]
 td auth status
 td auth logout
+td channels list [--only-drive]
 td init <local-root>
+  [--create-channel [=<title>]]
+  [--bind-channel [=<title>]]
+  (bare --bind-channel lists and prompts)
 td status
 td doctor
 td scan [remote-root]
 td ls [remote-path]
 td tree [remote-path]
 td cp <local> <remote-path>
+  [--replace] [--skip-existing] [--auto-rename] [--no-hash]
+  [--recursive] [--continue-on-error] [--include-empty-dirs]
+  [--upload-threads <n>] [--upload-part-size-kb <n>]
 td get <remote-path> <local-dest>
 td mv <remote-from> <remote-to>
 td rm <remote-path>

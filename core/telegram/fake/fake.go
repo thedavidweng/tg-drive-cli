@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -139,6 +140,21 @@ func (c *Client) ResolveChannel(ctx context.Context, titleOrID string) (*telegra
 
 func (c *Client) BindChannel(ctx context.Context, titleOrID string) (*telegram.Channel, error) {
 	return c.ResolveChannel(ctx, titleOrID)
+}
+
+func (c *Client) ListChannels(ctx context.Context, opts telegram.ListChannelsOptions) ([]telegram.Channel, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.loggedIn {
+		return nil, &telegram.AuthRequiredError{}
+	}
+	var out []telegram.Channel
+	for _, ch := range c.channels {
+		if !opts.OnlyDrive || strings.Contains(ch.Title, "[TD]") {
+			out = append(out, *ch)
+		}
+	}
+	return out, nil
 }
 
 func (c *Client) GetInviteLink(ctx context.Context, channelID int64) (string, error) {

@@ -346,16 +346,32 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
+	threads := a.Cfg.Upload.Threads
+	if threads <= 0 {
+		threads = 4
+	}
+	partSize := a.Cfg.Upload.PartSizeKB * 1024
+	resumableKey := fmt.Sprintf("file:%d", fileID)
 	up, err := a.TG.UploadMedia(ctx, telegram.UploadRequest{
-		ChannelID: tgChID,
-		Caption:   capRes.Caption,
-		FileName:  displayName,
-		MIME:      mimeType,
-		Size:      info.Size(),
-		Reader:    f,
+		ChannelID:      tgChID,
+		Caption:        capRes.Caption,
+		FileName:       displayName,
+		MIME:           mimeType,
+		Size:           info.Size(),
+		ContentHash:    contentHash,
+		Reader:         f,
+		Path:           localPath,
+		Threads:        threads,
+		PartSize:       partSize,
+		ResumableKey:   resumableKey,
+		ResumableStore: a.DB,
 	})
 	if err != nil {
-		_, _ = a.DB.Raw().ExecContext(ctx, `delete from files where id=?`, fileID)
+		// Keep pending state only for resumable big uploads; small files and
+		// permission errors do not benefit from resuming.
+		if info.Size() <= 10*1024*1024 {
+			_, _ = a.DB.Raw().ExecContext(ctx, `delete from files where id=?`, fileID)
+		}
 		return nil, mapTGErr(err)
 	}
 

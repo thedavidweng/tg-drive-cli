@@ -29,6 +29,10 @@ mode = "delete"
 free_upload_bytes = 2147483648
 premium_upload_bytes = 4294967296
 
+[upload]
+threads = 4
+part_size_kb = 0
+
 [locks]
 ttl_seconds = 900
 

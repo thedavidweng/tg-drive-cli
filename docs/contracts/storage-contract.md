@@ -136,6 +136,18 @@ create table scan_errors (
   resolved_at text,
   unique(channel_id, message_id, error_code)
 );
+
+create table upload_progress (
+  key text primary key,
+  file_id integer not null,
+  content_hash text,
+  part_size integer not null,
+  total_parts integer not null,
+  total_bytes integer not null,
+  confirmed_parts text not null,
+  confirmed_bytes integer not null default 0,
+  updated_at text not null
+);
 ```
 
 ## Operation locks

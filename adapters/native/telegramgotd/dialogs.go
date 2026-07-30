@@ -7,9 +7,11 @@ import (
 	"strings"
 
 	"github.com/go-faster/errors"
+	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/query"
 	"github.com/gotd/td/telegram/query/dialogs"
 	"github.com/gotd/td/tg"
+	tgtelegram "github.com/thedavidweng/tg-drive-cli/core/telegram"
 )
 
 // formatTDChannelTitle mirrors Telegram-Drive create_folder_inner title convention.
@@ -34,6 +36,38 @@ func channelTitleMatches(want, actual string) bool {
 		return true
 	}
 	return formatTDChannelTitle(want) == actual
+}
+
+// ListChannels returns channels accessible to the logged-in user.
+func (c *Client) ListChannels(ctx context.Context, opts tgtelegram.ListChannelsOptions) ([]tgtelegram.Channel, error) {
+	var out []tgtelegram.Channel
+	err := c.run(ctx, func(ctx context.Context, api *tg.Client, _ *telegram.Client) error {
+		return query.GetDialogs(api).ForEach(ctx, func(ctx context.Context, elem dialogs.Elem) error {
+			pch, ok := elem.Peer.(*tg.InputPeerChannel)
+			if !ok {
+				return nil
+			}
+			c.rememberChannel(pch.ChannelID, pch.AccessHash)
+			title := ""
+			if ch, ok := elem.Entities.Channel(pch.ChannelID); ok {
+				title = ch.Title
+			}
+			c.rememberChannelTitle(pch.ChannelID, title)
+			if opts.OnlyDrive && !strings.Contains(strings.ToLower(title), "[td]") {
+				return nil
+			}
+			out = append(out, tgtelegram.Channel{
+				ID:         pch.ChannelID,
+				AccessHash: pch.AccessHash,
+				Title:      title,
+			})
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, mapRPCError(err)
+	}
+	return out, nil
 }
 
 func (c *Client) resolveChannelPeer(ctx context.Context, api *tg.Client, titleOrID string) (*tg.InputPeerChannel, error) {

@@ -197,6 +197,23 @@ func firstChannel(chats tg.MessagesChatsClass) (*tg.Channel, error) {
 	return nil, errors.New("channel not found")
 }
 
+type uploadProgress struct {
+	cb tgtelegram.UploadProgress
+}
+
+func (p *uploadProgress) Chunk(ctx context.Context, state uploader.ProgressState) error {
+	if p.cb == nil {
+		return nil
+	}
+	return p.cb(ctx, tgtelegram.UploadProgressState{
+		FileName: state.Name,
+		Part:     state.Part,
+		PartSize: state.PartSize,
+		Uploaded: state.Uploaded,
+		Total:    state.Total,
+	})
+}
+
 func (c *Client) UploadMedia(ctx context.Context, req tgtelegram.UploadRequest) (*tgtelegram.UploadResult, error) {
 	var result *tgtelegram.UploadResult
 	err := c.run(ctx, func(ctx context.Context, api *tg.Client, _ *telegram.Client) error {
@@ -204,17 +221,59 @@ func (c *Client) UploadMedia(ctx context.Context, req tgtelegram.UploadRequest) 
 		if err != nil {
 			return err
 		}
-		up := uploader.NewUploader(api)
-		sender := message.NewSender(api).WithUploader(up)
-		uploaded, err := up.Upload(ctx, uploader.NewUpload(req.FileName, req.Reader, req.Size))
-		if err != nil {
-			return mapRPCError(err)
+
+		var uploaded tg.InputFileClass
+		if req.ResumableKey != "" && req.Size > resumableBigFileLimit && req.ResumableStore != nil && req.Path != "" {
+			state, err := req.ResumableStore.LoadUploadState(ctx, req.ResumableKey)
+			if err != nil {
+				state = nil
+			}
+			if state != nil && (state.TotalBytes != req.Size || state.ContentHash != req.ContentHash || state.PartSize == 0) {
+				state = nil
+			}
+			if state == nil {
+				id, err := cryptoRandFileID()
+				if err != nil {
+					return err
+				}
+				partSize := resumableComputePartSize(req.Size)
+				totalParts := int((req.Size + int64(partSize) - 1) / int64(partSize))
+				state = &tgtelegram.UploadState{
+					FileID:      id,
+					PartSize:    partSize,
+					TotalParts:  totalParts,
+					TotalBytes:  req.Size,
+					ContentHash: req.ContentHash,
+				}
+			}
+			uploaded, err = resumableUploadBig(ctx, api, req, req.ResumableStore, state)
+			if err != nil {
+				return mapRPCError(err)
+			}
+			_ = req.ResumableStore.DeleteUploadState(ctx, req.ResumableKey)
+		} else {
+			up := uploader.NewUploader(api)
+			if req.Threads > 0 {
+				up = up.WithThreads(req.Threads)
+			}
+			if req.PartSize > 0 {
+				up = up.WithPartSize(req.PartSize)
+			}
+			if req.Progress != nil {
+				up = up.WithProgress(&uploadProgress{cb: req.Progress})
+			}
+			uploaded, err = up.Upload(ctx, uploader.NewUpload(req.FileName, req.Reader, req.Size))
+			if err != nil {
+				return mapRPCError(err)
+			}
 		}
+
 		doc := message.UploadedDocument(uploaded, styling.Plain(req.Caption)).Filename(req.FileName)
 		if req.MIME != "" {
 			doc = doc.MIME(req.MIME)
 		}
 
+		sender := message.NewSender(api)
 		const maxRetries = 3
 		var lastErr error
 		for attempt := 0; attempt <= maxRetries; attempt++ {
@@ -229,7 +288,6 @@ func (c *Client) UploadMedia(ctx context.Context, req tgtelegram.UploadRequest) 
 			}
 			lastErr = mapRPCError(err)
 			if _, ok := lastErr.(*tgtelegram.FloodWaitError); ok {
-				// RateLimiter has already handled or rejected the flood wait.
 				return lastErr
 			}
 			if attempt < maxRetries {

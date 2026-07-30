@@ -20,6 +20,7 @@ type Config struct {
 	Hash      HashConfig      `toml:"hash"`
 	Delete    DeleteConfig    `toml:"delete"`
 	Limits    LimitsConfig    `toml:"limits"`
+	Upload    UploadConfig    `toml:"upload"`
 	Locks     LocksConfig     `toml:"locks"`
 	RateLimit RateLimitConfig `toml:"rate_limit"`
 	Roots     []RootConfig    `toml:"roots"`
@@ -55,6 +56,11 @@ type DeleteConfig struct {
 type LimitsConfig struct {
 	FreeUploadBytes    int64 `toml:"free_upload_bytes"`
 	PremiumUploadBytes int64 `toml:"premium_upload_bytes"`
+}
+
+type UploadConfig struct {
+	Threads    int `toml:"threads"`
+	PartSizeKB int `toml:"part_size_kb"`
 }
 
 type LocksConfig struct {
@@ -109,6 +115,7 @@ func Defaults() Config {
 			FreeUploadBytes:    2147483648,
 			PremiumUploadBytes: 4294967296,
 		},
+		Upload:    UploadConfig{Threads: 4, PartSizeKB: 0},
 		Locks:     LocksConfig{TTLSeconds: 900},
 		RateLimit: RateLimitConfig{DefaultWait: false, MaxWaitSeconds: 300},
 	}
@@ -239,6 +246,10 @@ func GetValue(cfg Config, key string) (any, error) {
 		return cfg.RateLimit.DefaultWait, nil
 	case "rate_limit.max_wait_seconds":
 		return cfg.RateLimit.MaxWaitSeconds, nil
+	case "upload.threads":
+		return cfg.Upload.Threads, nil
+	case "upload.part_size_kb":
+		return cfg.Upload.PartSizeKB, nil
 	default:
 		return nil, apperr.New(apperr.ErrUsage, fmt.Sprintf("unknown config key: %s", key))
 	}
@@ -284,6 +295,18 @@ func SetValue(cfg *Config, key, value string) error {
 			return apperr.New(apperr.ErrConfigInvalid, "rate_limit.max_wait_seconds must be a non-negative integer")
 		}
 		cfg.RateLimit.MaxWaitSeconds = n
+	case "upload.threads":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 1 {
+			return apperr.New(apperr.ErrConfigInvalid, "upload.threads must be a positive integer")
+		}
+		cfg.Upload.Threads = n
+	case "upload.part_size_kb":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 {
+			return apperr.New(apperr.ErrConfigInvalid, "upload.part_size_kb must be a non-negative integer")
+		}
+		cfg.Upload.PartSizeKB = n
 	default:
 		return apperr.New(apperr.ErrUsage, fmt.Sprintf("unknown config key: %s", key))
 	}

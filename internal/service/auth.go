@@ -67,6 +67,11 @@ func (a *App) AuthLogout(ctx context.Context) error {
 	return a.TG.Logout(ctx)
 }
 
+// ListChannels returns channels visible to the logged-in user.
+func (a *App) ListChannels(ctx context.Context, onlyDrive bool) ([]telegram.Channel, error) {
+	return a.TG.ListChannels(ctx, telegram.ListChannelsOptions{OnlyDrive: onlyDrive})
+}
+
 // InitRoot initializes a local root and optionally creates/binds a channel.
 func (a *App) InitRoot(ctx context.Context, localRoot, channelTitle string, create, bind string) (map[string]any, error) {
 	user, ok, err := a.TG.Status(ctx)

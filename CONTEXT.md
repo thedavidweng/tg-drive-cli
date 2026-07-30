@@ -18,6 +18,7 @@
 - **Slug** — A shortened, collision-resistant segment used for canonical paths that would otherwise exceed Telegram caption length.
 - **Resumable upload** — A big-file upload whose part state is persisted in `upload_progress` so it can continue after interruption.
 - **Operation lock** — A row in `operation_locks` that serializes path-touching operations across processes.
+- **File publisher** — The module that publishes a file to the index, turning a Canonical path, Display name, Content hash, and Telegram message into a File row, Manifest, Hashtag tags, Slug mappings, and derived Nodes.
 - **Scan** — The process of reading a Telegram channel's messages and rebuilding the local SQLite index.
 - **Tombstone** — A soft-delete style where the Telegram message is edited to a tombstone caption instead of being physically deleted.
 

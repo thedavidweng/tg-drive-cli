@@ -20,6 +20,7 @@ import (
 	"github.com/thedavidweng/tg-drive-cli/core/manifest"
 	"github.com/thedavidweng/tg-drive-cli/core/pathcodec"
 	"github.com/thedavidweng/tg-drive-cli/core/ports"
+	"github.com/thedavidweng/tg-drive-cli/core/publisher"
 	"github.com/thedavidweng/tg-drive-cli/core/telegram"
 	"lukechampine.com/blake3"
 )
@@ -733,9 +734,22 @@ func (a *App) MoveFile(ctx context.Context, from, to string) error {
 	if err != nil {
 		return err
 	}
-	tags, moveSlugMaps, err := pathcodec.GenerateChain(dst, existingSlugs)
+	oldTags, _, err := pathcodec.GenerateChain(src, existingSlugs)
 	if err != nil {
 		return err
+	}
+	if !messageID.Valid {
+		return apperr.New(apperr.ErrRemoteNotFound, fmt.Sprintf("remote path %q not found", src))
+	}
+
+	oldMeta := manifest.FileMeta{
+		CanonicalPath: src,
+		DisplayName:   displayName,
+		ParentHuman:   fsmodel.HumanParent(src),
+		Size:          size,
+		Hash:          contentHash,
+		MIME:          mimeType,
+		Tags:          oldTags,
 	}
 	meta := manifest.FileMeta{
 		CanonicalPath: dst,
@@ -744,96 +758,23 @@ func (a *App) MoveFile(ctx context.Context, from, to string) error {
 		Size:          size,
 		Hash:          contentHash,
 		MIME:          mimeType,
-		Tags:          tags,
 	}
-	capRes, err := manifest.RenderCaption(meta, a.Cfg.Caption.SafeMediaCaptionUTF16Units, a.Cfg.Caption.MarginUTF16Units)
-	if err != nil {
-		return err
+	manifestMsgID := 0
+	if manifestID.Valid {
+		manifestMsgID = int(manifestID.Int64)
 	}
-	if !messageID.Valid {
-		return apperr.New(apperr.ErrRemoteNotFound, fmt.Sprintf("remote path %q not found", src))
-	}
-	// Manifest handling before the caption edit, so a failure here leaves the
-	// message fully consistent with the old path.
-	newManifestID := manifestID
-	switch {
-	case capRes.NeedsManifestReply && manifestID.Valid:
-		if err := a.TG.EditText(ctx, tgChID, int(manifestID.Int64), capRes.ManifestReply); err != nil {
-			return mapTGErr(err)
-		}
-	case capRes.NeedsManifestReply && !manifestID.Valid:
-		id, err := a.TG.SendTextReply(ctx, tgChID, int(messageID.Int64), capRes.ManifestReply)
-		if err != nil {
-			return mapTGErr(err)
-		}
-		newManifestID = sql.NullInt64{Int64: int64(id), Valid: true}
-	case !capRes.NeedsManifestReply && manifestID.Valid:
-		// New caption is self-contained; refresh the reply so it never leaks
-		// the old path. Best effort — the caption is authoritative.
-		fullMeta := meta
-		fullMeta.Tags = capRes.IncludedTags
-		_ = a.TG.EditText(ctx, tgChID, int(manifestID.Int64), manifest.RenderManifestReply(fullMeta))
-	}
-	if err := a.TG.EditCaption(ctx, tgChID, int(messageID.Int64), capRes.Caption); err != nil {
-		// Undo the manifest change so the message stays consistent with the
-		// old path; otherwise a later scan would silently complete the move.
-		switch {
-		case capRes.NeedsManifestReply && !manifestID.Valid && newManifestID.Valid:
-			_ = a.TG.DeleteMessage(ctx, tgChID, int(newManifestID.Int64))
-		case capRes.NeedsManifestReply && manifestID.Valid:
-			if oldTags, _, tagErr := pathcodec.GenerateChain(src, a.loadSlugMap(ctx, channelID)); tagErr == nil {
-				oldMeta := manifest.FileMeta{
-					CanonicalPath: src,
-					DisplayName:   displayName,
-					ParentHuman:   fsmodel.HumanParent(src),
-					Size:          size,
-					Hash:          contentHash,
-					MIME:          mimeType,
-					Tags:          oldTags,
-				}
-				_ = a.TG.EditText(ctx, tgChID, int(manifestID.Int64), manifest.RenderManifestReply(oldMeta))
-			}
-		}
-		return mapTGErr(err)
-	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	err = a.DB.WithTx(ctx, func(tx *sql.Tx) error {
-		var mfID any
-		if newManifestID.Valid {
-			mfID = newManifestID.Int64
-		}
-		_, err := tx.ExecContext(ctx, `update files set canonical_path=?, display_name=?, manifest_message_id=?, node_id=null, updated_at=? where id=?`,
-			dst, fsmodel.BaseName(dst), mfID, now, fileID)
-		if err != nil {
-			return err
-		}
-		_, err = tx.ExecContext(ctx, `delete from path_tags where file_id=?`, fileID)
-		if err != nil {
-			return err
-		}
-		for i, tag := range tags {
-			_, err = tx.ExecContext(ctx, `insert into path_tags(file_id,tag,depth) values(?,?,?)`, fileID, tag, i)
-			if err != nil {
-				return err
-			}
-		}
-		for _, sm := range moveSlugMaps {
-			_, err = tx.ExecContext(ctx, `insert or ignore into path_segment_slugs(channel_id,parent_canonical_path,segment,slug,hash_len,created_at) values(?,?,?,?,?,?)`,
-				channelID, sm.ParentCanonical, sm.Segment, sm.Slug, sm.HashLen, now)
-			if err != nil {
-				return err
-			}
-		}
-		for anc, name := range fsmodel.DeriveDirectoryNodes([]string{dst}) {
-			_, err = tx.ExecContext(ctx, `insert or ignore into nodes(channel_id,canonical_path,parent_path,display_name,type,derived,created_at,updated_at) values(?,?,?,?,'dir',1,?,?)`,
-				channelID, anc, fsmodel.ParentPath(anc), name, now, now)
-			if err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err != nil {
+
+	if _, err := a.publisher().Publish(ctx, publisher.PublishRequest{
+		ChannelRowID:  channelID,
+		ChannelID:     tgChID,
+		FileID:        fileID,
+		MessageID:     int(messageID.Int64),
+		ManifestMsgID: manifestMsgID,
+		Meta:          meta,
+		ExistingSlugs: existingSlugs,
+		EditCaption:   true,
+		OldMeta:       &oldMeta,
+	}); err != nil {
 		return err
 	}
 	return a.DB.RunDirectoryGC(ctx, channelID)
@@ -981,7 +922,7 @@ func (a *App) RepairPending(ctx context.Context) (map[string]any, error) {
 			_, _ = a.DB.Raw().ExecContext(ctx, `update files set status='orphaned', updated_at=? where id=?`, now, r.id)
 			orphaned++
 		case r.local.Valid && r.local.String != "":
-			if _, statErr := os.Stat(r.local.String); statErr == nil {
+			if _, statErr := a.files().Stat(ctx, r.local.String); statErr == nil {
 				_, _ = a.DB.Raw().ExecContext(ctx, `delete from files where id=?`, r.id)
 				if _, err := a.UploadFile(ctx, r.local.String, r.path, ConflictSkip, false); err == nil {
 					repaired++
@@ -1054,11 +995,6 @@ func (a *App) RepairOrphaned(ctx context.Context, deleteOrphans bool) (map[strin
 		}
 		// Complete the interrupted upload: regenerate metadata and resend the
 		// manifest reply, then promote the row.
-		tags, slugMaps, err := pathcodec.GenerateChain(r.path, a.loadSlugMap(ctx, channelID))
-		if err != nil {
-			invalid++
-			continue
-		}
 		meta := manifest.FileMeta{
 			CanonicalPath: r.path,
 			DisplayName:   r.name,
@@ -1067,51 +1003,17 @@ func (a *App) RepairOrphaned(ctx context.Context, deleteOrphans bool) (map[strin
 			Hash:          r.hash,
 			MIME:          r.mimeT,
 			Created:       now,
-			Tags:          tags,
 		}
-		capRes, err := manifest.RenderCaption(meta, a.Cfg.Caption.SafeMediaCaptionUTF16Units, a.Cfg.Caption.MarginUTF16Units)
-		if err != nil {
-			invalid++
-			continue
-		}
-		var manifestMsgID sql.NullInt64
-		if capRes.NeedsManifestReply {
-			id, err := a.TG.SendTextReply(ctx, tgChID, int(r.msgID.Int64), capRes.ManifestReply)
-			if err != nil {
-				continue // stays orphaned for a later attempt
-			}
-			manifestMsgID = sql.NullInt64{Int64: int64(id), Valid: true}
-		}
-		err = a.DB.WithTx(ctx, func(tx *sql.Tx) error {
-			var mfID any
-			if manifestMsgID.Valid {
-				mfID = manifestMsgID.Int64
-			}
-			if _, err := tx.ExecContext(ctx, `update files set status='active', manifest_message_id=?, uploaded_at=?, updated_at=? where id=?`, mfID, now, now, r.id); err != nil {
-				return err
-			}
-			for _, sm := range slugMaps {
-				if _, err := tx.ExecContext(ctx, `insert or ignore into path_segment_slugs(channel_id,parent_canonical_path,segment,slug,hash_len,created_at) values(?,?,?,?,?,?)`,
-					channelID, sm.ParentCanonical, sm.Segment, sm.Slug, sm.HashLen, now); err != nil {
-					return err
-				}
-			}
-			for i, tag := range capRes.IncludedTags {
-				if _, err := tx.ExecContext(ctx, `insert or ignore into path_tags(file_id,tag,depth) values(?,?,?)`, r.id, tag, i); err != nil {
-					return err
-				}
-			}
-			for anc, name := range fsmodel.DeriveDirectoryNodes([]string{r.path}) {
-				if _, err := tx.ExecContext(ctx, `insert or ignore into nodes(channel_id,canonical_path,parent_path,display_name,type,derived,created_at,updated_at) values(?,?,?,?,'dir',1,?,?)`,
-					channelID, anc, fsmodel.ParentPath(anc), name, now, now); err != nil {
-					return err
-				}
-			}
-			return nil
-		})
-		if err != nil {
-			invalid++
-			continue
+		if _, err := a.publisher().Publish(ctx, publisher.PublishRequest{
+			ChannelRowID:  channelID,
+			ChannelID:     tgChID,
+			FileID:        r.id,
+			MessageID:     int(r.msgID.Int64),
+			Meta:          meta,
+			ExistingSlugs: a.loadSlugMap(ctx, channelID),
+			SetUploadedAt: true,
+		}); err != nil {
+			continue // stays orphaned for a later attempt
 		}
 		repaired++
 	}
@@ -1148,10 +1050,7 @@ func (a *App) RepairPath(ctx context.Context, remotePath string) (map[string]any
 	if !messageID.Valid {
 		return nil, apperr.New(apperr.ErrRemoteNotFound, fmt.Sprintf("remote path %q not found", p))
 	}
-	tags, slugMaps, err := pathcodec.GenerateChain(p, a.loadSlugMap(ctx, channelID))
-	if err != nil {
-		return nil, err
-	}
+	existingSlugs := a.loadSlugMap(ctx, channelID)
 	meta := manifest.FileMeta{
 		CanonicalPath: p,
 		DisplayName:   displayName,
@@ -1159,59 +1058,26 @@ func (a *App) RepairPath(ctx context.Context, remotePath string) (map[string]any
 		Size:          size,
 		Hash:          contentHash,
 		MIME:          mimeType,
-		Tags:          tags,
 	}
-	capRes, err := manifest.RenderCaption(meta, a.Cfg.Caption.SafeMediaCaptionUTF16Units, a.Cfg.Caption.MarginUTF16Units)
-	if err != nil {
+	oldMeta := meta
+	oldMeta.Tags = nil
+	manifestMsgID := 0
+	if manifestID.Valid {
+		manifestMsgID = int(manifestID.Int64)
+	}
+	if _, err := a.publisher().Publish(ctx, publisher.PublishRequest{
+		ChannelRowID:      channelID,
+		ChannelID:         tgChID,
+		FileID:            fileID,
+		MessageID:         int(messageID.Int64),
+		ManifestMsgID:     manifestMsgID,
+		Meta:              meta,
+		ExistingSlugs:     existingSlugs,
+		EditCaption:       true,
+		IgnoreNotEditable: true,
+		OldMeta:           &oldMeta,
+	}); err != nil {
 		return nil, err
-	}
-	if err := a.TG.EditCaption(ctx, tgChID, int(messageID.Int64), capRes.Caption); err != nil {
-		if _, ok := err.(*telegram.MessageNotEditableError); !ok {
-			return nil, mapTGErr(err)
-		}
-		// Caption text may already match; manifests can still be repaired.
-	}
-	newManifestID := manifestID
-	if capRes.NeedsManifestReply {
-		if manifestID.Valid {
-			if err := a.TG.EditText(ctx, tgChID, int(manifestID.Int64), capRes.ManifestReply); err != nil {
-				return nil, mapTGErr(err)
-			}
-		} else {
-			id, err := a.TG.SendTextReply(ctx, tgChID, int(messageID.Int64), capRes.ManifestReply)
-			if err != nil {
-				return nil, mapTGErr(err)
-			}
-			newManifestID = sql.NullInt64{Int64: int64(id), Valid: true}
-		}
-	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	err = a.DB.WithTx(ctx, func(tx *sql.Tx) error {
-		var mfID any
-		if newManifestID.Valid {
-			mfID = newManifestID.Int64
-		}
-		if _, err := tx.ExecContext(ctx, `update files set manifest_message_id=?, updated_at=? where id=?`, mfID, now, fileID); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `delete from path_tags where file_id=?`, fileID); err != nil {
-			return err
-		}
-		for i, tag := range capRes.IncludedTags {
-			if _, err := tx.ExecContext(ctx, `insert into path_tags(file_id,tag,depth) values(?,?,?)`, fileID, tag, i); err != nil {
-				return err
-			}
-		}
-		for _, sm := range slugMaps {
-			if _, err := tx.ExecContext(ctx, `insert or ignore into path_segment_slugs(channel_id,parent_canonical_path,segment,slug,hash_len,created_at) values(?,?,?,?,?,?)`,
-				channelID, sm.ParentCanonical, sm.Segment, sm.Slug, sm.HashLen, now); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, apperr.Wrap(apperr.ErrDB, "repair path", err)
 	}
 	return map[string]any{"repaired": p}, nil
 }
@@ -1241,19 +1107,19 @@ func (a *App) UploadRecursive(ctx context.Context, localDir, remoteDir string, p
 	if err != nil {
 		return nil, err
 	}
-	info, err := os.Stat(localDir)
+	info, err := a.files().Stat(ctx, localDir)
 	if err != nil {
 		return nil, apperr.New(apperr.ErrLocalNotFound, fmt.Sprintf("local directory %q not found", localDir))
 	}
-	if !info.IsDir() {
+	if !info.IsDir {
 		return nil, apperr.New(apperr.ErrUsage, "recursive upload requires a directory source")
 	}
 	var files []string
-	err = filepath.Walk(localDir, func(path string, info os.FileInfo, err error) error {
+	err = a.files().Walk(ctx, localDir, func(path string, info ports.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		if info.IsDir() {
+		if info.IsDir {
 			return nil
 		}
 		files = append(files, path)
@@ -1306,7 +1172,7 @@ func (a *App) DownloadRecursive(ctx context.Context, remotePath, localDir string
 	for _, e := range entries {
 		localPath := filepath.Join(localDir, e.Name)
 		if e.Type == "dir" {
-			if err := os.MkdirAll(localPath, 0o755); err != nil {
+			if err := a.files().MkdirAll(ctx, localPath, 0o755); err != nil {
 				if !continueOnError {
 					return err
 				}
@@ -1368,10 +1234,6 @@ func (a *App) indexScannedFile(ctx context.Context, channelID int64, messageID i
 		return false, nil
 	}
 
-	var mfID any
-	if manifestMsgID != nil {
-		mfID = *manifestMsgID
-	}
 	// Resolve the row this message maps to: first by message_id (a message
 	// belongs to exactly one row), then by a reactivatable row at the path.
 	// Superseded/deleted history rows are never resurrected by path — that
@@ -1408,40 +1270,16 @@ func (a *App) indexScannedFile(ctx context.Context, channelID int64, messageID i
 		}
 		_, _ = a.DB.Raw().ExecContext(ctx, `update files set status='superseded', node_id=null, updated_at=? where id=?`, now, otherID)
 	}
-	if fileID != 0 {
-		_, err = a.DB.Raw().ExecContext(ctx, `
-			update files set message_id=?, manifest_message_id=?, canonical_path=?, display_name=?, size=?, content_hash=?, mime=?, status='active', updated_at=?
-			where id=?`,
-			messageID, mfID, meta.CanonicalPath, meta.DisplayName, meta.Size, meta.Hash, meta.MIME, now, fileID)
-	} else {
-		_, err = a.DB.Raw().ExecContext(ctx, `
-			insert into files(channel_id,message_id,manifest_message_id,canonical_path,display_name,size,content_hash,mime,status,uploaded_at,updated_at)
-			values(?,?,?,?,?,?,?,?,'active',?,?)`,
-			channelID, messageID, mfID, meta.CanonicalPath, meta.DisplayName, meta.Size, meta.Hash, meta.MIME, now, now)
-	}
-	if err != nil {
+	if _, err := a.publisher().Reindex(ctx, publisher.ReindexRequest{
+		ChannelRowID:  channelID,
+		FileID:        fileID,
+		MessageID:     messageID,
+		ManifestMsgID: manifestMsgID,
+		Meta:          meta,
+		ExistingSlugs: slugMap,
+		Now:           now,
+	}); err != nil {
 		return false, apperr.Wrap(apperr.ErrDB, "index scanned file", err)
-	}
-	if fileID == 0 {
-		_ = a.DB.Raw().QueryRowContext(ctx, `select id from files where channel_id=? and canonical_path=? and status='active'`,
-			channelID, meta.CanonicalPath).Scan(&fileID)
-	}
-	tags, slugMaps, err := pathcodec.GenerateChain(meta.CanonicalPath, slugMap)
-	if err != nil {
-		return false, err
-	}
-	for _, sm := range slugMaps {
-		_, _ = a.DB.Raw().ExecContext(ctx, `insert or ignore into path_segment_slugs(channel_id,parent_canonical_path,segment,slug,hash_len,created_at) values(?,?,?,?,?,?)`,
-			channelID, sm.ParentCanonical, sm.Segment, sm.Slug, sm.HashLen, now)
-		slugMap[sm.ParentCanonical+"|"+sm.Segment] = sm.Slug
-	}
-	_ = a.DB.Raw().QueryRowContext(ctx, `select id from files where channel_id=? and canonical_path=? and status='active'`, channelID, meta.CanonicalPath).Scan(&fileID)
-	for i, tag := range tags {
-		_, _ = a.DB.Raw().ExecContext(ctx, `insert or ignore into path_tags(file_id,tag,depth) values(?,?,?)`, fileID, tag, i)
-	}
-	for anc, name := range fsmodel.DeriveDirectoryNodes([]string{meta.CanonicalPath}) {
-		_, _ = a.DB.Raw().ExecContext(ctx, `insert or ignore into nodes(channel_id,canonical_path,parent_path,display_name,type,derived,created_at,updated_at) values(?,?,?,?,'dir',1,?,?)`,
-			channelID, anc, fsmodel.ParentPath(anc), name, now, now)
 	}
 	return true, nil
 }

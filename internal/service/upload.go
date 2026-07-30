@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"mime"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -22,6 +21,7 @@ import (
 	"github.com/thedavidweng/tg-drive-cli/core/model"
 	"github.com/thedavidweng/tg-drive-cli/core/pathcodec"
 	"github.com/thedavidweng/tg-drive-cli/core/ports"
+	"github.com/thedavidweng/tg-drive-cli/core/publisher"
 	"github.com/thedavidweng/tg-drive-cli/core/telegram"
 	"github.com/thedavidweng/tg-drive-cli/internal/config"
 	"lukechampine.com/blake3"
@@ -49,6 +49,13 @@ func (a *App) files() ports.FileSystem {
 		panic("runtime filesystem not configured")
 	}
 	return a.Runtime.Files
+}
+
+func (a *App) publisher() *publisher.Publisher {
+	return publisher.New(a.TG, a.DB, publisher.Config{
+		SafeMediaCaptionUTF16Units: a.Cfg.Caption.SafeMediaCaptionUTF16Units,
+		MarginUTF16Units:           a.Cfg.Caption.MarginUTF16Units,
+	})
 }
 
 // ConflictPolicy for uploads/downloads.
@@ -108,17 +115,12 @@ func (a *App) activePaths(ctx context.Context, channelID int64) ([]fsmodel.Activ
 	return out, nil
 }
 
-func computeHash(path string, enabled bool) (string, error) {
+func computeHash(r io.Reader, enabled bool) (string, error) {
 	if !enabled {
 		return "", nil
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = f.Close() }()
 	h := blake3.New(32, nil)
-	if _, err := io.Copy(h, f); err != nil {
+	if _, err := io.Copy(h, r); err != nil {
 		return "", err
 	}
 	return "blake3:" + hex.EncodeToString(h.Sum(nil)), nil
@@ -172,15 +174,15 @@ func (a *App) uploadLimit(ctx context.Context) int64 {
 
 // UploadFile uploads a single local file.
 func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, policy ConflictPolicy, noHash bool) (map[string]any, error) {
-	info, err := os.Stat(localPath)
+	info, err := a.files().Stat(ctx, localPath)
 	if err != nil {
 		return nil, apperr.New(apperr.ErrLocalNotFound, fmt.Sprintf("local file %q not found", localPath))
 	}
-	if info.IsDir() {
+	if info.IsDir {
 		return nil, apperr.New(apperr.ErrUsage, "use --recursive for directories")
 	}
 	limit := a.uploadLimit(ctx)
-	if info.Size() > limit {
+	if info.Size > limit {
 		return nil, apperr.New(apperr.ErrFileTooLarge, fmt.Sprintf("file exceeds %d bytes", limit))
 	}
 	// cp convention: a destination that is "/" or ends with "/" is a
@@ -295,7 +297,12 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	hashEnabled := a.Cfg.Hash.Enabled && !noHash
-	contentHash, err := computeHash(localPath, hashEnabled)
+	hashReader, err := a.files().Open(ctx, localPath)
+	if err != nil {
+		return nil, apperr.Wrap(apperr.ErrLocalNotFound, "hash file", err)
+	}
+	contentHash, err := computeHash(hashReader, hashEnabled)
+	_ = hashReader.Close()
 	if err != nil {
 		return nil, apperr.Wrap(apperr.ErrLocalNotFound, "hash file", err)
 	}
@@ -306,7 +313,13 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 	if err != nil {
 		return nil, err
 	}
-	tags, slugMaps, err := pathcodec.GenerateChain(dest, existingSlugs)
+	// Pre-render on a copy so the real publisher can generate and insert the
+	// slug map from the original existing-slug state.
+	slugCopy := make(map[string]string, len(existingSlugs))
+	for k, v := range existingSlugs {
+		slugCopy[k] = v
+	}
+	tags, _, err := pathcodec.GenerateChain(dest, slugCopy)
 	if err != nil {
 		return nil, err
 	}
@@ -315,7 +328,7 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 		CanonicalPath: dest,
 		DisplayName:   displayName,
 		ParentHuman:   fsmodel.HumanParent(dest),
-		Size:          info.Size(),
+		Size:          info.Size,
 		Hash:          contentHash,
 		MIME:          mimeType,
 		Created:       now,
@@ -332,7 +345,7 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 	var fileID int64
 	err = a.DB.WithTx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx, `insert into files(channel_id,canonical_path,display_name,original_local_path,size,content_hash,mime,status,updated_at) values(?,?,?,?,?,?,?,'pending',?)`,
-			channelID, dest, displayName, localPath, info.Size(), contentHash, mimeType, now)
+			channelID, dest, displayName, localPath, info.Size, contentHash, mimeType, now)
 		if err != nil {
 			return err
 		}
@@ -343,7 +356,7 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 		return nil, apperr.Wrap(apperr.ErrDB, "insert pending", err)
 	}
 
-	f, err := os.Open(localPath)
+	f, err := a.files().Open(ctx, localPath)
 	if err != nil {
 		return nil, err
 	}
@@ -359,7 +372,7 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 		Caption:        capRes.Caption,
 		FileName:       displayName,
 		MIME:           mimeType,
-		Size:           info.Size(),
+		Size:           info.Size,
 		ContentHash:    contentHash,
 		Reader:         f,
 		Path:           localPath,
@@ -375,69 +388,42 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 	if err != nil {
 		// Keep pending state only for resumable big uploads; small files and
 		// permission errors do not benefit from resuming.
-		if info.Size() <= 10*1024*1024 {
+		if info.Size <= 10*1024*1024 {
 			_, _ = a.DB.Raw().ExecContext(ctx, `delete from files where id=?`, fileID)
 		}
 		return nil, mapTGErr(err)
 	}
 
-	var manifestMsgID *int
-	if capRes.NeedsManifestReply {
-		id, err := a.TG.SendTextReply(ctx, tgChID, up.MessageID, capRes.ManifestReply)
-		if err != nil {
-			// Roll back the media message. If the rollback delete succeeds the
-			// pending row is dropped and the original error surfaces; if it
-			// fails, the uploaded media is recorded as orphaned for repair.
+	pubRes, pubErr := a.publisher().Publish(ctx, publisher.PublishRequest{
+		ChannelRowID:  channelID,
+		ChannelID:     tgChID,
+		FileID:        fileID,
+		MessageID:     up.MessageID,
+		Meta:          meta,
+		ExistingSlugs: existingSlugs,
+		SetUploadedAt: true,
+		ReplaceFileID: replaceFileID,
+	})
+	if pubErr != nil {
+		ae, _ := apperr.As(pubErr)
+		if capRes.NeedsManifestReply && (ae == nil || ae.Code != apperr.ErrDB) {
+			// The manifest reply could not be sent. Roll back the media message.
+			// If the rollback delete succeeds the pending row is dropped and the
+			// original error surfaces; if it fails, the uploaded media is recorded
+			// as orphaned for repair.
 			if delErr := a.TG.DeleteMessage(ctx, tgChID, up.MessageID); delErr == nil {
 				_, _ = a.DB.Raw().ExecContext(ctx, `delete from files where id=?`, fileID)
-				return nil, mapTGErr(err)
+				return nil, pubErr
 			}
 			_, _ = a.DB.Raw().ExecContext(ctx, `update files set status='orphaned', message_id=?, updated_at=? where id=?`, up.MessageID, now, fileID)
 			return nil, apperr.New(apperr.ErrOrphanedUpload, fmt.Sprintf("manifest reply failed and media message %d could not be rolled back; run td repair --orphaned", up.MessageID))
 		}
-		manifestMsgID = &id
+		return nil, pubErr
 	}
 
-	err = a.DB.WithTx(ctx, func(tx *sql.Tx) error {
-		var mfID any
-		if manifestMsgID != nil {
-			mfID = *manifestMsgID
-		}
-		if replaceFileID > 0 {
-			if _, err := tx.ExecContext(ctx, `update files set status='superseded', node_id=null, updated_at=? where id=?`,
-				now, replaceFileID); err != nil {
-				return err
-			}
-		}
-		_, err := tx.ExecContext(ctx, `update files set status='active', message_id=?, manifest_message_id=?, uploaded_at=?, updated_at=? where id=?`,
-			up.MessageID, mfID, now, now, fileID)
-		if err != nil {
-			return err
-		}
-		for _, sm := range slugMaps {
-			_, err = tx.ExecContext(ctx, `insert or ignore into path_segment_slugs(channel_id,parent_canonical_path,segment,slug,hash_len,created_at) values(?,?,?,?,?,?)`,
-				channelID, sm.ParentCanonical, sm.Segment, sm.Slug, sm.HashLen, now)
-			if err != nil {
-				return err
-			}
-		}
-		for i, tag := range capRes.IncludedTags {
-			_, err = tx.ExecContext(ctx, `insert into path_tags(file_id,tag,depth) values(?,?,?)`, fileID, tag, i)
-			if err != nil {
-				return err
-			}
-		}
-		for anc, name := range fsmodel.DeriveDirectoryNodes([]string{dest}) {
-			_, err = tx.ExecContext(ctx, `insert or ignore into nodes(channel_id,canonical_path,parent_path,display_name,type,derived,created_at,updated_at) values(?,?,?,?,'dir',1,?,?)`,
-				channelID, anc, fsmodel.ParentPath(anc), name, now, now)
-			if err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, apperr.Wrap(apperr.ErrDB, "commit upload", err)
+	var manifestMsgID *int
+	if pubRes.ManifestMsgID > 0 {
+		manifestMsgID = &pubRes.ManifestMsgID
 	}
 
 	// Clean up the replaced Telegram message only after the DB state
@@ -467,7 +453,7 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 		"channel_id":          tgIDStr,
 		"message_id":          up.MessageID,
 		"manifest_message_id": manifestMsgID,
-		"size":                info.Size(),
+		"size":                info.Size,
 		"hash":                contentHash,
 	}
 	if link, err := a.TG.GetInviteLink(ctx, tgChID); err == nil && link != "" {

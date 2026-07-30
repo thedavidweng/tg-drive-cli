@@ -60,3 +60,17 @@ func (FS) Rename(ctx context.Context, oldPath, newPath string) error {
 func (FS) Remove(ctx context.Context, path string) error {
 	return os.Remove(path)
 }
+
+// Walk walks the file tree rooted at root.
+func (FS) Walk(ctx context.Context, root string, fn ports.WalkFunc) error {
+	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return fn(path, ports.FileInfo{}, err)
+		}
+		return fn(path, ports.FileInfo{
+			Size:    info.Size(),
+			IsDir:   info.IsDir(),
+			ModTime: info.ModTime().Unix(),
+		}, nil)
+	})
+}

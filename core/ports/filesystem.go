@@ -13,6 +13,9 @@ type FileInfo struct {
 	ModTime int64
 }
 
+// WalkFunc is the callback for FileSystem.Walk.
+type WalkFunc func(path string, info FileInfo, err error) error
+
 // FileSystem is the local filesystem port for native and browser adapters.
 type FileSystem interface {
 	Stat(ctx context.Context, path string) (FileInfo, error)
@@ -21,4 +24,5 @@ type FileSystem interface {
 	CreateTemp(ctx context.Context, dest string) (path string, file io.WriteCloser, err error)
 	Rename(ctx context.Context, oldPath, newPath string) error
 	Remove(ctx context.Context, path string) error
+	Walk(ctx context.Context, root string, fn WalkFunc) error
 }

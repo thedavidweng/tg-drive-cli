@@ -222,50 +222,10 @@ func (c *Client) UploadMedia(ctx context.Context, req tgtelegram.UploadRequest) 
 			return err
 		}
 
-		var uploaded tg.InputFileClass
-		if req.ResumableKey != "" && req.Size > resumableBigFileLimit && req.ResumableStore != nil && req.Path != "" {
-			state, err := req.ResumableStore.LoadUploadState(ctx, req.ResumableKey)
-			if err != nil {
-				state = nil
-			}
-			if state != nil && (state.TotalBytes != req.Size || state.ContentHash != req.ContentHash || state.PartSize == 0) {
-				state = nil
-			}
-			if state == nil {
-				id, err := cryptoRandFileID()
-				if err != nil {
-					return err
-				}
-				partSize := resumableComputePartSize(req.Size)
-				totalParts := int((req.Size + int64(partSize) - 1) / int64(partSize))
-				state = &tgtelegram.UploadState{
-					FileID:      id,
-					PartSize:    partSize,
-					TotalParts:  totalParts,
-					TotalBytes:  req.Size,
-					ContentHash: req.ContentHash,
-				}
-			}
-			uploaded, err = resumableUploadBig(ctx, api, req, req.ResumableStore, state)
-			if err != nil {
-				return mapRPCError(err)
-			}
-			_ = req.ResumableStore.DeleteUploadState(ctx, req.ResumableKey)
-		} else {
-			up := uploader.NewUploader(api)
-			if req.Threads > 0 {
-				up = up.WithThreads(req.Threads)
-			}
-			if req.PartSize > 0 {
-				up = up.WithPartSize(req.PartSize)
-			}
-			if req.Progress != nil {
-				up = up.WithProgress(&uploadProgress{cb: req.Progress})
-			}
-			uploaded, err = up.Upload(ctx, uploader.NewUpload(req.FileName, req.Reader, req.Size))
-			if err != nil {
-				return mapRPCError(err)
-			}
+		upl := selectMediaUploader(req)
+		uploaded, err := upl.upload(ctx, api, req)
+		if err != nil {
+			return mapRPCError(err)
 		}
 
 		doc := message.UploadedDocument(uploaded, styling.Plain(req.Caption)).Filename(req.FileName)

@@ -46,3 +46,8 @@ Before opening or finishing a PR:
 - Changed commands update `docs/contracts/cli-contract.md`
 - Changed JSON output updates `docs/contracts/json-contract.md`
 - Changed storage/manifest behavior updates `docs/contracts/storage-contract.md`
+
+## Architectural decisions
+
+- New dependencies, abstractions, or changes to public JSON/exit-code contracts require an ADR in `docs/adr/NNNN-slug.md` (Status / Context / Decision / Consequences).
+- ADRs are numbered sequentially and record why a design choice was made, not how it is implemented.

@@ -47,6 +47,16 @@ Before opening or finishing a PR:
 - Changed JSON output updates `docs/contracts/json-contract.md`
 - Changed storage/manifest behavior updates `docs/contracts/storage-contract.md`
 
+## Agent skills
+
+### Issue tracker
+
+Issues live in the `thedavidweng/tg-drive-cli` GitHub repository. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single-context layout: `CONTEXT.md` at the repo root plus ADRs in `docs/adr/`. See `docs/agents/domain.md`.
+
 ## Architectural decisions
 
 - New dependencies, abstractions, or changes to public JSON/exit-code contracts require an ADR in `docs/adr/NNNN-slug.md` (Status / Context / Decision / Consequences).

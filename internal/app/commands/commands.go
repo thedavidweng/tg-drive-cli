@@ -140,7 +140,7 @@ func NewVersionCmd(rt Runtime) *cobra.Command {
 }
 
 func NewDoctorCmd(rt Runtime) *cobra.Command {
-	return &cobra.Command{
+	c := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check local and Telegram capabilities",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -175,6 +175,41 @@ func NewDoctorCmd(rt Runtime) *cobra.Command {
 			if maxBytes, ok := data["max_upload_bytes"].(int64); ok {
 				_, _ = fmt.Fprintf(out, "%-18s %s\n", "max_upload", humanSize(maxBytes))
 			}
+			return nil
+		},
+	}
+	c.AddCommand(NewDoctorPathCodecCmd(rt))
+	return c
+}
+
+func NewDoctorPathCodecCmd(rt Runtime) *cobra.Command {
+	return &cobra.Command{
+		Use:   "path-codec",
+		Short: "Run path codec self-test and verify stored slug mappings",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			r := rt.Renderer()
+			cfg, _, err := rt.LoadConfig()
+			if err != nil {
+				return r.Error(err)
+			}
+			database, err := sqlitestore.Open(cfg.Storage.DBPath)
+			if err != nil {
+				return r.Error(err)
+			}
+			defer func() { _ = database.Close() }()
+			app := &service.App{Cfg: cfg, DB: database}
+			data, err := app.PathCodecDoctor(context.Background())
+			if err != nil {
+				return r.Error(err)
+			}
+			if rt.JSON() {
+				return r.Success(data)
+			}
+			out := cmd.OutOrStdout()
+			_, _ = fmt.Fprintf(out, "fixed-vectors        %s\n", data["fixed_vectors"])
+			_, _ = fmt.Fprintf(out, "db-check             %s\n", data["db_check"])
+			_, _ = fmt.Fprintf(out, "db-rows              %v\n", data["db_rows"])
+			_, _ = fmt.Fprintf(out, "corrupt-rows         %v\n", data["corrupt_rows"])
 			return nil
 		},
 	}

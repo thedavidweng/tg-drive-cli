@@ -31,6 +31,7 @@ td init <local-root>
   (bare --bind-channel lists and prompts)
 td status
 td doctor
+  td doctor path-codec
 td scan [remote-root]
 td ls [remote-path]
 td tree [remote-path]
@@ -113,6 +114,7 @@ ERR_OPERATION_LOCKED
 ERR_ORPHANED_UPLOAD
 ERR_REPAIR_REQUIRED
 ERR_SLUG_COLLISION
+ERR_UNKNOWN
 ```
 
 ## Exit code mapping

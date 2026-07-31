@@ -83,18 +83,6 @@ create table if not exists files (
   updated_at text not null
 );
 
-create unique index if not exists idx_files_active_path
-  on files(channel_id, canonical_path)
-  where status = 'active';
-
-create unique index if not exists idx_files_pending_path
-  on files(channel_id, canonical_path)
-  where status = 'pending';
-
-create unique index if not exists idx_files_channel_message
-  on files(channel_id, message_id)
-  where message_id is not null;
-
 create table if not exists path_segment_slugs (
   id integer primary key,
   channel_id integer not null references channels(id),
@@ -156,6 +144,25 @@ create table if not exists upload_progress (
   confirmed_bytes integer not null default 0,
   updated_at text not null
 );
+
+create unique index if not exists idx_files_active_path
+  on files(channel_id, canonical_path)
+  where status = 'active';
+
+create unique index if not exists idx_files_pending_path
+  on files(channel_id, canonical_path)
+  where status = 'pending';
+
+create unique index if not exists idx_files_channel_message
+  on files(channel_id, message_id)
+  where message_id is not null;
+
+create index if not exists idx_nodes_channel_parent on nodes(channel_id, parent_path);
+create index if not exists idx_nodes_channel_type on nodes(channel_id, type);
+create index if not exists idx_files_channel_status on files(channel_id, status);
+create index if not exists idx_files_channel_path on files(channel_id, canonical_path);
+create index if not exists idx_path_tags_tag on path_tags(tag);
+create index if not exists idx_scan_errors_status on scan_errors(channel_id, status);
 `
 
 // DB wraps SQLite with migrations and helpers.

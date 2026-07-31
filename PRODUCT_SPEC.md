@@ -467,12 +467,13 @@ Persist final slug mapping:
 create table path_segment_slugs (
   id integer primary key,
   channel_id integer not null references channels(id),
-  original_segment text not null,
+  parent_canonical_path text not null,
+  segment text not null,
   slug text not null,
-  hash_bits integer not null,
+  hash_len integer not null,
   created_at text not null,
-  unique(channel_id, original_segment),
-  unique(channel_id, slug)
+  unique(channel_id, parent_canonical_path, segment),
+  unique(channel_id, parent_canonical_path, slug)
 );
 ```
 
@@ -792,7 +793,8 @@ create table nodes (
   parent_path text,
   display_name text not null,
   type text not null check(type in ('dir', 'file')),
-  derived_from_active_files integer not null default 1,
+  derived integer not null default 1,
+  ephemeral integer not null default 0,
   created_at text not null,
   updated_at text not null,
   unique(channel_id, canonical_path)
@@ -841,12 +843,13 @@ create table path_tags (
 create table path_segment_slugs (
   id integer primary key,
   channel_id integer not null references channels(id),
-  original_segment text not null,
+  parent_canonical_path text not null,
+  segment text not null,
   slug text not null,
-  hash_bits integer not null,
+  hash_len integer not null,
   created_at text not null,
-  unique(channel_id, original_segment),
-  unique(channel_id, slug)
+  unique(channel_id, parent_canonical_path, segment),
+  unique(channel_id, parent_canonical_path, slug)
 );
 
 create table scan_state (
@@ -865,7 +868,7 @@ create table scan_errors (
   error_code text not null,
   error_message text not null,
   raw_excerpt text,
-  status text not null check(status in ('pending', 'resolved', 'ignored')) default 'pending',
+  status text not null check(status in ('pending', 'resolved')) default 'pending',
   first_seen_at text not null,
   last_seen_at text not null,
   resolved_at text,
@@ -873,11 +876,9 @@ create table scan_errors (
 );
 
 create table operation_locks (
-  id integer primary key,
-  lock_key text not null unique,
-  owner_pid integer,
+  key text primary key,
   owner_token text not null,
-  created_at text not null,
+  acquired_at text not null,
   expires_at text not null
 );
 ```
@@ -885,6 +886,18 @@ create table operation_locks (
 Indexes:
 
 ```sql
+create unique index idx_files_active_path
+  on files(channel_id, canonical_path)
+  where status = 'active';
+
+create unique index idx_files_pending_path
+  on files(channel_id, canonical_path)
+  where status = 'pending';
+
+create unique index idx_files_channel_message
+  on files(channel_id, message_id)
+  where message_id is not null;
+
 create index idx_nodes_channel_parent on nodes(channel_id, parent_path);
 create index idx_nodes_channel_type on nodes(channel_id, type);
 create index idx_files_channel_status on files(channel_id, status);

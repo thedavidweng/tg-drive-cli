@@ -359,5 +359,49 @@ func pathCodecSelfTest() string {
 	return "pass"
 }
 
+// PathCodecDoctor runs the path codec self-test and verifies stored slug
+// mappings against the current database.
+func (a *App) PathCodecDoctor(ctx context.Context) (map[string]any, error) {
+	out := map[string]any{
+		"fixed_vectors": pathCodecSelfTest(),
+	}
+	if a.DB == nil {
+		out["db_check"] = "unknown"
+		out["db_rows"] = 0
+		out["corrupt_rows"] = 0
+		return out, nil
+	}
+
+	rows, err := a.DB.Raw().QueryContext(ctx, `select parent_canonical_path, segment, slug, hash_len from path_segment_slugs`)
+	if err != nil {
+		return nil, apperr.Wrap(apperr.ErrDB, "query path_segment_slugs", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	total, corrupt := 0, 0
+	for rows.Next() {
+		var parent, segment, slug string
+		var hashLen int
+		if err := rows.Scan(&parent, &segment, &slug, &hashLen); err != nil {
+			corrupt++
+			continue
+		}
+		total++
+		if pathcodec.SegmentSlug(segment, hashLen) != slug {
+			corrupt++
+		}
+	}
+	_ = rows.Err()
+
+	out["db_rows"] = total
+	out["corrupt_rows"] = corrupt
+	if corrupt == 0 {
+		out["db_check"] = "pass"
+	} else {
+		out["db_check"] = "fail"
+	}
+	return out, nil
+}
+
 // Ensure imports used
 var _ = sql.ErrNoRows

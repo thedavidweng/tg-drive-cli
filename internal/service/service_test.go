@@ -227,6 +227,54 @@ func TestRepairPending(t *testing.T) {
 	}
 }
 
+func TestRepairPath(t *testing.T) {
+	app, tg := testApp(t)
+	loginAndInit(t, app, tg)
+	ctx := context.Background()
+	local := filepath.Join(t.TempDir(), "a.txt")
+	_ = os.WriteFile(local, []byte("hello"), 0o644)
+	if _, err := app.UploadFile(ctx, local, "/repair-path.txt", ConflictFail, false); err != nil {
+		t.Fatal(err)
+	}
+	res, err := app.RepairPath(ctx, "/repair-path.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res["repaired"] != "/repair-path.txt" {
+		t.Fatalf("res = %v", res)
+	}
+}
+
+func TestRepairScanErrors(t *testing.T) {
+	app, tg := testApp(t)
+	loginAndInit(t, app, tg)
+	ctx := context.Background()
+	local := filepath.Join(t.TempDir(), "a.txt")
+	_ = os.WriteFile(local, []byte("hello"), 0o644)
+	if _, err := app.UploadFile(ctx, local, "/scan-err.txt", ConflictFail, false); err != nil {
+		t.Fatal(err)
+	}
+	channelID, _, err := app.channelID(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := "2020-01-01T00:00:00Z"
+	if _, err := app.DB.Raw().ExecContext(ctx, `insert into scan_errors(channel_id,message_id,error_code,error_message,raw_excerpt,status,first_seen_at,last_seen_at) values(?,?,?,?,?,?,?,?)`,
+		channelID, 999999, "ERR_MANIFEST_INVALID", "missing manifest", "", "pending", now, now); err != nil {
+		t.Fatal(err)
+	}
+	res, err := app.RepairScanErrors(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res["resolved"] != 1 {
+		t.Fatalf("resolved = %v", res["resolved"])
+	}
+	if res["pending"] != 0 {
+		t.Fatalf("pending = %v", res["pending"])
+	}
+}
+
 func TestReplaceUpload(t *testing.T) {
 	app, tg := testApp(t)
 	loginAndInit(t, app, tg)

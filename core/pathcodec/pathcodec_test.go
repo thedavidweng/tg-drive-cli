@@ -118,25 +118,27 @@ func TestChainReusesExistingSlugs(t *testing.T) {
 
 func TestChainCollisionExtendsHash(t *testing.T) {
 	// Force a collision: a different segment in the same parent already
-	// claimed the 5-char slug that "a b" would generate.
-	fiveChar := SegmentSlug("a b", 5)
-	existing := map[string]string{SlugKey("/", "other"): fiveChar}
+	// claimed the 8-char slug that "a b" would generate.
+	eightChar := SegmentSlug("a b", 8)
+	existing := map[string]string{SlugKey("/", "other"): eightChar}
 	tags, mappings, err := GenerateChain("/a b/x.jpg", existing)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(mappings) != 1 || mappings[0].HashLen != 8 {
+	if len(mappings) != 1 || mappings[0].HashLen != 13 {
 		t.Fatalf("mappings = %v", mappings)
 	}
 	assertSafeTags(t, tags)
 }
 
-func TestChainCollisionAtEightFails(t *testing.T) {
-	five := SegmentSlug("a b", 5)
+func TestChainCollisionAtTwentySixFails(t *testing.T) {
 	eight := SegmentSlug("a b", 8)
+	thirteen := SegmentSlug("a b", 13)
+	twentySix := SegmentSlug("a b", 26)
 	existing := map[string]string{
-		SlugKey("/", "seg1"): five,
-		SlugKey("/", "seg2"): eight,
+		SlugKey("/", "seg1"): eight,
+		SlugKey("/", "seg2"): thirteen,
+		SlugKey("/", "seg3"): twentySix,
 	}
 	_, _, err := GenerateChain("/a b/x.jpg", existing)
 	if err == nil {

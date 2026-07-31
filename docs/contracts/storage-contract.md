@@ -87,6 +87,13 @@ create unique index idx_files_channel_message
   on files(channel_id, message_id)
   where message_id is not null;
 
+create index idx_nodes_channel_parent on nodes(channel_id, parent_path);
+create index idx_nodes_channel_type on nodes(channel_id, type);
+create index idx_files_channel_status on files(channel_id, status);
+create index idx_files_channel_path on files(channel_id, canonical_path);
+create index idx_path_tags_tag on path_tags(tag);
+create index idx_scan_errors_status on scan_errors(channel_id, status);
+
 create table path_segment_slugs (
   id integer primary key,
   channel_id integer not null references channels(id),

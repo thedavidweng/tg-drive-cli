@@ -95,14 +95,18 @@ func GenerateChain(canonical string, existing map[string]string) ([]string, []Sl
 		slug, ok := existing[key]
 		if !ok {
 			taken := slugsInParent(existing, parent)
-			hashLen := 5
-			slug = SegmentSlug(seg, hashLen)
-			if taken[slug] {
-				hashLen = 8
-				slug = SegmentSlug(seg, hashLen)
-				if taken[slug] {
-					return nil, nil, apperr.New(apperr.ErrSlugCollision, fmt.Sprintf("slug collision for segment %q under %s", seg, parent))
+			hashLen := 8
+			collided := true
+			for _, h := range []int{8, 13, 26} {
+				hashLen = h
+				slug = SegmentSlug(seg, h)
+				if !taken[slug] {
+					collided = false
+					break
 				}
+			}
+			if collided {
+				return nil, nil, apperr.New(apperr.ErrSlugCollision, fmt.Sprintf("slug collision for segment %q under %s", seg, parent))
 			}
 			mappings = append(mappings, SlugMapping{
 				ParentCanonical: parent,

@@ -3,7 +3,7 @@ module github.com/thedavidweng/tg-drive-cli
 go 1.26
 
 require (
-	github.com/go-faster/errors v0.7.1
+	github.com/go-faster/errors v0.8.0
 	github.com/google/uuid v1.6.0
 	github.com/gotd/td v0.161.0
 	github.com/mozillazg/go-pinyin v0.21.0

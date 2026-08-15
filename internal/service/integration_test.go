@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,8 +12,17 @@ import (
 	"testing"
 
 	apperr "github.com/thedavidweng/tg-drive-cli/core/errors"
+	"github.com/thedavidweng/tg-drive-cli/core/ports"
 	"github.com/thedavidweng/tg-drive-cli/core/telegram"
 )
+
+type failIndex struct {
+	err error
+}
+
+func (f failIndex) Index(context.Context, ports.FileIndexRequest) (int64, error) {
+	return 0, f.err
+}
 
 func b64url(s string) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(s))
@@ -606,7 +616,7 @@ func TestRecursiveUploadAndDownload(t *testing.T) {
 		t.Fatalf("res = %v", res)
 	}
 	dest := t.TempDir()
-	if err := app.DownloadRecursive(ctx, "/backup", dest, ConflictFail, false); err != nil {
+	if _, err := app.DownloadRecursive(ctx, "/backup", dest, ConflictFail, false); err != nil {
 		t.Fatal(err)
 	}
 	for rel, want := range map[string]string{"a.txt": "A", "sub/b.txt": "B", "sub/deep/c.txt": "C"} {
@@ -877,5 +887,258 @@ func TestFullScanIgnoresStaleIndexForConflicts(t *testing.T) {
 	_ = app.DB.Raw().QueryRow(`select count(*) from scan_errors where status='pending'`).Scan(&bogus)
 	if bogus != 0 {
 		t.Fatalf("bogus scan errors = %d", bogus)
+	}
+}
+
+func TestIndexFailureAfterUploadDeletesMedia(t *testing.T) {
+	app, tg := testApp(t)
+	loginAndInit(t, app, tg)
+	ctx := context.Background()
+	app.Index = failIndex{err: errors.New("index boom")}
+	local := writeLocal(t, "payload")
+	_, err := app.UploadFile(ctx, local, "/plain.txt", ConflictFail, false)
+	if err == nil {
+		t.Fatal("expected index failure")
+	}
+	if got := fileStatus(t, app, "/plain.txt"); got != "" {
+		t.Fatalf("status = %q, want row gone after rollback", got)
+	}
+	tgChID, _ := app.tgChannelID(ctx)
+	if n := len(tg.Messages(tgChID)); n != 0 {
+		t.Fatalf("media not rolled back, %d messages remain", n)
+	}
+	app.Index = nil
+	res, err := app.RepairPending(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res["repaired"] != 0 || res["orphaned"] != 0 {
+		t.Fatalf("repair = %v, want no retry/orphan", res)
+	}
+	if n := len(tg.Messages(tgChID)); n != 0 {
+		t.Fatalf("repair created %d extra messages", n)
+	}
+}
+
+func TestIndexFailureAfterUploadOrphansWhenDeleteFails(t *testing.T) {
+	app, tg := testApp(t)
+	loginAndInit(t, app, tg)
+	ctx := context.Background()
+	app.Index = failIndex{err: errors.New("index boom")}
+	tg.SetFailDelete(true)
+	local := writeLocal(t, "payload")
+	_, err := app.UploadFile(ctx, local, "/stuck.txt", ConflictFail, false)
+	if code := appErrCode(t, err); code != apperr.ErrOrphanedUpload {
+		t.Fatalf("code = %s, want ERR_ORPHANED_UPLOAD", code)
+	}
+	if got := fileStatus(t, app, "/stuck.txt"); got != "orphaned" {
+		t.Fatalf("status = %q, want orphaned", got)
+	}
+	var msgID int
+	if err := app.DB.Raw().QueryRow(`select message_id from files where canonical_path='/stuck.txt'`).Scan(&msgID); err != nil || msgID == 0 {
+		t.Fatalf("orphaned row missing message_id: %v %d", err, msgID)
+	}
+	tgChID, _ := app.tgChannelID(ctx)
+	before := len(tg.Messages(tgChID))
+	if before != 1 {
+		t.Fatalf("messages = %d, want 1", before)
+	}
+	app.Index = nil
+	res, err := app.RepairPending(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res["repaired"] != 0 {
+		t.Fatalf("repair re-uploaded: %v", res)
+	}
+	if n := len(tg.Messages(tgChID)); n != before {
+		t.Fatalf("repair duplicated media: before=%d after=%d", before, n)
+	}
+}
+
+func TestRepairPendingDoesNotDuplicateRecordedMessage(t *testing.T) {
+	app, tg := testApp(t)
+	loginAndInit(t, app, tg)
+	ctx := context.Background()
+	local := writeLocal(t, "x")
+	channelID, _, _ := app.channelID(ctx)
+	tgChID, _ := app.tgChannelID(ctx)
+	up, err := tg.UploadMedia(ctx, uploadReq(tgChID, "crash.bin", "crash.bin\n\ntd:v1 p="+b64url("/crash.bin")+" n="+b64url("crash.bin")+" s=1 h=- m=-", strings.NewReader("x")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = app.DB.Raw().Exec(`insert into files(channel_id,message_id,canonical_path,display_name,original_local_path,status,updated_at) values(?,?,?,?,?,'pending','2020-01-01T00:00:00Z')`,
+		channelID, up.MessageID, "/crash.bin", "crash.bin", local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := len(tg.Messages(tgChID))
+	res, err := app.RepairPending(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res["orphaned"] != 1 {
+		t.Fatalf("repair = %v, want orphaned=1", res)
+	}
+	if res["repaired"] != 0 {
+		t.Fatalf("repair re-uploaded: %v", res)
+	}
+	if got := fileStatus(t, app, "/crash.bin"); got != "orphaned" {
+		t.Fatalf("status = %q, want orphaned", got)
+	}
+	if n := len(tg.Messages(tgChID)); n != before {
+		t.Fatalf("duplicated media: before=%d after=%d", before, n)
+	}
+}
+
+func TestDeleteCommitsWhenManifestFails(t *testing.T) {
+	app, tg := testApp(t)
+	loginAndInit(t, app, tg)
+	ctx := context.Background()
+	local := writeLocal(t, "payload")
+	remote := deepPath("del.bin")
+	if _, err := app.UploadFile(ctx, local, remote, ConflictFail, false); err != nil {
+		t.Fatal(err)
+	}
+	tg.SetFailDeleteAfterFirst(true)
+	_, err := app.DeleteFile(ctx, remote, DeleteOptions{})
+	if err == nil {
+		t.Fatal("expected stale-manifest error after media delete")
+	}
+	if got := fileStatus(t, app, remote); got != "deleted" {
+		t.Fatalf("status = %q, want deleted after media delete", got)
+	}
+}
+
+func TestTombstoneCommitsWhenManifestEditFails(t *testing.T) {
+	app, tg := testApp(t)
+	loginAndInit(t, app, tg)
+	ctx := context.Background()
+	local := writeLocal(t, "payload")
+	remote := deepPath("tomb.bin")
+	if _, err := app.UploadFile(ctx, local, remote, ConflictFail, false); err != nil {
+		t.Fatal(err)
+	}
+	tg.SetFailEditText(true)
+	_, err := app.DeleteFile(ctx, remote, DeleteOptions{Tombstone: true})
+	if err == nil {
+		t.Fatal("expected stale-manifest error")
+	}
+	if got := fileStatus(t, app, remote); got != "deleted" {
+		t.Fatalf("status = %q, want deleted after media tombstone", got)
+	}
+}
+
+func TestDeleteAlreadyGoneMessageMarksDeleted(t *testing.T) {
+	app, tg := testApp(t)
+	loginAndInit(t, app, tg)
+	ctx := context.Background()
+	local := writeLocal(t, "payload")
+	if _, err := app.UploadFile(ctx, local, "/gone.txt", ConflictFail, false); err != nil {
+		t.Fatal(err)
+	}
+	tgChID, _ := app.tgChannelID(ctx)
+	var msgID int
+	if err := app.DB.Raw().QueryRow(`select message_id from files where canonical_path='/gone.txt'`).Scan(&msgID); err != nil {
+		t.Fatal(err)
+	}
+	if err := tg.DeleteMessage(ctx, tgChID, msgID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.DeleteFile(ctx, "/gone.txt", DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := fileStatus(t, app, "/gone.txt"); got != "deleted" {
+		t.Fatalf("status = %q, want deleted", got)
+	}
+}
+
+func TestScanSkipsUnmanagedCaptions(t *testing.T) {
+	app, tg := testApp(t)
+	loginAndInit(t, app, tg)
+	ctx := context.Background()
+	tgChID, _ := app.tgChannelID(ctx)
+	if _, err := tg.UploadMedia(ctx, uploadReq(tgChID, "photo.jpg", "just a vacation photo #sunset", strings.NewReader("x"))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.Scan(ctx, ScanOptions{Full: true, Strict: true}); err != nil {
+		t.Fatal(err)
+	}
+	var pending int
+	_ = app.DB.Raw().QueryRow(`select count(*) from scan_errors where status='pending'`).Scan(&pending)
+	if pending != 0 {
+		t.Fatalf("unmanaged caption recorded as scan error (%d)", pending)
+	}
+}
+
+func TestShareUsesDeepestTag(t *testing.T) {
+	app, tg := testApp(t)
+	loginAndInit(t, app, tg)
+	ctx := context.Background()
+	local := writeLocal(t, "hello")
+	if _, err := app.UploadFile(ctx, local, "/Pictures/2024/beach.jpg", ConflictFail, false); err != nil {
+		t.Fatal(err)
+	}
+	res, err := app.Share(ctx, "/Pictures/2024/beach.jpg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tag, _ := res["hashtag"].(string)
+	if !strings.HasPrefix(tag, "#td_") {
+		t.Fatalf("hashtag = %q", tag)
+	}
+	if strings.Count(tag, "_") < 3 {
+		t.Fatalf("expected deepest tag with multiple slugs, got %q", tag)
+	}
+	shallow, err := app.Share(ctx, "/Pictures")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shallowTag, _ := shallow["hashtag"].(string)
+	if tag == shallowTag {
+		t.Fatalf("file share returned shallow tag %q", tag)
+	}
+	if !strings.HasPrefix(tag, shallowTag+"_") && !strings.Contains(tag, shallowTag) {
+		// deepest must extend the Pictures slug
+		if !strings.Contains(tag, strings.TrimPrefix(shallowTag, "#td_")) {
+			t.Fatalf("deep %q does not contain shallow %q", tag, shallowTag)
+		}
+	}
+}
+
+func TestRecursiveGetContinueOnErrorReportsFailures(t *testing.T) {
+	app, tg := testApp(t)
+	loginAndInit(t, app, tg)
+	ctx := context.Background()
+	local := writeLocal(t, "ok")
+	if _, err := app.UploadFile(ctx, local, "/tree/ok.txt", ConflictFail, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.UploadFile(ctx, local, "/tree/missing.txt", ConflictFail, false); err != nil {
+		t.Fatal(err)
+	}
+	tgChID, _ := app.tgChannelID(ctx)
+	var missingID int
+	if err := app.DB.Raw().QueryRow(`select message_id from files where canonical_path='/tree/missing.txt'`).Scan(&missingID); err != nil {
+		t.Fatal(err)
+	}
+	if err := tg.DeleteMessage(ctx, tgChID, missingID); err != nil {
+		t.Fatal(err)
+	}
+	dest := t.TempDir()
+	res, err := app.DownloadRecursive(ctx, "/tree", dest, ConflictFail, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed, _ := res["failed"].(int)
+	if failed < 1 {
+		t.Fatalf("res = %v, want failed >= 1", res)
+	}
+	errs, _ := res["errors"].([]string)
+	if len(errs) == 0 {
+		t.Fatalf("res = %v, want error list", res)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "ok.txt")); err != nil {
+		t.Fatalf("ok.txt not downloaded: %v", err)
 	}
 }

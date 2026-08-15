@@ -84,22 +84,9 @@ V1 做稳定的文件级映射。
 
 ---
 
-## Future Scope
+## Out of V1
 
-后续版本再做：
-
-- 多频道策略
-- forum topic 视觉增强
-- 目录级 rename/move
-- watch 本地目录变更自动上传
-- 分享导入向导
-- WebDAV/FUSE 层
-- 去重存储
-- 端到端加密层
-- 多账号切换
-- 可恢复批处理 job queue
-
-目录级 rename/move 进入 V2。它需要批量编辑整棵子树的所有后代文件，涉及限流、部分成功、断点恢复和 repair job，V1 保持文件级操作。
+V1 does not include directory move/delete, multi-channel storage, forum topics, watch mode, WebDAV/FUSE, dedupe, E2EE, or multi-account switching. Track later work in GitHub Issues, not in this file.
 
 ---
 
@@ -1357,7 +1344,7 @@ Rules:
 - `td repair <path>` requires a parsed canonical path.
 - Messages without parseable `td:v1` path are reported with Telegram message ID and manual action.
 - Repair actions that edit old messages must pass edit capability checks.
-- Repair never deletes Telegram messages unless `--delete-orphans` is passed.
+- Repair never deletes Telegram messages unless `--delete-orphaned --confirm` is passed.
 
 ---
 
@@ -1651,50 +1638,7 @@ ERR_EMPTY_DIRS_UNSUPPORTED
 ERR_OPERATION_LOCKED
 ```
 
-Exit code mapping:
-
-```text
-0 success
-1 general error
-2 usage error
-3 auth/config error
-4 remote Telegram error
-5 scan/index error
-6 local filesystem error
-7 conflict error
-```
-
-Error-to-exit mapping:
-
-```text
-ERR_AUTH_REQUIRED             -> 3
-ERR_CONFIG_MISSING            -> 3
-ERR_CHANNEL_NOT_FOUND         -> 4
-ERR_CHANNEL_PERMISSION        -> 4
-ERR_PATH_INVALID              -> 2
-ERR_PATH_EXISTS               -> 7
-ERR_PATH_IS_DIRECTORY         -> 7
-ERR_PATH_ANCESTOR_IS_FILE     -> 7
-ERR_PATH_CONFLICT             -> 7
-ERR_LOCAL_NOT_FOUND           -> 6
-ERR_LOCAL_PATH_EXISTS         -> 7
-ERR_REMOTE_NOT_FOUND          -> 5
-ERR_CAPTION_TOO_LONG          -> 2
-ERR_MANIFEST_INVALID          -> 5
-ERR_FILE_TOO_LARGE            -> 2
-ERR_MESSAGE_NOT_EDITABLE      -> 4
-ERR_MESSAGE_EDIT_EXPIRED      -> 4
-ERR_CROSS_CHANNEL_MOVE        -> 2
-ERR_DIRECTORY_MOVE_UNSUPPORTED -> 2
-ERR_SCAN_FAILED               -> 5
-ERR_TELEGRAM_RATE_LIMITED     -> 4
-ERR_TELEGRAM_RPC              -> 4
-ERR_DB                        -> 5
-ERR_SLUG_COLLISION            -> 5
-ERR_ORPHANED_UPLOAD           -> 5
-ERR_EMPTY_DIRS_UNSUPPORTED    -> 2
-ERR_OPERATION_LOCKED          -> 7
-```
+Exit codes and the full error-code list are frozen in `docs/contracts/cli-contract.md` (`0–5` plus `10` for `ERR_CONFIRMATION_REQUIRED`). Do not use a separate 6/7 mapping.
 
 ---
 
@@ -1988,8 +1932,8 @@ td cp ./testdata/local/a.txt /a.txt
 td ls /
 td tree /
 td get /a.txt ./restore/a.txt
-td mv /a.txt /b.txt
-td rm /b.txt
+td mv --confirm /a.txt /b.txt
+td rm --confirm /b.txt
 td scan --full
 td repair --scan-errors
 ```
@@ -2119,4 +2063,4 @@ Modern Telegram clients may show global hashtag results. Users should select cur
 
 Old Telegram messages may fail caption edit depending on account, chat type, permissions, and platform behavior. `td doctor` must test relevant capability, and `td mv` must handle edit failure explicitly.
 
-Forum topics, multi-channel storage, watch mode, directory-level moves, advanced sync, and E2EE archive mode are future work.
+See GitHub Issues for work outside V1.

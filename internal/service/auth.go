@@ -196,7 +196,7 @@ func (a *App) Share(ctx context.Context, remotePath string) (map[string]any, err
 	var tag string
 	_ = a.DB.Raw().QueryRowContext(ctx, `
 		select pt.tag from path_tags pt join files f on f.id=pt.file_id
-		where f.channel_id=? and f.canonical_path=? and f.status='active' order by pt.depth limit 1`, channelID, p).Scan(&tag)
+		where f.channel_id=? and f.canonical_path=? and f.status='active' order by pt.depth desc limit 1`, channelID, p).Scan(&tag)
 	if tag == "" {
 		existing, err := a.loadExistingSlugs(ctx, channelID)
 		if err != nil {

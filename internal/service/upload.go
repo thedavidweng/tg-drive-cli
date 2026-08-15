@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -39,6 +40,9 @@ type App struct {
 	Render  func() bool // returns json mode
 	// Progress optionally receives upload part confirmations.
 	Progress telegram.UploadProgress
+	// Index optionally overrides the file index used by the publisher.
+	// Tests inject a failing index to cover the post-upload crash window.
+	Index ports.FileIndex
 
 	limitMu     sync.Mutex
 	cachedLimit int64
@@ -51,11 +55,44 @@ func (a *App) files() ports.FileSystem {
 	return a.Runtime.Files
 }
 
+func (a *App) fileIndex() ports.FileIndex {
+	if a.Index != nil {
+		return a.Index
+	}
+	return a.DB
+}
+
 func (a *App) publisher() *publisher.Publisher {
-	return publisher.New(a.TG, a.DB, publisher.Config{
+	return publisher.New(a.TG, a.fileIndex(), publisher.Config{
 		SafeMediaCaptionUTF16Units: a.Cfg.Caption.SafeMediaCaptionUTF16Units,
 		MarginUTF16Units:           a.Cfg.Caption.MarginUTF16Units,
 	})
+}
+
+func isMessageGone(err error) bool {
+	var nf *telegram.MessageNotFoundError
+	return errors.As(err, &nf)
+}
+
+func (a *App) recordPendingMessage(ctx context.Context, fileID int64, messageID int, now string) error {
+	_, err := a.DB.Raw().ExecContext(ctx, `update files set message_id=?, updated_at=? where id=?`, messageID, now, fileID)
+	if err != nil {
+		return apperr.Wrap(apperr.ErrDB, "record uploaded message", err)
+	}
+	return nil
+}
+
+// abandonUploadedMedia runs after media exists on Telegram but publish/index
+// failed. It deletes the media when possible; otherwise the pending row is
+// marked orphaned with message_id so RepairPending will not re-upload.
+func (a *App) abandonUploadedMedia(ctx context.Context, tgChID, fileID int64, messageID int, now string) (orphaned bool) {
+	delErr := a.TG.DeleteMessage(ctx, tgChID, messageID)
+	if delErr == nil || isMessageGone(delErr) {
+		_, _ = a.DB.Raw().ExecContext(ctx, `delete from files where id=?`, fileID)
+		return false
+	}
+	_, _ = a.DB.Raw().ExecContext(ctx, `update files set status='orphaned', message_id=?, updated_at=? where id=?`, messageID, now, fileID)
+	return true
 }
 
 // ConflictPolicy for uploads/downloads.
@@ -393,6 +430,14 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 		}
 		return nil, mapTGErr(err)
 	}
+	// Persist message_id before any further Telegram or DB work so a crash
+	// or index failure cannot look like "never uploaded" to RepairPending.
+	if recErr := a.recordPendingMessage(ctx, fileID, up.MessageID, now); recErr != nil {
+		if a.abandonUploadedMedia(ctx, tgChID, fileID, up.MessageID, now) {
+			return nil, apperr.New(apperr.ErrOrphanedUpload, fmt.Sprintf("upload reached Telegram message %d but could not be recorded; run td repair --orphaned", up.MessageID))
+		}
+		return nil, recErr
+	}
 
 	pubRes, pubErr := a.publisher().Publish(ctx, publisher.PublishRequest{
 		ChannelRowID:  channelID,
@@ -405,18 +450,8 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 		ReplaceFileID: replaceFileID,
 	})
 	if pubErr != nil {
-		ae, _ := apperr.As(pubErr)
-		if capRes.NeedsManifestReply && (ae == nil || ae.Code != apperr.ErrDB) {
-			// The manifest reply could not be sent. Roll back the media message.
-			// If the rollback delete succeeds the pending row is dropped and the
-			// original error surfaces; if it fails, the uploaded media is recorded
-			// as orphaned for repair.
-			if delErr := a.TG.DeleteMessage(ctx, tgChID, up.MessageID); delErr == nil {
-				_, _ = a.DB.Raw().ExecContext(ctx, `delete from files where id=?`, fileID)
-				return nil, pubErr
-			}
-			_, _ = a.DB.Raw().ExecContext(ctx, `update files set status='orphaned', message_id=?, updated_at=? where id=?`, up.MessageID, now, fileID)
-			return nil, apperr.New(apperr.ErrOrphanedUpload, fmt.Sprintf("manifest reply failed and media message %d could not be rolled back; run td repair --orphaned", up.MessageID))
+		if a.abandonUploadedMedia(ctx, tgChID, fileID, up.MessageID, now) {
+			return nil, apperr.New(apperr.ErrOrphanedUpload, fmt.Sprintf("upload reached Telegram message %d but could not be completed or rolled back; run td repair --orphaned", up.MessageID))
 		}
 		return nil, pubErr
 	}
@@ -486,6 +521,8 @@ func mapTGErr(err error) error {
 			})
 	case *telegram.MessageNotEditableError:
 		return apperr.New(apperr.ErrMessageNotEditable, err.Error())
+	case *telegram.MessageNotFoundError:
+		return apperr.New(apperr.ErrRemoteNotFound, err.Error())
 	default:
 		return apperr.Wrap(apperr.ErrTelegramRPC, "telegram", err)
 	}

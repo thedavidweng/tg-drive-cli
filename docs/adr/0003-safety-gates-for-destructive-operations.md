@@ -14,6 +14,7 @@ Remote mutations in `td` can permanently alter or delete the user's Telegram cha
   - `td rm` requires `--confirm`.
   - `td mv` requires `--confirm`.
   - `td cp --replace` requires `--confirm`.
+  - `td import` requires `--confirm` unless `--dry-run` is set.
 - Each of these commands also supports `--dry-run`, which returns a plan and makes no remote change.
 - Non-destructive writes (`td cp` without `--replace`, `td init`, `td scan`, `td repair`) do not require `--confirm`.
 - Read-only mode (`TD_READONLY` / `--read-only`) is **not** implemented at this time.

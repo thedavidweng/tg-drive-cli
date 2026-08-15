@@ -24,15 +24,9 @@ CODECOV_TOKEN                 optional, only needed for private repos
 
 ## Workflows
 
-- `.github/workflows/ci.yml` runs:
-  - `go mod tidy` drift check (`make mod-tidy-check`)
-  - format check (`make fmt-check`)
-  - vet (`make vet`)
-  - `golangci-lint` with `.golangci.yml`
-  - tests, race tests, WASM core build
-  - single-platform build (`make build`)
-  - cross-platform `goreleaser build --snapshot --clean` to catch release-breakers
-  - coverage upload to Codecov
+- `.github/workflows/ci.yml` runs two jobs:
+  - `test` (25m): tidy, fmt, vet, lint, unit tests, race, WASM, `make build`, coverage
+  - `snapshot` (30m): `goreleaser build --snapshot --clean` on its own runner so a slow cross-build cannot cancel tests
 - `.github/workflows/release-please.yml` manages release PRs and tags.
 - `.github/workflows/release.yml` runs GoReleaser on `v*` tags.
 

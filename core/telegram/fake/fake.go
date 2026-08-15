@@ -25,10 +25,13 @@ type Client struct {
 	password  string
 	failCode  bool
 
-	failUpload bool
-	failReply  bool
-	failDelete bool
-	denyPerms  bool
+	failUpload         bool
+	failReply          bool
+	failDelete         bool
+	failDeleteAfterOne bool
+	deleteCalls        int
+	failEditText       bool
+	denyPerms          bool
 }
 
 // New creates a fake client.
@@ -57,6 +60,15 @@ func (c *Client) SetFailReply(v bool) { c.failReply = v }
 
 // SetFailDelete makes DeleteMessage fail (test hook).
 func (c *Client) SetFailDelete(v bool) { c.failDelete = v }
+
+// SetFailDeleteAfterFirst lets the next DeleteMessage succeed, then fails.
+func (c *Client) SetFailDeleteAfterFirst(v bool) {
+	c.failDeleteAfterOne = v
+	c.deleteCalls = 0
+}
+
+// SetFailEditText makes EditText fail (test hook).
+func (c *Client) SetFailEditText(v bool) { c.failEditText = v }
 
 // SetDenyPermissions makes mutating calls return PermissionDeniedError (test hook).
 func (c *Client) SetDenyPermissions(v bool) { c.denyPerms = v }
@@ -188,7 +200,7 @@ func (c *Client) UploadMedia(ctx context.Context, req telegram.UploadRequest) (*
 	}
 	id := c.nextID
 	c.nextID++
-	msg := telegram.Message{ID: id, Caption: req.Caption, FileName: req.FileName, FileSize: req.Size, MIME: req.MIME, Data: data}
+	msg := telegram.Message{ID: id, Caption: req.Caption, FileName: req.FileName, FileSize: req.Size, MIME: req.MIME, Kind: telegram.KindDocument, Data: data}
 	c.messages[req.ChannelID] = append(c.messages[req.ChannelID], msg)
 	c.save()
 	return &telegram.UploadResult{MessageID: id}, nil
@@ -230,6 +242,9 @@ func (c *Client) EditCaption(ctx context.Context, channelID int64, messageID int
 func (c *Client) EditText(ctx context.Context, channelID int64, messageID int, text string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.failEditText {
+		return fmt.Errorf("edit text failed")
+	}
 	for i, m := range c.messages[channelID] {
 		if m.ID == messageID {
 			c.messages[channelID][i].Text = text
@@ -246,7 +261,8 @@ func (c *Client) DeleteMessage(ctx context.Context, channelID int64, messageID i
 	if c.denyPerms {
 		return &telegram.PermissionDeniedError{}
 	}
-	if c.failDelete {
+	c.deleteCalls++
+	if c.failDelete || (c.failDeleteAfterOne && c.deleteCalls > 1) {
 		return fmt.Errorf("delete failed")
 	}
 	msgs := c.messages[channelID]
@@ -264,12 +280,50 @@ func (c *Client) DownloadMedia(ctx context.Context, channelID int64, messageID i
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, m := range c.messages[channelID] {
-		if m.ID == messageID {
+		if m.ID != messageID {
+			continue
+		}
+		if len(m.Data) > 0 {
 			_, err := dst.Write(m.Data)
 			return err
 		}
+		if m.Kind == telegram.KindText || m.Text != "" {
+			body := m.Text
+			if body == "" {
+				body = m.Caption
+			}
+			_, err := dst.Write([]byte(body))
+			return err
+		}
+		return fmt.Errorf("message has no downloadable content")
 	}
 	return &telegram.MessageNotFoundError{}
+}
+
+func (c *Client) GetMessage(ctx context.Context, channelID int64, messageID int) (telegram.Message, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, m := range c.messages[channelID] {
+		if m.ID == messageID {
+			return m, nil
+		}
+	}
+	return telegram.Message{}, &telegram.MessageNotFoundError{}
+}
+
+// AddMessage injects a pre-built message (test hook for photos/text/unmanaged docs).
+func (c *Client) AddMessage(channelID int64, msg telegram.Message) telegram.Message {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if msg.ID == 0 {
+		msg.ID = c.nextID
+		c.nextID++
+	} else if msg.ID >= c.nextID {
+		c.nextID = msg.ID + 1
+	}
+	c.messages[channelID] = append(c.messages[channelID], msg)
+	c.save()
+	return msg
 }
 
 func (c *Client) Doctor(ctx context.Context, channelID int64) (*telegram.Capabilities, error) {

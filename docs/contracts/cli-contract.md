@@ -33,28 +33,43 @@ td status
 td doctor
   td doctor path-codec
 td scan [remote-root]
+  [--full] [--strict] [--repair] [--include-deleted]
 td ls [remote-path]
 td tree [remote-path]
+  [--depth <n>]
+td completion [bash|zsh|fish|powershell]
 td cp <local> <remote-path>
   [--replace] [--skip-existing] [--auto-rename] [--no-hash]
   [--recursive] [--continue-on-error] [--include-empty-dirs]
   [--upload-threads <n>] [--upload-part-size-kb <n>]
   [--confirm] [--dry-run] [--events]
 td get <remote-path> <local-dest>
-  [--replace] [--skip-existing] [--auto-rename] [--continue-on-error]
+  [--recursive] [--replace] [--skip-existing] [--auto-rename] [--continue-on-error]
 td mv <remote-from> <remote-to>
   [--confirm] [--dry-run]
 td rm <remote-path>
   [--tombstone] [--allow-stale-manifest]
   [--confirm] [--dry-run]
 td share [remote-path]
+td import [message-id] [remote-path]
+  [--unmanaged] [--into <dir>]
+  [--keep-caption] [--hash]
+  [--rewrite-captions]
+  [--confirm] [--dry-run] [--continue-on-error]
+  # --rewrite-captions restores album captions, removes per-file
+  # td-manifest replies, and upserts one td-album:v1 reply per group
 td repair [path]
 td repair --pending
-td repair --orphaned
+td repair --orphaned [--delete-orphaned --confirm]
 td repair --scan-errors
 td config get [key]
+  [--show-secrets] [--confirm]
 td config set <key> <value>
 ```
+
+`--confirm` is required for `td rm`, `td mv`, `td cp --replace`, `td import` (unless `--dry-run`), and `td repair --delete-orphaned`.
+
+JSON envelopes include `meta` as specified in `docs/contracts/json-contract.md`. The short envelopes below omit `meta` for brevity.
 
 ## Global JSON success envelope
 

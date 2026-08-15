@@ -98,6 +98,14 @@ type UploadState struct {
 	ConfirmedBytes int64
 }
 
+// Media kinds Telegram can store as a drive file.
+const (
+	KindNone     = ""
+	KindDocument = "document"
+	KindPhoto    = "photo"
+	KindText     = "text"
+)
+
 // Message represents a channel message with optional media.
 type Message struct {
 	ID          int
@@ -106,9 +114,14 @@ type Message struct {
 	FileName    string
 	FileSize    int64
 	MIME        string
+	Kind        string
 	Data        []byte
 	ReplyTo     *int
 	NotEditable bool
+	// GroupedID is Telegram's media-album id. 0 means the message is not
+	// part of an album. Members of one album share a single human caption
+	// on the first item and appear as one timeline block.
+	GroupedID int64
 }
 
 // UploadRequest is a media upload request.
@@ -190,6 +203,7 @@ type MediaClient interface {
 // HistoryClient fetches message history.
 type HistoryClient interface {
 	History(ctx context.Context, channelID int64, afterID int, limit int) ([]Message, error)
+	GetMessage(ctx context.Context, channelID int64, messageID int) (Message, error)
 }
 
 // Typed errors.

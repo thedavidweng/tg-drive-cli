@@ -947,6 +947,55 @@ _td_help()
     noun_aliases=()
 }
 
+_td_import()
+{
+    last_command="td_import"
+
+    command_aliases=()
+
+    commands=()
+
+    flags=()
+    two_word_flags=()
+    local_nonpersistent_flags=()
+    flags_with_completion=()
+    flags_completion=()
+
+    flags+=("--confirm")
+    local_nonpersistent_flags+=("--confirm")
+    flags+=("--continue-on-error")
+    local_nonpersistent_flags+=("--continue-on-error")
+    flags+=("--dry-run")
+    local_nonpersistent_flags+=("--dry-run")
+    flags+=("--hash")
+    local_nonpersistent_flags+=("--hash")
+    flags+=("--into=")
+    two_word_flags+=("--into")
+    local_nonpersistent_flags+=("--into")
+    local_nonpersistent_flags+=("--into=")
+    flags+=("--keep-caption")
+    local_nonpersistent_flags+=("--keep-caption")
+    flags+=("--unmanaged")
+    local_nonpersistent_flags+=("--unmanaged")
+    flags+=("--channel=")
+    two_word_flags+=("--channel")
+    flags+=("--config=")
+    two_word_flags+=("--config")
+    flags+=("--db=")
+    two_word_flags+=("--db")
+    flags+=("--json")
+    flags+=("--no-wait")
+    flags+=("--quiet")
+    flags+=("--session=")
+    two_word_flags+=("--session")
+    flags+=("--verbose")
+    flags+=("--wait")
+
+    must_have_one_flag=()
+    must_have_one_noun=()
+    noun_aliases=()
+}
+
 _td_init()
 {
     last_command="td_init"
@@ -1068,6 +1117,8 @@ _td_repair()
     flags_with_completion=()
     flags_completion=()
 
+    flags+=("--confirm")
+    local_nonpersistent_flags+=("--confirm")
     flags+=("--delete-orphaned")
     local_nonpersistent_flags+=("--delete-orphaned")
     flags+=("--orphaned")
@@ -1328,6 +1379,7 @@ _td_root_command()
     commands+=("doctor")
     commands+=("get")
     commands+=("help")
+    commands+=("import")
     commands+=("init")
     commands+=("ls")
     commands+=("mv")

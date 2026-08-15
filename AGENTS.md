@@ -1,17 +1,12 @@
 # Agent instructions
 
-This repository is ready for implementation. Decisions are already made. Implement them directly.
-
-## Execution order
-
-Work through `IMPLEMENTATION_PLAN.md` from Stage 0 to Stage 18. Complete a stage only when every acceptance item passes.
+This repository is implemented. Do not reopen completed V1 scope. Future work lives in GitHub Issues.
 
 ## Source of truth
 
-- Product behavior: `PRODUCT_SPEC.md`
-- Implementation sequence: `IMPLEMENTATION_PLAN.md`
-- CLI surface: `docs/contracts/cli-contract.md`
-- Storage/data rules: `docs/contracts/storage-contract.md`
+- Frozen CLI/JSON/storage interfaces: `docs/contracts/`
+- Product behavior (V1 limits): `PRODUCT_SPEC.md` — contracts win on conflict
+- Decisions: `DECISIONS.md` and `docs/adr/`
 - CI/CD: `docs/release-and-ci.md`
 - Testing: `docs/testing.md`
 
@@ -32,7 +27,7 @@ Work through `IMPLEMENTATION_PLAN.md` from Stage 0 to Stage 18. Complete a stage
 - Every remote write operation must use an operation lock and a DB transaction.
 - Never assume Telegram capabilities. Use the capability layer and `td doctor` checks.
 - Never count Telegram captions with `len(string)` or rune count. Use UTF-16 code units.
-- Never rely on hashtags for machine reconstruction. Use `td:v1` or `td-manifest:v1` metadata.
+- Never rely on hashtags for machine reconstruction. Use `td:v1`, `td-manifest:v1`, or `td-album:v1` metadata.
 
 ## PR checklist
 

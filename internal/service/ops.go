@@ -258,8 +258,13 @@ func (a *App) Scan(ctx context.Context, opts ScanOptions) (map[string]any, error
 		meta  manifest.ParsedMeta
 		msgID int
 	}{}
+	byID := map[int]telegram.Message{}
 	for _, msg := range msgs {
+		byID[msg.ID] = msg
 		if msg.Text == "" || msg.ReplyTo == nil {
+			continue
+		}
+		if manifest.IsAlbumReply(msg.Text) {
 			continue
 		}
 		if meta, err := manifest.ParseManifestReply(msg.Text); err == nil {
@@ -275,6 +280,7 @@ func (a *App) Scan(ctx context.Context, opts ScanOptions) (map[string]any, error
 	now := time.Now().UTC().Format(time.RFC3339)
 	seen := map[string]bool{}
 	seenMsgIDs := map[int]bool{}
+	seenMedia := map[int]bool{}
 	maxID := afterID
 	scanActive, err := a.activePaths(ctx, channelID)
 	if err != nil {
@@ -297,6 +303,124 @@ func (a *App) Scan(ctx context.Context, opts ScanOptions) (map[string]any, error
 			maxID = msg.ID
 		}
 		seenMsgIDs[msg.ID] = true
+	}
+	for _, msg := range msgs {
+		album, err := manifest.ParseAlbumReply(msg.Text)
+		if err != nil {
+			continue
+		}
+		replyID := msg.ID
+		for _, f := range album.Files {
+			media, ok := byID[f.MessageID]
+			if !ok {
+				got, gerr := a.TG.GetMessage(ctx, tgChID, f.MessageID)
+				if gerr != nil {
+					invalid++
+					_, _ = a.DB.Raw().ExecContext(ctx, `
+						insert into scan_errors(channel_id,message_id,error_code,error_message,raw_excerpt,status,first_seen_at,last_seen_at)
+						values(?,?,?,?,?,'pending',?,?)
+						on conflict(channel_id,message_id,error_code) do update set last_seen_at=excluded.last_seen_at, status='pending'`,
+						channelID, f.MessageID, apperr.ErrManifestInvalid, "album member not found", f.CanonicalPath, now, now)
+					if opts.Strict && strictFailure == "" {
+						strictFailure = "album member missing"
+					}
+					continue
+				}
+				media = got
+			}
+			meta := manifest.ParsedMeta{
+				CanonicalPath: f.CanonicalPath,
+				DisplayName:   f.DisplayName,
+				Size:          f.Size,
+				Hash:          f.Hash,
+				MIME:          f.MIME,
+			}
+			if meta.Size == 0 && media.FileSize > 0 {
+				meta.Size = media.FileSize
+			}
+			if meta.MIME == "" && media.MIME != "" {
+				meta.MIME = media.MIME
+			}
+			if meta.DisplayName == "" && media.FileName != "" {
+				meta.DisplayName = media.FileName
+			}
+			if meta.CanonicalPath == "" || !inRoot(meta.CanonicalPath) {
+				continue
+			}
+			seen[meta.CanonicalPath] = true
+			seenMedia[f.MessageID] = true
+			manID := replyID
+			indexed, err := a.indexScannedFile(ctx, channelID, f.MessageID, &manID, meta, now, scanActive, scanSlugs)
+			if err != nil {
+				return nil, err
+			}
+			if indexed {
+				scanActive = appendScanIndexedPath(scanActive, meta.CanonicalPath)
+				_, _ = a.DB.Raw().ExecContext(ctx, `update scan_errors set status='resolved', resolved_at=? where channel_id=? and message_id=? and status='pending'`, now, channelID, f.MessageID)
+			}
+		}
+	}
+
+	for mediaID, resolved := range manifestByMedia {
+		if seenMedia[mediaID] {
+			continue
+		}
+		media, ok := byID[mediaID]
+		if !ok {
+			got, gerr := a.TG.GetMessage(ctx, tgChID, mediaID)
+			if gerr != nil {
+				invalid++
+				_, _ = a.DB.Raw().ExecContext(ctx, `
+					insert into scan_errors(channel_id,message_id,error_code,error_message,raw_excerpt,status,first_seen_at,last_seen_at)
+					values(?,?,?,?,?,'pending',?,?)
+					on conflict(channel_id,message_id,error_code) do update set last_seen_at=excluded.last_seen_at, status='pending'`,
+					channelID, mediaID, apperr.ErrManifestInvalid, "manifest target not found", resolved.meta.CanonicalPath, now, now)
+				if opts.Strict && strictFailure == "" {
+					strictFailure = "manifest target missing"
+				}
+				continue
+			}
+			media = got
+		}
+		meta := resolved.meta
+		if meta.Deleted {
+			if opts.IncludeDeleted && meta.CanonicalPath != "" && inRoot(meta.CanonicalPath) {
+				tombstones++
+				_, _ = a.DB.Raw().ExecContext(ctx, `update files set status='deleted', node_id=null, updated_at=? where channel_id=? and message_id=? and status in ('active','missing')`,
+					now, channelID, mediaID)
+			}
+			seenMedia[mediaID] = true
+			continue
+		}
+		if meta.Size == 0 && media.FileSize > 0 {
+			meta.Size = media.FileSize
+		}
+		if meta.MIME == "" && media.MIME != "" {
+			meta.MIME = media.MIME
+		}
+		if meta.DisplayName == "" && media.FileName != "" {
+			meta.DisplayName = media.FileName
+		}
+		if meta.CanonicalPath == "" || !inRoot(meta.CanonicalPath) {
+			continue
+		}
+		seen[meta.CanonicalPath] = true
+		seenMedia[mediaID] = true
+		manID := resolved.msgID
+		indexed, err := a.indexScannedFile(ctx, channelID, mediaID, &manID, meta, now, scanActive, scanSlugs)
+		if err != nil {
+			return nil, err
+		}
+		if indexed {
+			scanActive = appendScanIndexedPath(scanActive, meta.CanonicalPath)
+			_, _ = a.DB.Raw().ExecContext(ctx, `update scan_errors set status='resolved', resolved_at=? where channel_id=? and message_id=? and status='pending'`, now, channelID, mediaID)
+		}
+	}
+
+	for _, msg := range msgs {
+		if seenMedia[msg.ID] || manifest.IsAlbumReply(msg.Text) || isPerFileManifestReply(msg) {
+			continue
+		}
 		if msg.Caption == "" && msg.Text == "" {
 			continue
 		}
@@ -304,10 +428,15 @@ func (a *App) Scan(ctx context.Context, opts ScanOptions) (map[string]any, error
 		var parseErr error
 		mediaMessageID := msg.ID
 		if msg.Caption != "" {
+			if !manifest.HasMachineMeta(msg.Caption) {
+				// Native / unmanaged captions are not managed messages.
+				continue
+			}
 			meta, parseErr = manifest.ParseCaption(msg.Caption)
+		} else if msg.Text != "" && manifest.HasMachineMeta(msg.Text) && !strings.HasPrefix(strings.TrimSpace(msg.Text), "td-manifest:") {
+			meta, parseErr = manifest.ParseCaption(msg.Text)
 		} else {
-			// Text-only messages are manifest replies (already resolved via
-			// manifestByMedia) or unmanaged messages; skip both.
+			// Manifest replies are resolved via manifestByMedia; other text is unmanaged.
 			continue
 		}
 		if parseErr != nil {
@@ -611,7 +740,7 @@ func (a *App) DownloadFile(ctx context.Context, remotePath, localDest string, po
 		h = blake3.New(32, nil)
 		w = io.MultiWriter(f, h)
 	}
-	if err := a.TG.DownloadMedia(ctx, tgChID, messageID, w); err != nil {
+	if err := a.downloadTo(ctx, tgChID, messageID, w); err != nil {
 		_ = f.Close()
 		_ = a.files().Remove(ctx, tmp)
 		return nil, mapTGErr(err)
@@ -643,6 +772,20 @@ func (a *App) DownloadFile(ctx context.Context, remotePath, localDest string, po
 		return nil, err
 	}
 	return &DownloadResult{Path: p, Dest: localDest, Size: size}, nil
+}
+
+func (a *App) downloadTo(ctx context.Context, tgChID int64, messageID int, w io.Writer) error {
+	if msg, err := a.TG.GetMessage(ctx, tgChID, messageID); err == nil {
+		if msg.Kind == telegram.KindText || (msg.MIME == "text/plain" && len(msg.Data) == 0 && msg.FileName == "") {
+			body := msg.Text
+			if body == "" {
+				body = msg.Caption
+			}
+			_, err := w.Write([]byte(manifest.SplitHumanAndMachine(body)))
+			return err
+		}
+	}
+	return a.TG.DownloadMedia(ctx, tgChID, messageID, w)
 }
 
 func autoRenameLocal(ctx context.Context, files ports.FileSystem, path string) string {
@@ -764,6 +907,16 @@ func (a *App) MoveFile(ctx context.Context, from, to string) error {
 		manifestMsgID = int(manifestID.Int64)
 	}
 
+	if album, ok, err := a.loadAlbumManifest(ctx, tgChID, manifestMsgID); err != nil {
+		return mapTGErr(err)
+	} else if ok {
+		updated := albumReplacePath(album, int(messageID.Int64), dst)
+		if _, err := a.writeAlbumManifest(ctx, channelID, tgChID, manifestMsgID, albumFirstMediaID(updated), updated); err != nil {
+			return err
+		}
+		return a.reindexAlbumMember(ctx, channelID, fileID, int(messageID.Int64), manifestMsgID, dst, contentHash, mimeType, size)
+	}
+
 	if _, err := a.publisher().Publish(ctx, publisher.PublishRequest{
 		ChannelRowID:  channelID,
 		ChannelID:     tgChID,
@@ -835,9 +988,53 @@ func (a *App) DeleteFile(ctx context.Context, remotePath string, opts DeleteOpti
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	var manifestErr error
+	manID := 0
+	if manifestID.Valid {
+		manID = int(manifestID.Int64)
+	}
+	if album, ok, err := a.loadAlbumManifest(ctx, tgChID, manID); err != nil && !isMessageGone(err) {
+		return nil, mapTGErr(err)
+	} else if ok {
+		if messageID.Valid {
+			if err := a.TG.DeleteMessage(ctx, tgChID, int(messageID.Int64)); err != nil && !isMessageGone(err) {
+				return nil, mapTGErr(err)
+			}
+		}
+		remaining := albumWithout(album, int(messageID.Int64))
+		if len(remaining.Files) == 0 {
+			manifestErr = a.TG.DeleteMessage(ctx, tgChID, manID)
+		} else {
+			_, manifestErr = a.writeAlbumManifest(ctx, channelID, tgChID, manID, albumFirstMediaID(remaining), remaining)
+		}
+		if isMessageGone(manifestErr) {
+			manifestErr = nil
+		}
+		err = a.DB.WithTx(ctx, func(tx *sql.Tx) error {
+			if err := a.DB.ClearNodeID(ctx, tx, fileID); err != nil {
+				return err
+			}
+			_, err := tx.ExecContext(ctx, `update files set status='deleted', updated_at=? where id=?`, now, fileID)
+			return err
+		})
+		if err != nil {
+			return nil, apperr.Wrap(apperr.ErrDB, "mark deleted", err)
+		}
+		if err := a.DB.RunDirectoryGC(ctx, channelID); err != nil {
+			return nil, err
+		}
+		out := map[string]any{"path": p, "mode": "delete"}
+		if manifestErr != nil {
+			out["stale_manifest"] = true
+			if !opts.AllowStaleManifest {
+				return out, apperr.New(apperr.ErrTelegramRPC,
+					fmt.Sprintf("album inventory %d could not be updated: %v; rerun with --allow-stale-manifest to ignore", manID, manifestErr))
+			}
+		}
+		return out, nil
+	}
 	if mode == "delete" {
 		if messageID.Valid {
-			if err := a.TG.DeleteMessage(ctx, tgChID, int(messageID.Int64)); err != nil {
+			if err := a.TG.DeleteMessage(ctx, tgChID, int(messageID.Int64)); err != nil && !isMessageGone(err) {
 				return nil, mapTGErr(err)
 			}
 		}
@@ -846,7 +1043,7 @@ func (a *App) DeleteFile(ctx context.Context, remotePath string, opts DeleteOpti
 		}
 	} else {
 		if messageID.Valid {
-			if err := a.TG.EditCaption(ctx, tgChID, int(messageID.Int64), manifest.RenderTombstoneCaption(fsmodel.BaseName(p), p)); err != nil {
+			if err := a.TG.EditCaption(ctx, tgChID, int(messageID.Int64), manifest.RenderTombstoneCaption(fsmodel.BaseName(p), p)); err != nil && !isMessageGone(err) {
 				return nil, mapTGErr(err)
 			}
 		}
@@ -854,14 +1051,11 @@ func (a *App) DeleteFile(ctx context.Context, remotePath string, opts DeleteOpti
 			manifestErr = a.TG.EditText(ctx, tgChID, int(manifestID.Int64), manifest.RenderTombstoneManifest(p))
 		}
 	}
-	if manifestErr != nil {
-		if _, notFound := manifestErr.(*telegram.MessageNotFoundError); notFound {
-			manifestErr = nil
-		} else if !opts.AllowStaleManifest {
-			return nil, apperr.New(apperr.ErrTelegramRPC,
-				fmt.Sprintf("manifest reply %d could not be redacted: %v; rerun with --allow-stale-manifest to ignore", manifestID.Int64, manifestErr))
-		}
+	if isMessageGone(manifestErr) {
+		manifestErr = nil
 	}
+	// Media mutation already succeeded (or the message was already gone).
+	// Commit deleted even if the manifest reply cannot be redacted.
 	err = a.DB.WithTx(ctx, func(tx *sql.Tx) error {
 		if err := a.DB.ClearNodeID(ctx, tx, fileID); err != nil {
 			return err
@@ -878,6 +1072,10 @@ func (a *App) DeleteFile(ctx context.Context, remotePath string, opts DeleteOpti
 	out := map[string]any{"path": p, "mode": mode}
 	if manifestErr != nil {
 		out["stale_manifest"] = true
+		if !opts.AllowStaleManifest {
+			return out, apperr.New(apperr.ErrTelegramRPC,
+				fmt.Sprintf("manifest reply %d could not be redacted: %v; rerun with --allow-stale-manifest to ignore", manifestID.Int64, manifestErr))
+		}
 	}
 	return out, nil
 }
@@ -985,7 +1183,7 @@ func (a *App) RepairOrphaned(ctx context.Context, deleteOrphans bool) (map[strin
 		}
 		if deleteOrphans {
 			err := a.TG.DeleteMessage(ctx, tgChID, int(r.msgID.Int64))
-			if _, notFound := err.(*telegram.MessageNotFoundError); err == nil || notFound {
+			if err == nil || isMessageGone(err) {
 				_, _ = a.DB.Raw().ExecContext(ctx, `update files set status='deleted', node_id=null, updated_at=? where id=?`, now, r.id)
 				deleted++
 				continue
@@ -1064,6 +1262,14 @@ func (a *App) RepairPath(ctx context.Context, remotePath string) (map[string]any
 	manifestMsgID := 0
 	if manifestID.Valid {
 		manifestMsgID = int(manifestID.Int64)
+	}
+	if album, ok, err := a.loadAlbumManifest(ctx, tgChID, manifestMsgID); err != nil {
+		return nil, mapTGErr(err)
+	} else if ok {
+		if _, err := a.writeAlbumManifest(ctx, channelID, tgChID, manifestMsgID, albumFirstMediaID(album), album); err != nil {
+			return nil, err
+		}
+		return map[string]any{"repaired": p}, nil
 	}
 	if _, err := a.publisher().Publish(ctx, publisher.PublishRequest{
 		ChannelRowID:      channelID,
@@ -1163,8 +1369,30 @@ func (a *App) UploadRecursive(ctx context.Context, localDir, remoteDir string, p
 	return data, nil
 }
 
-// DownloadRecursive downloads a directory tree.
-func (a *App) DownloadRecursive(ctx context.Context, remotePath, localDir string, policy ConflictPolicy, continueOnError bool) error {
+// DownloadRecursive downloads a directory tree and reports per-file results.
+func (a *App) DownloadRecursive(ctx context.Context, remotePath, localDir string, policy ConflictPolicy, continueOnError bool) (map[string]any, error) {
+	st := &downloadStats{}
+	if err := a.downloadRecursive(ctx, remotePath, localDir, policy, continueOnError, st); err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"path":       remotePath,
+		"local":      localDir,
+		"downloaded": st.downloaded,
+		"skipped":    st.skipped,
+		"failed":     st.failed,
+		"errors":     st.errors,
+	}, nil
+}
+
+type downloadStats struct {
+	downloaded int
+	skipped    int
+	failed     int
+	errors     []string
+}
+
+func (a *App) downloadRecursive(ctx context.Context, remotePath, localDir string, policy ConflictPolicy, continueOnError bool, st *downloadStats) error {
 	entries, err := a.ListDir(ctx, remotePath)
 	if err != nil {
 		return err
@@ -1173,19 +1401,32 @@ func (a *App) DownloadRecursive(ctx context.Context, remotePath, localDir string
 		localPath := filepath.Join(localDir, e.Name)
 		if e.Type == "dir" {
 			if err := a.files().MkdirAll(ctx, localPath, 0o755); err != nil {
+				st.failed++
+				st.errors = append(st.errors, err.Error())
 				if !continueOnError {
 					return err
 				}
 				continue
 			}
-			if err := a.DownloadRecursive(ctx, e.Path, localPath, policy, continueOnError); err != nil && !continueOnError {
+			if err := a.downloadRecursive(ctx, e.Path, localPath, policy, continueOnError, st); err != nil && !continueOnError {
 				return err
 			}
 			continue
 		}
-		if _, err := a.DownloadFile(ctx, e.Path, localPath, policy); err != nil && !continueOnError {
-			return err
+		res, err := a.DownloadFile(ctx, e.Path, localPath, policy)
+		if err != nil {
+			st.failed++
+			st.errors = append(st.errors, err.Error())
+			if !continueOnError {
+				return err
+			}
+			continue
 		}
+		if res.Skipped {
+			st.skipped++
+			continue
+		}
+		st.downloaded++
 	}
 	return nil
 }

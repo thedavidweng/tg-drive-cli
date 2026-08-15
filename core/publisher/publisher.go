@@ -158,7 +158,7 @@ func (p *Publisher) Publish(ctx context.Context, req PublishRequest) (*PublishRe
 		manifestChanged = true
 		fullMeta := req.Meta
 		fullMeta.Tags = tags
-		if err := p.tg.EditText(ctx, req.ChannelID, manifestMsgID, manifest.RenderManifestReply(fullMeta)); err != nil {
+		if err := p.tg.EditText(ctx, req.ChannelID, manifestMsgID, manifest.RenderManifestReplyFitting(fullMeta, manifest.DefaultTextBudget, p.cfg.MarginUTF16Units)); err != nil {
 			if err := p.rollbackManifest(ctx, req, manifestMsgID, manifestChanged, newManifest); err != nil {
 				return nil, err
 			}
@@ -284,7 +284,7 @@ func (p *Publisher) rollbackManifest(ctx context.Context, req PublishRequest, ma
 	}
 	fullMeta := oldMeta
 	fullMeta.Tags = oldTags
-	if err := p.tg.EditText(ctx, req.ChannelID, req.ManifestMsgID, manifest.RenderManifestReply(fullMeta)); err != nil {
+	if err := p.tg.EditText(ctx, req.ChannelID, req.ManifestMsgID, manifest.RenderManifestReplyFitting(fullMeta, manifest.DefaultTextBudget, p.cfg.MarginUTF16Units)); err != nil {
 		if !isNotEditable(err) && !isNotFound(err) {
 			return mapTGErr(err)
 		}

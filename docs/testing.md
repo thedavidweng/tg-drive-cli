@@ -51,12 +51,11 @@ td auth login
 td doctor
 td init ./testdata/local --create-channel
 td cp ./testdata/local/a.txt /a.txt
-td cp ./testdata/local/deep.txt /very/deep/path/that/forces/manifest/deep.txt
 td ls /
 td tree /
 td get /a.txt ./restore/a.txt
-td mv /a.txt /b.txt
-td rm /b.txt
+td mv --confirm /a.txt /b.txt
+td rm --confirm /b.txt
 td scan --full
 td share /
 ```

@@ -9,7 +9,6 @@ make ci-local
 
 ## Development
 
-- Implement stages from `IMPLEMENTATION_PLAN.md` in order.
 - Add tests with each behavior change.
 - Update contracts when CLI, JSON, storage, or config behavior changes.
 

@@ -8,6 +8,7 @@ import (
 	"unicode/utf16"
 
 	apperr "github.com/thedavidweng/tg-drive-cli/core/errors"
+	"github.com/thedavidweng/tg-drive-cli/core/fsmodel"
 )
 
 const (
@@ -79,9 +80,9 @@ func RenderCompact(m FileMeta) string {
 
 // RenderManifestReply renders td-manifest:v1 full text.
 func RenderManifestReply(m FileMeta) string {
-	parent := strings.TrimSuffix(strings.TrimPrefix(m.CanonicalPath, "/"), "/"+m.DisplayName)
-	if idx := strings.LastIndex(m.CanonicalPath, "/"); idx > 0 {
-		parent = m.CanonicalPath[:idx]
+	parent := fsmodel.ParentPath(m.CanonicalPath)
+	if parent == "" {
+		parent = "/"
 	}
 	lines := []string{
 		"td-manifest:v1",
@@ -99,6 +100,28 @@ func RenderManifestReply(m FileMeta) string {
 		lines = append(lines, fmt.Sprintf("tags=%s", strings.Join(m.Tags, " ")))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// RenderManifestReplyFitting keeps required metadata and as many shallow
+// tags as fit in the text-message budget. Deep tags are dropped first.
+func RenderManifestReplyFitting(m FileMeta, budget, margin int) string {
+	if budget <= 0 {
+		budget = DefaultTextBudget
+	}
+	if margin <= 0 {
+		margin = DefaultMargin
+	}
+	limit := budget - margin
+	tags := append([]string(nil), m.Tags...)
+	for {
+		candidate := m
+		candidate.Tags = tags
+		reply := RenderManifestReply(candidate)
+		if UTF16Units(reply) <= limit || len(tags) == 0 {
+			return reply
+		}
+		tags = tags[:len(tags)-1]
+	}
 }
 
 // CaptionResult holds rendered caption and whether manifest reply is needed.
@@ -158,12 +181,10 @@ func RenderCaption(m FileMeta, budget, margin int) (CaptionResult, error) {
 	if !FitsTelegramCaption(minCaption, budget, margin) {
 		return CaptionResult{}, apperr.New(apperr.ErrCaptionTooLong, "caption exceeds minimum budget")
 	}
-	replyMeta := m
-	replyMeta.Tags = minTags
 	return CaptionResult{
 		Caption:            minCaption,
 		NeedsManifestReply: true,
-		ManifestReply:      RenderManifestReply(replyMeta),
+		ManifestReply:      RenderManifestReplyFitting(m, DefaultTextBudget, margin),
 		IncludedTags:       minTags,
 	}, nil
 }
@@ -304,6 +325,60 @@ func ParseManifestReply(text string) (ParsedMeta, error) {
 		meta.Tags = strings.Fields(v)
 	}
 	return meta, nil
+}
+
+// SplitHumanAndMachine returns the human-visible prefix before any td:v1 /
+// td-manifest line. Used when adopting a message that already has a caption.
+func SplitHumanAndMachine(s string) string {
+	if s == "" {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	cut := len(lines)
+	for i, line := range lines {
+		trim := strings.TrimSpace(line)
+		if strings.Contains(trim, "td:v1") || strings.HasPrefix(trim, "td-manifest:") || strings.HasPrefix(trim, AlbumMagic) {
+			cut = i
+			break
+		}
+	}
+	return strings.TrimRight(strings.Join(lines[:cut], "\n"), "\n")
+}
+
+// HasMachineMeta reports whether s contains td:v1 or td-manifest:v1.
+func HasMachineMeta(s string) bool {
+	return strings.Contains(s, "td:v1") || strings.Contains(s, "td-manifest:v1") || strings.Contains(s, AlbumMagic)
+}
+
+// StripAdoptScaffold removes the filename + parent/ lines import used to
+// inject above td:v1, leaving only the original human caption.
+func StripAdoptScaffold(human, display, parentHuman string) string {
+	human = strings.TrimRight(human, "\n")
+	if display == "" {
+		return human
+	}
+	if parentHuman != "" {
+		scaffold := display + "\n" + parentHuman + "/"
+		if human == scaffold {
+			return ""
+		}
+		for _, sep := range []string{"\n\n" + scaffold, "\n" + scaffold} {
+			if strings.HasSuffix(human, sep) {
+				return strings.TrimRight(strings.TrimSuffix(human, sep), "\n")
+			}
+		}
+	}
+	return human
+}
+
+// HumanVisibleCaption is what should remain on the Telegram media/text
+// message: the original human caption, or the filename if there was none.
+func HumanVisibleCaption(body, display, parentHuman string) string {
+	human := StripAdoptScaffold(SplitHumanAndMachine(body), display, parentHuman)
+	if strings.TrimSpace(human) != "" {
+		return human
+	}
+	return display
 }
 
 // ParseCaption extracts td:v1 from a full caption.

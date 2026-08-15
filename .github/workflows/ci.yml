@@ -10,9 +10,9 @@ permissions:
   contents: read
 
 jobs:
-  ci:
+  test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -41,14 +41,24 @@ jobs:
         run: make build
       - name: Build WASM stub
         run: make build-wasm
+      - name: Upload coverage
+        uses: codecov/codecov-action@v7
+        with:
+          files: coverage.out
+        continue-on-error: true
+
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
       - name: Cross-platform build
         uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
           version: '~> v2'
           args: build --snapshot --clean
-      - name: Upload coverage
-        uses: codecov/codecov-action@v7
-        with:
-          files: coverage.out
-        continue-on-error: true

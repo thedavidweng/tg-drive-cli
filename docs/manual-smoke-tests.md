@@ -66,8 +66,8 @@ td cp ./testdata/local/a.txt /a.txt --json
 td ls / --json
 td tree / --json
 td get /a.txt ./testdata/restore/a.txt --json
-td mv /a.txt /renamed.txt --json
-td rm /renamed.txt --json
+td mv --confirm /a.txt /renamed.txt --json
+td rm --confirm /renamed.txt --json
 td scan --full --json
 td share / --json
 ```
@@ -82,11 +82,36 @@ td doctor --json
 
 The doctor must report whether old media caption edit is supported, unsupported, or unknown for the current account/channel.
 
-## Findings from the 2026-07-25 real-account run
+## Findings from the 2026-08-14 real-account run
+
+Reused the existing local session (`td auth status` authenticated; no new
+login code). Bound channel `local [TD]`. Doctor: auth/channel/upload/delete/
+invite/edit_old_caption/db/caption/path_codec pass; `file_size_limit` warn
+(free-tier 2 GB).
+
+Documented sequence against that channel (isolated under
+`/smoke-20260814-151556/`):
+
+| Step | Result |
+|---|---|
+| `td cp testdata/local/a.txt … --json` | ok, message 13, hash verified |
+| `td ls` / `td tree` | file visible |
+| `td get` | 32-byte round-trip matches fixture |
+| `td mv --confirm` | path updated; re-download matches |
+| `td rm --confirm` | deleted; empty dir gone from `ls` |
+| `td scan --full` | `active: 0`, `deleted: 11`, `invalid: 0` |
+| `td share` | invite link + subtree hashtag |
+
+Extra: a 20-level deep path first failed with Telegram `MESSAGE_TOO_LONG`
+because the fallback `td-manifest:v1` reply included the full O(n²) hashtag
+chain. Reply tags are now truncated from the deep side to the 4096 UTF-16
+text budget. Retry: upload recorded `manifest_message_id`, `scan --full`
+rebuilt the file, `get` matched, `rm --confirm` cleaned up.
+
+## Earlier findings from the 2026-07-25 real-account run
 
 The login step flood-waited the account after repeated `SendCode` calls, so
-steps after `td auth login` were not reached and still need a real-account
-pass. All seven issues found in that run are resolved:
+that run did not finish. The issues found then are resolved:
 
 | # | Finding | Resolution |
 |---|---------|------------|

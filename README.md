@@ -37,7 +37,7 @@ account.
 
 ### Build/runtime
 
-- A released binary (see install below), **or** Go 1.22+ to build from source.
+- A released binary (see install below), **or** Go 1.26+ to build from source.
 
 ---
 
@@ -175,7 +175,7 @@ mapping, runs an initial scan, and prints the root + channel summary.
 ```sh
 td cp ~/Pictures/beach.jpg /2024/beach.jpg
 td cp --recursive ~/Pictures /Pictures
-td cp --replace ~/new.jpg /2024/beach.jpg
+td cp --replace --confirm ~/new.jpg /2024/beach.jpg
 td cp --skip-existing ~/beach.jpg /2024/beach.jpg
 td cp --auto-rename ~/beach.jpg /2024/beach.jpg      # -> beach (1).jpg
 td cp --no-hash ~/big.iso /iso/big.iso               # skip content hashing
@@ -216,8 +216,8 @@ Both read the SQLite cache. `td tree --depth` limits depth (0 = unlimited).
 ### `td mv <remote-from> <remote-to>`
 
 ```sh
-td mv /2024/beach.jpg /2024/beach-final.jpg      # rename
-td mv /2024/beach.jpg /Archive                    # into existing dir -> /Archive/beach.jpg
+td mv --confirm /2024/beach.jpg /2024/beach-final.jpg      # rename
+td mv --confirm /2024/beach.jpg /Archive                    # into existing dir -> /Archive/beach.jpg
 ```
 
 File-level, same-channel moves only (V1). Editing an existing message's caption
@@ -228,14 +228,35 @@ is preferred; see the edit-capability caveat below. Directory moves return
 ### `td rm <remote-path>`
 
 ```sh
-td rm /2024/beach.jpg
-td rm --tombstone /2024/beach.jpg                 # redact caption instead of delete
-td rm --tombstone --allow-stale-manifest /2024/old.jpg
+td rm --confirm /2024/beach.jpg
+td rm --confirm --tombstone /2024/beach.jpg                 # redact caption instead of delete
+td rm --confirm --tombstone --allow-stale-manifest /2024/old.jpg
 ```
 
 Default applies the configured delete mode (`delete` or `tombstone`).
 `--tombstone` forces tombstone mode for this call; `--allow-stale-manifest`
 suppresses the failure when a manifest reply cannot be redacted.
+
+### `td import [message-id] [remote-path]`
+
+Adopt a message already on Telegram (no re-upload):
+
+```sh
+td import --unmanaged --dry-run --channel NSFW
+td import --unmanaged --confirm --channel NSFW
+td import 61 /videos/The\ Bet.mp4 --confirm --channel NSFW
+```
+
+Documents, photos, and text are placed under `/videos`, `/photos`, `/audio`,
+`/files`, and `/notes` using the original filename when Telegram has one.
+Media albums stay one timeline block: the human caption (hashtags +
+description) lives on the first item. Reconstructable metadata for the
+whole group is a single `td-album:v1` reply, not one reply per file.
+To restore captions after a bad adopt and attach the album inventory:
+
+```sh
+td import --rewrite-captions --confirm --channel NSFW
+```
 
 ### `td share [remote-path]`
 
@@ -268,7 +289,7 @@ catch that drift.
 td repair /2024/beach.jpg      # regenerate caption/manifest for a known path
 td repair --pending            # inspect/clear stale pending uploads
 td repair --orphaned           # fix orphaned uploads (partial Telegram success)
-td repair --orphaned --delete-orphaned
+td repair --orphaned --delete-orphaned --confirm
 td repair --scan-errors        # clear resolved scan errors
 ```
 
@@ -351,14 +372,12 @@ Each directory level gets a cumulative hashtag, so tapping a tag in any Telegram
 client filters that folder. For `/Pictures/2024/06/15/Vacation/beach.jpg`:
 
 ```text
-#td_Pictures_n4j7x
-#td_Pictures_n4j7x_2024_l9p2q
-#td_Pictures_n4j7x_2024_l9p2q_06_z1k8c
-#td_Pictures_n4j7x_2024_l9p2q_06_z1k8c_15_t6w9m
-#td_Pictures_n4j7x_2024_l9p2q_06_z1k8c_15_t6w9m_Vacation_a3d7r
+#td_Pictures_<8-char-hash>
+#td_Pictures_<8-char-hash>_2024_<8-char-hash>
+#td_Pictures_<8-char-hash>_2024_<8-char-hash>_Vacation_<8-char-hash>
 ```
 
-Each segment is `readable_prefix_hashsuffix`, so the chain reads shallow → deep.
+Each segment is `readable_prefix` plus an 8-character base32 BLAKE3 suffix (13, then 26, on collision). The chain reads shallow → deep.
 
 **Caveat — global vs current-chat results:** modern Telegram clients may show
 **global** hashtag results when you tap a tag. Choose the **current
@@ -367,11 +386,9 @@ username you can use the scoped form `#tag@username`; private channels cannot us
 `@username` scoping, so rely on the current-channel tab.
 
 **Non-Latin segments:** Chinese path segments are transliterated to **pinyin**
-slugs for the hashtag (e.g. `文件` → `wen_jian_<hash>`); other scripts are
+slugs for the hashtag (e.g. `文件` → `wenjian_<hash>`); other scripts are
 transliterated to ASCII where possible, with a hash suffix guaranteeing
-uniqueness. The original segment is preserved in metadata. (If the pinyin
-dependency is unavailable in a build, Chinese-only segments fall back to
-hash-heavy tags.)
+uniqueness. The original segment is preserved in metadata.
 
 ---
 
@@ -456,10 +473,8 @@ td repair --scan-errors           # clear resolved scan errors
 - Empty directories are not recoverable after DB loss.
 - Incremental scan does not detect old messages edited/deleted directly in
   Telegram; use `td scan --full`.
-
-Future work (V2+): multi-channel storage, forum-topic grouping, directory-level
-moves, watch mode, share-import wizard, WebDAV/FUSE, dedup, and E2EE archive
-mode.
+- Destructive remote ops (`rm`, `mv`, `cp --replace`, `repair --delete-orphaned`)
+  require `--confirm`.
 
 ---
 

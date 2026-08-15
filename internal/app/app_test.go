@@ -69,3 +69,29 @@ func TestDoctorJSONEnvelope(t *testing.T) {
 		t.Fatalf("stdout = %s", stdout.String())
 	}
 }
+
+func TestRepairDeleteOrphanedRequiresConfirm(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "td")
+	build := exec.Command("go", "build", "-o", bin, filepath.Join("..", "..", "cmd", "td"))
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	cmd := exec.Command(bin, "--json", "repair", "--orphaned", "--delete-orphaned")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err == nil {
+		t.Fatal("expected confirmation error")
+	}
+	exit, ok := err.(*exec.ExitError)
+	if !ok {
+		t.Fatalf("err = %v", err)
+	}
+	if exit.ExitCode() != 10 {
+		t.Fatalf("exit = %d, want 10 (stdout=%s stderr=%s)", exit.ExitCode(), stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "ERR_CONFIRMATION_REQUIRED") {
+		t.Fatalf("stdout = %s", stdout.String())
+	}
+}

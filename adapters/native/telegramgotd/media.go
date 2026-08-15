@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"io"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-faster/errors"
@@ -15,6 +16,7 @@ import (
 	"github.com/gotd/td/telegram/message/styling"
 	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
+	"github.com/thedavidweng/tg-drive-cli/core/manifest"
 	tgtelegram "github.com/thedavidweng/tg-drive-cli/core/telegram"
 )
 
@@ -262,22 +264,28 @@ func (c *Client) UploadMedia(ctx context.Context, req tgtelegram.UploadRequest) 
 }
 
 func extractMessageID(updates tg.UpdatesClass) (int, error) {
+	var list []tg.UpdateClass
 	switch u := updates.(type) {
 	case *tg.Updates:
-		for _, upd := range u.Updates {
-			if m, ok := upd.(*tg.UpdateNewChannelMessage); ok {
-				if msg, ok := m.Message.(*tg.Message); ok {
-					return msg.ID, nil
-				}
-			}
-			if m, ok := upd.(*tg.UpdateNewMessage); ok {
-				if msg, ok := m.Message.(*tg.Message); ok {
-					return msg.ID, nil
-				}
-			}
-		}
+		list = u.Updates
+	case *tg.UpdatesCombined:
+		list = u.Updates
 	case *tg.UpdateShortSentMessage:
 		return u.ID, nil
+	default:
+		return 0, errors.New("message id not found")
+	}
+	for _, upd := range list {
+		if m, ok := upd.(*tg.UpdateNewChannelMessage); ok {
+			if msg, ok := m.Message.(*tg.Message); ok {
+				return msg.ID, nil
+			}
+		}
+		if m, ok := upd.(*tg.UpdateNewMessage); ok {
+			if msg, ok := m.Message.(*tg.Message); ok {
+				return msg.ID, nil
+			}
+		}
 	}
 	return 0, errors.New("message id not found")
 }
@@ -316,11 +324,15 @@ func (c *Client) EditCaption(ctx context.Context, channelID int64, messageID int
 		if err != nil {
 			return err
 		}
-		_, err = api.MessagesEditMessage(ctx, &tg.MessagesEditMessageRequest{
-			Peer:    peer,
-			ID:      messageID,
-			Message: caption,
-		})
+		// SetMessage sets the TL flag even when caption is empty, which is
+		// how album sibling captions are cleared. Assigning Message: ""
+		// alone leaves the flag unset and Telegram treats it as "no edit".
+		req := &tg.MessagesEditMessageRequest{
+			Peer: peer,
+			ID:   messageID,
+		}
+		req.SetMessage(caption)
+		_, err = api.MessagesEditMessage(ctx, req)
 		return mapRPCError(err)
 	})
 }
@@ -360,18 +372,57 @@ func (c *Client) DownloadMedia(ctx context.Context, channelID int64, messageID i
 		if err != nil {
 			return err
 		}
-		media, ok := msg.Media.(*tg.MessageMediaDocument)
-		if !ok || media.Document == nil {
-			return errors.New("message has no document")
+		switch media := msg.Media.(type) {
+		case *tg.MessageMediaDocument:
+			if media.Document == nil {
+				return errors.New("message has no document")
+			}
+			doc, ok := media.Document.(*tg.Document)
+			if !ok {
+				return errors.New("unsupported document type")
+			}
+			dl := downloader.NewDownloader()
+			_, err = dl.Download(api, doc.AsInputDocumentFileLocation("")).Stream(ctx, dst)
+			return mapRPCError(err)
+		case *tg.MessageMediaPhoto:
+			photo, ok := media.Photo.(*tg.Photo)
+			if !ok {
+				return errors.New("message has no photo")
+			}
+			thumb := largestPhotoType(photo)
+			dl := downloader.NewDownloader()
+			_, err = dl.Download(api, photo.AsInputPhotoFileLocation(thumb)).Stream(ctx, dst)
+			return mapRPCError(err)
+		case nil:
+			if strings.TrimSpace(msg.Message) == "" {
+				return errors.New("message has no downloadable content")
+			}
+			_, err := dst.Write([]byte(manifest.SplitHumanAndMachine(msg.Message)))
+			return err
+		default:
+			return errors.New("unsupported media type")
 		}
-		doc, ok := media.Document.(*tg.Document)
-		if !ok {
-			return errors.New("unsupported document type")
-		}
-		dl := downloader.NewDownloader()
-		_, err = dl.Download(api, doc.AsInputDocumentFileLocation("")).Stream(ctx, dst)
-		return mapRPCError(err)
 	})
+}
+
+func largestPhotoType(photo *tg.Photo) string {
+	bestType := "y"
+	best := 0
+	for _, s := range photo.Sizes {
+		switch v := s.(type) {
+		case *tg.PhotoSize:
+			if v.W*v.H > best {
+				best = v.W * v.H
+				bestType = v.Type
+			}
+		case *tg.PhotoSizeProgressive:
+			if v.W*v.H > best {
+				best = v.W * v.H
+				bestType = v.Type
+			}
+		}
+	}
+	return bestType
 }
 
 func firstMessage(msgs tg.MessagesMessagesClass) (*tg.Message, error) {

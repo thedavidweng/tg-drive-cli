@@ -939,13 +939,15 @@ func NewGetCmd(rt Runtime) *cobra.Command {
 				return r.Error(err)
 			}
 			if recursive {
-				if err := app.DownloadRecursive(context.Background(), args[0], args[1], policy, continueOnError); err != nil {
+				data, err := app.DownloadRecursive(context.Background(), args[0], args[1], policy, continueOnError)
+				if err != nil {
 					return r.Error(err)
 				}
 				if !rt.JSON() {
-					return r.SuccessLine("downloaded %s -> %s", args[0], args[1])
+					_ = r.SuccessLine("downloaded %s -> %s (%v files, %v skipped, %v failed)", args[0], args[1], data["downloaded"], data["skipped"], data["failed"])
+					return nil
 				}
-				return r.Success(map[string]string{"path": args[0], "local": args[1]})
+				return r.Success(data)
 			}
 			res, err := app.DownloadFile(context.Background(), args[0], args[1], policy)
 			if err != nil {
@@ -1081,14 +1083,102 @@ func NewShareCmd(rt Runtime) *cobra.Command {
 	}
 }
 
+func NewImportCmd(rt Runtime) *cobra.Command {
+	var unmanaged, keepCaption, noHash, hash, confirm, dryRun, continueOnError, rewriteCaptions bool
+	var into string
+	c := &cobra.Command{
+		Use:   "import [message-id] [remote-path]",
+		Short: "Adopt existing Telegram messages into the virtual file tree",
+		Args:  cobra.MaximumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			r := rt.Renderer()
+			if hash {
+				noHash = false
+			} else {
+				noHash = true
+			}
+			opts := service.ImportOptions{
+				Unmanaged:       unmanaged,
+				KeepCaption:     keepCaption,
+				NoHash:          noHash,
+				DryRun:          dryRun,
+				ContinueErr:     continueOnError,
+				Into:            into,
+				RewriteCaptions: rewriteCaptions,
+			}
+			if len(args) >= 1 {
+				id, err := strconv.Atoi(args[0])
+				if err != nil || id <= 0 {
+					return r.Error(apperr.New(apperr.ErrUsage, "message-id must be a positive integer"))
+				}
+				opts.MessageID = id
+			}
+			if len(args) >= 2 {
+				opts.Dest = args[1]
+			}
+			if opts.MessageID == 0 && !unmanaged && !rewriteCaptions {
+				return r.Error(apperr.New(apperr.ErrUsage, "import requires a message-id, --unmanaged, or --rewrite-captions"))
+			}
+			if !dryRun && !confirm {
+				return r.Error(apperr.New(apperr.ErrConfirmationRequired, "adopting existing messages requires --confirm (or --dry-run)"))
+			}
+			app, cleanup, err := rt.OpenApp(cmd)
+			if err != nil {
+				return r.Error(err)
+			}
+			defer cleanup()
+			data, err := app.Import(context.Background(), opts)
+			if err != nil {
+				return r.Error(err)
+			}
+			if rt.JSON() {
+				return r.Success(data)
+			}
+			out := cmd.OutOrStdout()
+			if rewriteCaptions {
+				_, _ = fmt.Fprintf(out, "import %s: %d captions restored, %d replies deleted, %d skipped, %d failed\n",
+					map[bool]string{true: "dry-run", false: "done"}[data.DryRun],
+					data.Imported, data.Deleted, data.Skipped, data.Failed)
+			} else {
+				_, _ = fmt.Fprintf(out, "import %s: %d adopted, %d skipped, %d failed\n",
+					map[bool]string{true: "dry-run", false: "done"}[data.DryRun],
+					data.Imported, data.Skipped, data.Failed)
+			}
+			for _, it := range data.Items {
+				if it.Action == "import" {
+					_, _ = fmt.Fprintf(out, "  %s  msg %d  %s\n", it.Kind, it.MessageID, it.Path)
+					continue
+				}
+				_, _ = fmt.Fprintf(out, "  %-5s msg %d  %s\n", it.Action, it.MessageID, it.Reason)
+			}
+			return nil
+		},
+	}
+	c.Flags().BoolVar(&unmanaged, "unmanaged", false, "adopt every unmanaged media/text message in the channel")
+	c.Flags().StringVar(&into, "into", "/", "remote directory prefix for --unmanaged")
+	c.Flags().BoolVar(&keepCaption, "keep-caption", true, "unused; import never edits Telegram captions")
+	c.Flags().BoolVar(&hash, "hash", false, "compute content hashes (downloads the file; skipped for large videos by default)")
+	c.Flags().BoolVar(&confirm, "confirm", false, "confirm adopting existing messages into the local index")
+	c.Flags().BoolVar(&dryRun, "dry-run", false, "print the adopt plan without editing Telegram")
+	c.Flags().BoolVar(&continueOnError, "continue-on-error", false, "continue adopting after a per-message error")
+	c.Flags().BoolVar(&rewriteCaptions, "rewrite-captions", false, "restore one human caption per album, delete per-file replies, and write one td-album:v1 inventory")
+	return c
+}
+
 func NewRepairCmd(rt Runtime) *cobra.Command {
-	var pending, orphaned, scanErrors, deleteOrphans bool
+	var pending, orphaned, scanErrors, deleteOrphans, confirm bool
 	c := &cobra.Command{
 		Use:   "repair [path]",
 		Short: "Repair index inconsistencies",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r := rt.Renderer()
+			if deleteOrphans && !orphaned {
+				return r.Error(apperr.New(apperr.ErrUsage, "--delete-orphaned requires --orphaned"))
+			}
+			if deleteOrphans && !confirm {
+				return r.Error(apperr.New(apperr.ErrConfirmationRequired, "deleting orphaned Telegram messages requires --confirm"))
+			}
 			app, cleanup, err := rt.OpenApp(cmd)
 			if err != nil {
 				return r.Error(err)
@@ -1122,5 +1212,6 @@ func NewRepairCmd(rt Runtime) *cobra.Command {
 	c.Flags().BoolVar(&orphaned, "orphaned", false, "repair orphaned messages")
 	c.Flags().BoolVar(&scanErrors, "scan-errors", false, "repair scan errors")
 	c.Flags().BoolVar(&deleteOrphans, "delete-orphaned", false, "delete orphaned Telegram messages instead of completing them")
+	c.Flags().BoolVar(&confirm, "confirm", false, "confirm deleting orphaned Telegram messages")
 	return c
 }

@@ -4,22 +4,20 @@
 
 ```text
 cmd/td
-  -> internal/app       CLI wiring and command execution
-  -> internal/tgdrive   application services
-  -> internal/db        SQLite cache, migrations, transactions
-  -> internal/telegram  adapter interface
-  -> internal/mtproto   gotd/td implementation
+  -> internal/app          CLI wiring and command execution
+  -> internal/service      application use cases
+  -> core/*                domain: paths, slugs, captions, errors, ports
+  -> adapters/native/*     SQLite, local FS, gotd/td
 ```
 
 ## Dependency direction
 
 - `cmd/td` imports only `internal/app`.
 - `internal/app` imports command services and output/error packages.
-- `internal/tgdrive` owns command behavior.
-- `internal/tgdrive` depends on interfaces, not directly on `gotd/td`.
-- `internal/mtproto` is the only package that imports `github.com/gotd/td`.
-- `internal/db` exposes repository methods and transaction helpers.
-- `internal/telegram/fake` supports integration tests.
+- `internal/service` owns command behavior and depends on `core` ports, not on `gotd/td`.
+- `adapters/native/telegramgotd` is the only package that imports `github.com/gotd/td`.
+- `adapters/native/sqlitestore` implements the file index, locks, and migrations.
+- `core/telegram/fake` supports integration tests and `TD_FAKE_TELEGRAM=1`.
 
 ## Command flow
 
@@ -37,33 +35,35 @@ td cp
   compute hash/mime
   render manifest/caption
   upload media
+  persist message_id on the pending row
   send manifest reply if needed
   commit active DB state
+  on any later failure: delete media or mark orphaned
   release locks
   render output
 ```
 
 ## Failure model
 
-- Before Telegram upload: rollback DB transaction.
-- After Telegram upload but before DB commit: create repairable pending/orphan state.
-- Manifest reply failure: delete uploaded media when possible; otherwise mark orphaned and require `td repair --pending`.
-- DB write failure after Telegram edit: run `td scan --full` to reconcile.
+- Before Telegram upload: drop the pending row (small files) or leave it for resume (big files).
+- After Telegram upload: `message_id` is recorded immediately. Publish/index failure deletes the media when possible; otherwise the row is `orphaned` so `td repair --pending` will not upload a second copy.
+- After a successful media delete or tombstone: the local row is `deleted` even if the manifest reply cannot be redacted.
+- DB write failure after a Telegram edit: run `td scan --full` to reconcile.
 
 ## Package responsibilities
 
 | Package | Responsibility |
 |---|---|
-| `app` | Cobra root, flags, command registration |
-| `apperr` | typed errors and exit code mapping |
-| `output` | human/JSON rendering |
-| `config` | config/env/path loading and redaction |
-| `db` | migrations, repositories, transactions |
-| `fsmodel` | canonical paths and virtual tree rules |
-| `pathcodec` | slug and hashtag generation |
-| `manifest` | td:v1 and td-manifest:v1 render/parse |
-| `workerlock` | operation lock acquisition and stale takeover |
-| `telegram` | interfaces and fake adapter |
-| `mtproto` | gotd/td adapter |
-| `tgdrive` | use cases: upload, scan, download, move, delete, repair |
-| `capability` | doctor checks and capability cache |
+| `internal/app` | Cobra root, flags, command registration |
+| `internal/app/commands` | Command handlers |
+| `core/errors` | typed errors and exit code mapping |
+| `internal/output` | human/JSON rendering |
+| `internal/config` | config/env/path loading and redaction |
+| `adapters/native/sqlitestore` | migrations, repositories, transactions, locks |
+| `core/fsmodel` | canonical paths and virtual tree rules |
+| `core/pathcodec` | slug and hashtag generation |
+| `core/manifest` | td:v1 and td-manifest:v1 render/parse |
+| `core/publisher` | caption/reply + index commit |
+| `core/telegram` | interfaces and fake adapter |
+| `adapters/native/telegramgotd` | gotd/td adapter |
+| `internal/service` | use cases: upload, scan, download, move, delete, repair |

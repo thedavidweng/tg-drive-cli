@@ -3,6 +3,7 @@ package telegramgotd
 import (
 	"context"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gotd/td/telegram"
@@ -116,11 +117,18 @@ func messageFromTG(msg *tg.Message) tgtelegram.Message {
 	// distinction to route manifest replies through the manifest parser.
 	if msg.Media == nil {
 		out.Text = msg.Message
+		if strings.TrimSpace(msg.Message) != "" {
+			out.Kind = tgtelegram.KindText
+			out.MIME = "text/plain"
+			out.FileSize = int64(len(msg.Message))
+		}
 	} else {
 		out.Caption = msg.Message
 	}
-	if media, ok := msg.Media.(*tg.MessageMediaDocument); ok {
+	switch media := msg.Media.(type) {
+	case *tg.MessageMediaDocument:
 		if doc, ok := media.Document.(*tg.Document); ok {
+			out.Kind = tgtelegram.KindDocument
 			out.FileSize = doc.Size
 			out.MIME = doc.MimeType
 			for _, attr := range doc.Attributes {
@@ -129,6 +137,11 @@ func messageFromTG(msg *tg.Message) tgtelegram.Message {
 				}
 			}
 		}
+	case *tg.MessageMediaPhoto:
+		if _, ok := media.Photo.(*tg.Photo); ok {
+			out.Kind = tgtelegram.KindPhoto
+			out.MIME = "image/jpeg"
+		}
 	}
 	if msg.ReplyTo != nil {
 		if rt, ok := msg.ReplyTo.(*tg.MessageReplyHeader); ok {
@@ -136,7 +149,34 @@ func messageFromTG(msg *tg.Message) tgtelegram.Message {
 			out.ReplyTo = &id
 		}
 	}
+	if id, ok := msg.GetGroupedID(); ok {
+		out.GroupedID = id
+	}
 	return out
+}
+
+func (c *Client) GetMessage(ctx context.Context, channelID int64, messageID int) (tgtelegram.Message, error) {
+	var out tgtelegram.Message
+	err := c.run(ctx, func(ctx context.Context, api *tg.Client, _ *telegram.Client) error {
+		peer, err := c.resolveChannelPeer(ctx, api, strconv.FormatInt(channelID, 10))
+		if err != nil {
+			return err
+		}
+		msgs, err := api.ChannelsGetMessages(ctx, &tg.ChannelsGetMessagesRequest{
+			Channel: &tg.InputChannel{ChannelID: peer.ChannelID, AccessHash: peer.AccessHash},
+			ID:      []tg.InputMessageClass{&tg.InputMessageID{ID: messageID}},
+		})
+		if err != nil {
+			return mapRPCError(err)
+		}
+		msg, err := firstMessage(msgs)
+		if err != nil {
+			return &tgtelegram.MessageNotFoundError{}
+		}
+		out = messageFromTG(msg)
+		return nil
+	})
+	return out, err
 }
 
 func (c *Client) Doctor(ctx context.Context, channelID int64) (*tgtelegram.Capabilities, error) {

@@ -17,7 +17,7 @@ This document exists to prevent implementation drift. Do not replace these choic
 - Main package: `./cmd/td`.
 - License: Apache-2.0.
 - Go version: 1.26.
-- Package layout follows `cmd/td` + `internal/*`.
+- Package layout is `cmd/td` + `internal/{app,service,config,output}` + `core/*` + `adapters/*`.
 
 ## CLI
 
@@ -61,7 +61,8 @@ This document exists to prevent implementation drift. Do not replace these choic
 
 ## Manifest and caption
 
-- Machine reconstruction uses `td:v1` or `td-manifest:v1`, not hashtags.
+- Machine reconstruction uses `td:v1`, `td-manifest:v1`, or `td-album:v1`, not hashtags.
+- A Telegram media album is one human post and one machine inventory: human caption on the first item, one `td-album:v1` reply for the group.
 - Media caption budget is 1024 UTF-16 code units with 16-unit margin.
 - Text manifest budget is 4096 UTF-16 code units with 16-unit margin.
 - Minimal caption overflow returns `ERR_CAPTION_TOO_LONG`.
@@ -72,7 +73,7 @@ This document exists to prevent implementation drift. Do not replace these choic
 - Hashtags are native Telegram UX helpers.
 - Hashtags are not the authoritative storage model.
 - Slugs use pinyin for Chinese, unidecode for other Unicode, and BLAKE3 suffixes.
-- Runtime slug collision extends suffix from 5 to 8 chars, then fails with `ERR_SLUG_COLLISION`.
+- Runtime slug suffix is 8 base32 characters, then 13, then 26 on collision; still colliding fails with `ERR_SLUG_COLLISION`. Readable prefix is at most 24 characters.
 - `path_segment_slugs` stores segment slug mappings.
 - `path_tags` stores per-file final tag chains.
 

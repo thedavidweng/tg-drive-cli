@@ -112,6 +112,88 @@ Long-running commands such as `td cp --events` emit one JSON envelope per line:
 }
 ```
 
+## Scan
+
+```json
+{
+  "ok": true,
+  "data": {
+    "mode": "full",
+    "channel": "123456789",
+    "active": 1240,
+    "deleted": 0,
+    "invalid": 3,
+    "missing": 0
+  }
+}
+```
+
+Incremental scans may include `full_scan_warning`. `--include-deleted` adds `tombstones`.
+
+## List
+
+```json
+{
+  "ok": true,
+  "data": {
+    "path": "/Pictures/2024",
+    "entries": [
+      {"type": "dir", "name": "06", "path": "/Pictures/2024/06"},
+      {"type": "file", "name": "beach.jpg", "path": "/Pictures/2024/beach.jpg", "size": 2482911}
+    ]
+  }
+}
+```
+
+## Tree
+
+```json
+{
+  "ok": true,
+  "data": {
+    "path": "/",
+    "tree": [{"type": "dir", "name": "Pictures", "path": "/Pictures", "children": []}]
+  }
+}
+```
+
+## Import / adopt
+
+```json
+{
+  "ok": true,
+  "data": {
+    "dry_run": true,
+    "imported": 3,
+    "skipped": 1,
+    "failed": 0,
+    "deleted": 0,
+    "items": [
+      {"message_id": 61, "kind": "video", "path": "/videos/The Bet.mp4", "action": "import", "size": 55113768, "file_name": "The Bet.mp4"},
+      {"message_id": 114, "kind": "reply", "action": "delete", "reason": "per-file td-manifest:v1 reply"},
+      {"message_id": 3, "kind": "photo", "action": "keep", "grouped_id": 99, "caption": "#tag dump"},
+      {"message_id": 3, "kind": "album", "action": "album-manifest", "grouped_id": 99, "reason": "one inventory reply for 6 files"}
+    ]
+  }
+}
+```
+
+## Recursive download
+
+```json
+{
+  "ok": true,
+  "data": {
+    "path": "/Pictures",
+    "local": "./restore",
+    "downloaded": 10,
+    "skipped": 1,
+    "failed": 0,
+    "errors": []
+  }
+}
+```
+
 ## Recursive upload result
 
 ```json

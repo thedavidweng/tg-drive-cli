@@ -36,6 +36,6 @@ truth.
 - Wiping SQLite and running `td scan --full` restores adopted albums.
 - A group of N media adds at most one extra timeline message.
 - Native Telegram users still see a grouped post with a readable caption.
-- `td cp` still uploads one message per file. Uploading a folder as
-  `sendMultiMedia` albums is a follow-up, using the same `td-album:v1`
+- `td cp` uploads one message per file. Folder upload as `sendMultiMedia`
+  albums is tracked in issue #26 and would reuse this `td-album:v1`
   inventory.

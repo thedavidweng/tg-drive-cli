@@ -22,11 +22,6 @@ type Config struct {
 
 // Publisher publishes a file to the virtual file tree and keeps its Telegram
 // message and the local index consistent.
-//
-// It is a deep module: the public interface is small (Publish and Reindex),
-// but the implementation hides slug-chain generation, UTF-16 caption budgets,
-// manifest reply sending, and the index transaction for File rows, Nodes,
-// Slug mappings, and Hashtag tags.
 type Publisher struct {
 	tg        telegram.Client
 	fileIndex ports.FileIndex

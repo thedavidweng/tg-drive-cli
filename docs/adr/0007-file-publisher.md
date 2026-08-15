@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted.
+Accepted. Repository seam extracted in ADR 0008.
 
 ## Context
 
@@ -13,7 +13,7 @@ Accepted.
 - Introduce a **File publisher** module in `core/publisher` with a concrete `Publisher` type.
 - The publisher owns: slug-chain generation, caption/manifest rendering, optional manifest-reply sending, and the index transaction that writes File rows, Slug mappings, Hashtag tags, and derived Nodes.
 - `Scan` uses a read-only `Reindex` path that persists index state without sending or editing Telegram messages.
-- The publisher depends on the existing `telegram.Client` port and on `*sqlitestore.DB` for the first iteration; the repository seam will be extracted in a later stage.
+- The publisher depends on `telegram.Client` and, after ADR 0008, on `ports.FileIndex`.
 
 ## Consequences
 

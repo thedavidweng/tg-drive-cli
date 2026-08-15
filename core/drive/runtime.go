@@ -4,7 +4,7 @@ import (
 	"github.com/thedavidweng/tg-drive-cli/core/ports"
 )
 
-// Runtime wires shared core ports for native CLI, desktop, and future WASM hosts.
+// Runtime holds the shared ports used by the CLI and WASM hosts.
 type Runtime struct {
 	Store    ports.Store
 	Files    ports.FileSystem

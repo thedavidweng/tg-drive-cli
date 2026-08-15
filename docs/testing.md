@@ -1,61 +1,31 @@
-# Testing plan
+# Testing
 
-## Unit tests
-
-- output envelope
-- error code mapping
-- config path resolution
-- secret redaction
-- DB migrations
-- WAL and foreign keys
-- operation lock acquisition/stale takeover/release
-- path normalization
-- file/dir collision
-- slug generation
-- slug collision extension
-- UTF-16 caption counting
-- manifest rendering/parsing
-- caption fallback
-
-## Offline trial mode
-
-Set `TD_FAKE_TELEGRAM=1` to run the CLI against the in-memory fake Telegram
-client (no network). Add `TD_FAKE_TELEGRAM_STATE=<path>` to persist the fake's
-state (login, channels, uploaded bytes) across invocations, which makes the
-complete workflow — login (code `12345`), init, cp, ls, get, mv, rm, scan,
-share — runnable end to end without a real account.
-
-## Integration tests with fake Telegram
-
-- upload single file
-- deep path manifest reply
-- manifest failure rollback
-- full scan rebuild
-- incremental scan
-- scan error de-dupe/resolution
-- download hash verification
-- move editable file
-- move non-editable file
-- delete mode
-- tombstone mode
-- repair pending
-- repair orphaned
-- recursive upload crash recovery
-
-## Manual smoke tests
-
-Manual tests require a real Telegram account, `api_id`, and `api_hash`.
+## Local gates
 
 ```sh
-td auth login
-td doctor
-td init ./testdata/local --create-channel
-td cp ./testdata/local/a.txt /a.txt
-td ls /
-td tree /
-td get /a.txt ./restore/a.txt
-td mv --confirm /a.txt /b.txt
-td rm --confirm /b.txt
-td scan --full
-td share /
+make test
+make test-race
+make ci-local          # fmt-check, vet, unit tests, race, WASM compile
 ```
+
+Unit coverage includes path normalization, slug generation, UTF-16 caption
+budgets, JSON envelopes, secret redaction, operation locks, and SQLite
+migrations.
+
+## Offline CLI
+
+`TD_FAKE_TELEGRAM=1` runs the CLI against the in-memory fake Telegram client
+(no network). Set `TD_FAKE_TELEGRAM_STATE=<path>` to persist login, channels,
+and uploaded bytes across invocations.
+
+The fake login code is `12345`. The full command surface — login, init, cp,
+ls, get, mv, rm, scan, share — can be exercised this way.
+
+Integration tests under `internal/service` use the same fake for upload,
+scan, move, delete, repair, and crash-recovery paths.
+
+## Manual tests
+
+Real-account checks need a Telegram account, `api_id`, and `api_hash`. Use a
+private test channel. Sequence and caveats:
+[`docs/manual-smoke-tests.md`](manual-smoke-tests.md).

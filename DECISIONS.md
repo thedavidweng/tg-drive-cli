@@ -6,9 +6,9 @@ This document exists to prevent implementation drift. Do not replace these choic
 
 - Build a CLI-first Telegram-backed file tree.
 - Binary name is `td`.
-- V1 supports single-channel storage only.
-- V1 supports file-level move/rename only.
-- V1 excludes directory move/rename, directory delete, multi-channel storage, forum topics, watch mode, WebDAV/FUSE, dedupe, encryption, and multi-account switching.
+- One Telegram channel per initialized root.
+- File-level move and rename only.
+- Directory move/delete, multi-channel storage, forum topics, watch mode, WebDAV/FUSE, dedupe, encryption, and multi-account switching are out of scope ([issues](https://github.com/thedavidweng/tg-drive-cli/issues)).
 - Empty directories are local-only and disappear after a full scan.
 
 ## Repository

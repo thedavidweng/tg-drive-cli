@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -402,6 +401,3 @@ func (a *App) PathCodecDoctor(ctx context.Context) (map[string]any, error) {
 	}
 	return out, nil
 }
-
-// Ensure imports used
-var _ = sql.ErrNoRows

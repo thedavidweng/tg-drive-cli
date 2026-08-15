@@ -6,7 +6,7 @@ Accepted.
 
 ## Context
 
-Remote mutations in `td` can permanently alter or delete the user's Telegram channel state. Scripts and agents running unattended need a predictable, non-interactive guard that prevents accidental deletions or overwrites. The `monarchmoney-cli` safety model uses read-only, dry-run, and confirm layers, but `td` must remain usable for batch and recursive workflows. A full three-tier model with a global `--read-only` mode was rejected for now because it would change the default behavior of every upload.
+Remote mutations in `td` can permanently alter or delete the user's Telegram channel state. Scripts and unattended callers need a predictable, non-interactive guard that prevents accidental deletions or overwrites, but `td` must remain usable for batch and recursive workflows. A global `--read-only` mode was rejected because it would change the default behavior of every upload.
 
 ## Decision
 

@@ -1,17 +1,23 @@
 # Security
 
-`tg-drive-cli` stores Telegram session material locally.
+`td` stores Telegram session material on the local machine. Treat the session
+file, `api_hash`, and the SQLite cache as account credentials.
 
 ## Local files
 
-- Session files must be readable only by the current user.
-- Config output redacts `api_hash` and phone by default.
-- DB files may contain local paths and file names; treat them as private.
+- Session and config files must be readable only by the current user.
+- `td status` and `td config get` redact `api_hash`, phone numbers, invite
+  links, local paths, and hashes unless `--show-secrets` is passed.
+- The cache database stores local paths and folder names. Treat it as private.
 
 ## Telegram storage
 
-Uploaded files are stored in Telegram channels. Any account with channel access can view and download them.
+Uploaded files live in Telegram cloud storage. Anyone with channel access can
+view and download them. Captions and hashtags expose path names.
 
 ## Reporting
 
-Open a private security advisory on GitHub or contact the maintainer through the repository profile.
+Please do not open a public issue for a vulnerability.
+
+Open a [private security advisory](https://github.com/thedavidweng/tg-drive-cli/security/advisories/new)
+or contact the maintainer through the repository profile.

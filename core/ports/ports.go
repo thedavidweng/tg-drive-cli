@@ -9,8 +9,7 @@ import (
 	"github.com/thedavidweng/tg-drive-cli/core/telegram"
 )
 
-// Store is the persistence port for drive metadata. Native SQLite and browser
-// IndexedDB adapters implement this interface in later stages.
+// Store is the persistence port for drive metadata.
 type Store interface {
 	LoadSlugMap(ctx context.Context, channelID model.ChannelID) (map[string]string, error)
 }

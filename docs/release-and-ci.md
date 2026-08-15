@@ -1,11 +1,9 @@
-# Release and CI/CD
-
-This project follows the same release shape as `monarchmoney-cli`, adjusted for `tg-drive-cli` and binary `td`.
+# Release and CI
 
 ## Tools
 
 - GitHub Actions for CI/CD
-- release-please for version/changelog PRs
+- release-please for version and changelog PRs
 - GoReleaser v2 for release assets
 - nfpm through GoReleaser for deb/rpm/apk packages
 - cosign keyless signing for checksums
@@ -26,20 +24,21 @@ CODECOV_TOKEN                 optional, only needed for private repos
 
 - `.github/workflows/ci.yml` runs two jobs:
   - `test` (25m): tidy, fmt, vet, lint, unit tests, race, WASM, `make build`, coverage
-  - `snapshot` (30m): `goreleaser build --snapshot --clean` on its own runner so a slow cross-build cannot cancel tests
+  - `snapshot` (30m): `goreleaser build --snapshot --clean` on its own runner
 - `.github/workflows/release-please.yml` manages release PRs and tags.
 - `.github/workflows/release.yml` runs GoReleaser on `v*` tags.
 
 ## Release process
 
 1. Merge conventional commits into `main`.
-2. release-please opens/updates a release PR.
+2. release-please opens or updates a release PR.
 3. Merge the release PR.
 4. release-please creates a tag and GitHub Release.
-5. Tag push triggers GoReleaser.
-6. GoReleaser uploads archives, packages, checksums, signatures, SBOMs, and Homebrew cask update.
+5. The tag push triggers GoReleaser.
+6. GoReleaser uploads archives, packages, checksums, signatures, SBOMs, and
+   the Homebrew cask update.
 
-## Local release checks
+## Local checks
 
 ```sh
 make goreleaser-check
@@ -49,8 +48,8 @@ make snapshot
 ## Asset names
 
 Archives follow the `archives.name_template` in `.goreleaser.yaml`
-(`{{ .ProjectName }}_{{ .Os }}_<arch>`, where amd64 renders as `x86_64` and the
-macOS universal binary renders as `universal`):
+(`{{ .ProjectName }}_{{ .Os }}_<arch>`, where amd64 renders as `x86_64` and
+the macOS universal binary renders as `universal`):
 
 ```text
 td_darwin_universal.tar.gz
@@ -60,11 +59,7 @@ td_windows_x86_64.zip
 td_windows_arm64.zip
 ```
 
-The `nfpms` block sets no `file_name_template`, so deb/rpm/apk packages use
-GoReleaser's default nfpm name template
-(`{{ .PackageName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}` + the format
-extension). `.Version` is the tag without its leading `v`, so for tag `v1.2.3`
-the packages are:
+Packages use GoReleaser's default nfpm name template. For tag `v1.2.3`:
 
 ```text
 td_1.2.3_linux_amd64.deb

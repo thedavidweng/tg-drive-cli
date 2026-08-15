@@ -278,5 +278,5 @@ func isLightweight(cmd *cobra.Command) bool {
 	return false
 }
 
-// Ensure telegram import is used when swapping clients.
+// Compile-time check: the in-memory fake implements telegram.Client.
 var _ telegram.Client = fake.New()

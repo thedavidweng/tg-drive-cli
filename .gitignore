@@ -9,6 +9,7 @@ local_cache.db
 session.json
 .env
 .DS_Store
+.scratch/
 
 # smoke test output
 testdata/restore/

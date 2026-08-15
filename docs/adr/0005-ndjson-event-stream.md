@@ -25,4 +25,4 @@ Big-file uploads through `td cp` can take minutes or hours. Polling is impossibl
 - Agents can stream `td cp --events` and track progress without parsing stderr.
 - Final and progress events share `meta.request_id`, so a single invocation is easy to correlate.
 - NDJSON is one object per line; consumers can use `jq` or a simple line reader.
-- Progress is currently emitted only for the `cp` upload path; other long commands (e.g., large `scan`) can adopt the same mechanism later.
+- Progress events are emitted for the `cp` upload path. Extending the same stream to other long commands is tracked in issue #27.

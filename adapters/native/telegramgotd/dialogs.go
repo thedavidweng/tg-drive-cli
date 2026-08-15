@@ -14,7 +14,7 @@ import (
 	tgtelegram "github.com/thedavidweng/tg-drive-cli/core/telegram"
 )
 
-// formatTDChannelTitle mirrors Telegram-Drive create_folder_inner title convention.
+// formatTDChannelTitle appends " [TD]" so drive channels are easy to pick in init.
 func formatTDChannelTitle(name string) string {
 	if strings.Contains(strings.ToLower(name), "[td]") {
 		return strings.TrimSpace(name)

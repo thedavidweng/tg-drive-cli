@@ -10,6 +10,8 @@ cmd/td
   -> adapters/native/*     SQLite, local FS, gotd/td
 ```
 
+`cmd/td-wasm` compiles the same core ports against in-memory adapters for contract tests.
+
 ## Dependency direction
 
 - `cmd/td` imports only `internal/app`.
@@ -62,7 +64,7 @@ td cp
 | `adapters/native/sqlitestore` | migrations, repositories, transactions, locks |
 | `core/fsmodel` | canonical paths and virtual tree rules |
 | `core/pathcodec` | slug and hashtag generation |
-| `core/manifest` | td:v1 and td-manifest:v1 render/parse |
+| `core/manifest` | `td:v1`, `td-manifest:v1`, and `td-album:v1` render/parse |
 | `core/publisher` | caption/reply + index commit |
 | `core/telegram` | interfaces and fake adapter |
 | `adapters/native/telegramgotd` | gotd/td adapter |

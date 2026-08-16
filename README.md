@@ -198,6 +198,12 @@ chat** tab. Public channels can use `#tag@username`; private channels cannot.
   `td doctor` reports whether edits currently work for your channel.
 - Telegram rate-limits RPCs. `--wait` sleeps through safe flood waits;
   `--no-wait` fails immediately with `ERR_TELEGRAM_RATE_LIMITED`.
+- Resumable uploads apply to files larger than 10 MB: a failed or interrupted
+  upload can be retried as the same command, and only unconfirmed parts are
+  re-sent (`--no-hash` is ignored on this path; content identity is verified
+  before resuming). If a crash happens in the small window after Telegram
+  accepted the media but before the index was written, the retry points you
+  at `td repair --orphaned` instead of silently duplicating the message.
 
 Later work is tracked in [GitHub Issues](https://github.com/thedavidweng/tg-drive-cli/issues).
 

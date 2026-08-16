@@ -53,11 +53,13 @@ td rm <remote-path>
 td share [remote-path]
 td import [message-id] [remote-path]
   [--unmanaged] [--into <dir>]
-  [--keep-caption] [--hash]
+  [--hash]
   [--rewrite-captions]
   [--confirm] [--dry-run] [--continue-on-error]
   # --rewrite-captions restores album captions, removes per-file
   # td-manifest replies, and upserts one td-album:v1 reply per group
+  # --hash downloads each adopted file to compute and store its BLAKE3
+  # content hash, so post-rebuild downloads verify content
 td repair [path]
 td repair --pending
 td repair --orphaned [--delete-orphaned --confirm]
@@ -115,6 +117,8 @@ ERR_REMOTE_NOT_FOUND
 ERR_FILE_TOO_LARGE
 ERR_CAPTION_TOO_LONG
 ERR_MANIFEST_INVALID
+ERR_ALBUM_INVENTORY_INVALID
+ERR_SCAN_INCOMPLETE
 ERR_CROSS_CHANNEL_MOVE
 ERR_DIRECTORY_MOVE_UNSUPPORTED
 ERR_DIRECTORY_DELETE_UNSUPPORTED
@@ -141,5 +145,5 @@ ERR_UNKNOWN
 | 2 | Usage/input error | `ERR_USAGE`, `ERR_FLAG_CONFLICT`, `ERR_PATH_INVALID`, `ERR_PATH_EXISTS`, `ERR_PATH_IS_DIRECTORY`, `ERR_PATH_ANCESTOR_IS_FILE`, `ERR_PATH_CONFLICT`, `ERR_LOCAL_PATH_EXISTS`, `ERR_LOCAL_NOT_FOUND`, `ERR_REMOTE_NOT_FOUND`, `ERR_CROSS_CHANNEL_MOVE`, `ERR_DIRECTORY_MOVE_UNSUPPORTED`, `ERR_DIRECTORY_DELETE_UNSUPPORTED`, `ERR_EMPTY_DIRS_UNSUPPORTED`, `ERR_SLUG_COLLISION` |
 | 3 | Auth/config error | `ERR_AUTH_REQUIRED`, `ERR_AUTH_FAILED`, `ERR_CONFIG_MISSING`, `ERR_CONFIG_INVALID` |
 | 4 | Telegram/platform error | `ERR_CHANNEL_NOT_FOUND`, `ERR_CHANNEL_PERMISSION`, `ERR_FILE_TOO_LARGE`, `ERR_MESSAGE_NOT_EDITABLE`, `ERR_TELEGRAM_RATE_LIMITED`, `ERR_TELEGRAM_RPC` |
-| 5 | DB/index/repair error | `ERR_DB`, `ERR_SCAN_FAILED`, `ERR_MANIFEST_INVALID`, `ERR_OPERATION_LOCKED`, `ERR_ORPHANED_UPLOAD`, `ERR_REPAIR_REQUIRED`, `ERR_CAPTION_TOO_LONG` |
+| 5 | DB/index/repair error | `ERR_DB`, `ERR_SCAN_FAILED`, `ERR_MANIFEST_INVALID`, `ERR_ALBUM_INVENTORY_INVALID`, `ERR_SCAN_INCOMPLETE`, `ERR_OPERATION_LOCKED`, `ERR_ORPHANED_UPLOAD`, `ERR_REPAIR_REQUIRED`, `ERR_CAPTION_TOO_LONG` |
 | 10 | Confirmation/safety error | `ERR_CONFIRMATION_REQUIRED` |

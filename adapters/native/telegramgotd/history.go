@@ -11,19 +11,48 @@ import (
 	tgtelegram "github.com/thedavidweng/tg-drive-cli/core/telegram"
 )
 
+const historyPageSize = 100
+
+// History returns messages newer than afterID, newest-first.
 func (c *Client) History(ctx context.Context, channelID int64, afterID int, limit int) ([]tgtelegram.Message, error) {
 	var out []tgtelegram.Message
+	meta, err := c.streamHistory(ctx, channelID, afterID, limit, func(msg tgtelegram.Message) error {
+		out = append(out, msg)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	_ = meta
+	return out, nil
+}
+
+// StreamHistory feeds messages newer than afterID to fn, newest-first, page by
+// page, without materializing the channel.
+func (c *Client) StreamHistory(ctx context.Context, channelID int64, afterID int, fn func(tgtelegram.Message) error) (tgtelegram.HistoryMeta, error) {
+	return c.streamHistory(ctx, channelID, afterID, 0, fn)
+}
+
+// streamHistory paginates messages.getHistory from newest to oldest. A short
+// page is never trusted as the end of history by itself: pagination only
+// reports Complete when it saw an empty page (the true end), crossed the
+// afterID boundary, or collected the channel's reported total. A Telegram
+// pagination quirk that returns a short page mid-history therefore surfaces as
+// Complete=false instead of silently truncating the read.
+func (c *Client) streamHistory(ctx context.Context, channelID int64, afterID, limit int, fn func(tgtelegram.Message) error) (tgtelegram.HistoryMeta, error) {
+	var meta tgtelegram.HistoryMeta
 	err := c.run(ctx, func(ctx context.Context, api *tg.Client, _ *telegram.Client) error {
 		peer, err := c.resolveChannelPeer(ctx, api, strconv.FormatInt(channelID, 10))
 		if err != nil {
 			return err
 		}
 		offsetID := 0
-		const pageSize = 100
-		for limit <= 0 || len(out) < limit {
-			batch := pageSize
-			if limit > 0 && limit-len(out) < batch {
-				batch = limit - len(out)
+		collected := 0
+		prevMinID := 0
+		for limit <= 0 || collected < limit {
+			batch := historyPageSize
+			if limit > 0 && limit-collected < batch {
+				batch = limit - collected
 			}
 			msgs, err := api.MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
 				Peer:     peer,
@@ -37,7 +66,8 @@ func (c *Client) History(ctx context.Context, channelID int64, afterID int, limi
 			// messages the media filter drops), or scans stop early.
 			rawIDs := extractRawIDs(msgs)
 			if len(rawIDs) == 0 {
-				break
+				meta.Complete = true
+				return nil
 			}
 			minID := rawIDs[0]
 			for _, id := range rawIDs {
@@ -45,20 +75,63 @@ func (c *Client) History(ctx context.Context, channelID int64, afterID int, limi
 					minID = id
 				}
 			}
+			if total := historyTotalCount(msgs); total > meta.TotalMessages {
+				// Only a total that never decreased counts as proof:
+				// mid-scan deletions above the read position shrink Count
+				// while collected only grows, which would fake completion.
+				meta.TotalMessages = total
+			}
 			for _, msg := range extractMessages(msgs) {
 				if msg.ID <= afterID {
 					continue
 				}
-				out = append(out, messageFromTG(msg))
+				if err := fn(messageFromTG(msg)); err != nil {
+					return err
+				}
 			}
-			if len(rawIDs) < batch || minID <= afterID+1 {
-				break
+			collected += len(rawIDs)
+			if meta.OldestID == 0 || minID < meta.OldestID {
+				meta.OldestID = minID
 			}
+			if meta.TotalMessages > 0 && afterID == 0 && collected >= meta.TotalMessages {
+				meta.Complete = true
+				return nil
+			}
+			if minID <= afterID+1 {
+				meta.Complete = true
+				return nil
+			}
+			if minID == prevMinID {
+				// The server returned the same page twice; without progress
+				// we cannot prove the read covered the history below.
+				meta.Complete = false
+				return nil
+			}
+			prevMinID = minID
 			offsetID = minID
 		}
+		// The loop exited because the caller's limit was reached, not because
+		// completion was proven.
+		meta.Complete = false
 		return nil
 	})
-	return out, err
+	if err != nil {
+		return tgtelegram.HistoryMeta{}, err
+	}
+	return meta, nil
+}
+
+// historyTotalCount returns the total message count Telegram reports for the
+// channel, when the response carries one.
+func historyTotalCount(msgs tg.MessagesMessagesClass) int {
+	switch v := msgs.(type) {
+	case *tg.MessagesChannelMessages:
+		return v.Count
+	case *tg.MessagesMessagesSlice:
+		return v.Count
+	default:
+		return 0
+	}
 }
 
 // extractRawIDs returns IDs of every message in the page, including service

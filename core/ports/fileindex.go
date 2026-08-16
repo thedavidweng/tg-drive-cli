@@ -11,6 +11,9 @@ import (
 // row, slug map, hashtag tags, and derived directory nodes.
 type FileIndex interface {
 	Index(ctx context.Context, req FileIndexRequest) (fileID int64, err error)
+	// IndexBatch applies several index requests in one transaction. Scans use
+	// it to commit chunks of scanned files instead of one transaction each.
+	IndexBatch(ctx context.Context, reqs []FileIndexRequest) error
 }
 
 // FileIndexRequest is the unit of work for FileIndex.Index.

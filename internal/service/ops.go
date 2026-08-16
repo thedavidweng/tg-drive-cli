@@ -204,474 +204,17 @@ func (a *App) Status(ctx context.Context) (map[string]any, error) {
 	var stalePending int
 	_ = a.DB.Raw().QueryRowContext(ctx, `select count(*) from files where channel_id=? and status='pending' and updated_at < ?`, channelID, staleCutoff).Scan(&stalePending)
 	out["stale_pending"] = stalePending
+	// Persisted resumable-upload states: abandoned attempts are collectable
+	// via td repair --pending.
+	if uploadStates, err := a.DB.CountUploadStates(ctx); err == nil {
+		out["upload_states"] = uploadStates
+	}
 	var staleLocks int
 	_ = a.DB.Raw().QueryRowContext(ctx, `select count(*) from operation_locks where expires_at < ?`, nowT.Format(time.RFC3339)).Scan(&staleLocks)
 	out["stale_locks"] = staleLocks
 	out["orphaned"] = counts["orphaned"]
 	out["upload_limit_bytes"] = a.uploadLimit(ctx)
 	return out, nil
-}
-
-// ScanOptions controls scan behavior.
-type ScanOptions struct {
-	Full           bool
-	Strict         bool
-	Repair         bool
-	IncludeDeleted bool
-	Root           string
-}
-
-// Scan rebuilds or incrementally updates the index. Existing index state is
-// never modified before Telegram history has been fetched successfully, so a
-// failed or aborted scan cannot corrupt the local cache.
-func (a *App) Scan(ctx context.Context, opts ScanOptions) (map[string]any, error) {
-	channelID, tgID, err := a.channelID(ctx)
-	if err != nil {
-		return nil, err
-	}
-	tgChID, err := a.tgChannelID(ctx)
-	if err != nil {
-		return nil, err
-	}
-	root := "/"
-	if opts.Root != "" {
-		root, err = fsmodel.NormalizeCanonicalPath(opts.Root)
-		if err != nil {
-			return nil, err
-		}
-	}
-	inRoot := func(p string) bool {
-		return root == "/" || p == root || strings.HasPrefix(p, root+"/")
-	}
-	var afterID int
-	mode := "full"
-	if !opts.Full {
-		mode = "incremental"
-		_ = a.DB.Raw().QueryRowContext(ctx, `select coalesce(last_scanned_message_id,0) from scan_state where channel_id=?`, channelID).Scan(&afterID)
-	}
-
-	msgs, err := a.TG.History(ctx, tgChID, afterID, 0)
-	if err != nil {
-		return nil, mapTGErr(err)
-	}
-	manifestByMedia := map[int]struct {
-		meta  manifest.ParsedMeta
-		msgID int
-	}{}
-	byID := map[int]telegram.Message{}
-	for _, msg := range msgs {
-		byID[msg.ID] = msg
-		if msg.Text == "" || msg.ReplyTo == nil {
-			continue
-		}
-		if manifest.IsAlbumReply(msg.Text) {
-			continue
-		}
-		if meta, err := manifest.ParseManifestReply(msg.Text); err == nil {
-			manifestByMedia[*msg.ReplyTo] = struct {
-				meta  manifest.ParsedMeta
-				msgID int
-			}{meta: meta, msgID: msg.ID}
-		}
-	}
-	invalid := 0
-	tombstones := 0
-	strictFailure := ""
-	now := time.Now().UTC().Format(time.RFC3339)
-	seen := map[string]bool{}
-	seenMsgIDs := map[int]bool{}
-	seenMedia := map[int]bool{}
-	maxID := afterID
-	scanActive, err := a.activePaths(ctx, channelID)
-	if err != nil {
-		return nil, err
-	}
-	if opts.Full {
-		// A full scan rebuilds from Telegram alone: the conflict pre-check
-		// must only see paths indexed during THIS pass, never the stale
-		// pre-scan index (a stale active file whose path became a directory
-		// would otherwise reject its valid children).
-		scanActive = nil
-	}
-	scanSlugs, err := a.loadExistingSlugs(ctx, channelID)
-	if err != nil {
-		return nil, err
-	}
-
-	for _, msg := range msgs {
-		if msg.ID > maxID {
-			maxID = msg.ID
-		}
-		seenMsgIDs[msg.ID] = true
-	}
-	for _, msg := range msgs {
-		album, err := manifest.ParseAlbumReply(msg.Text)
-		if err != nil {
-			continue
-		}
-		replyID := msg.ID
-		for _, f := range album.Files {
-			media, ok := byID[f.MessageID]
-			if !ok {
-				got, gerr := a.TG.GetMessage(ctx, tgChID, f.MessageID)
-				if gerr != nil {
-					invalid++
-					_, _ = a.DB.Raw().ExecContext(ctx, `
-						insert into scan_errors(channel_id,message_id,error_code,error_message,raw_excerpt,status,first_seen_at,last_seen_at)
-						values(?,?,?,?,?,'pending',?,?)
-						on conflict(channel_id,message_id,error_code) do update set last_seen_at=excluded.last_seen_at, status='pending'`,
-						channelID, f.MessageID, apperr.ErrManifestInvalid, "album member not found", f.CanonicalPath, now, now)
-					if opts.Strict && strictFailure == "" {
-						strictFailure = "album member missing"
-					}
-					continue
-				}
-				media = got
-			}
-			meta := manifest.ParsedMeta{
-				CanonicalPath: f.CanonicalPath,
-				DisplayName:   f.DisplayName,
-				Size:          f.Size,
-				Hash:          f.Hash,
-				MIME:          f.MIME,
-			}
-			if meta.Size == 0 && media.FileSize > 0 {
-				meta.Size = media.FileSize
-			}
-			if meta.MIME == "" && media.MIME != "" {
-				meta.MIME = media.MIME
-			}
-			if meta.DisplayName == "" && media.FileName != "" {
-				meta.DisplayName = media.FileName
-			}
-			if meta.CanonicalPath == "" || !inRoot(meta.CanonicalPath) {
-				continue
-			}
-			seen[meta.CanonicalPath] = true
-			seenMedia[f.MessageID] = true
-			manID := replyID
-			indexed, err := a.indexScannedFile(ctx, channelID, f.MessageID, &manID, meta, now, scanActive, scanSlugs)
-			if err != nil {
-				return nil, err
-			}
-			if indexed {
-				scanActive = appendScanIndexedPath(scanActive, meta.CanonicalPath)
-				_, _ = a.DB.Raw().ExecContext(ctx, `update scan_errors set status='resolved', resolved_at=? where channel_id=? and message_id=? and status='pending'`, now, channelID, f.MessageID)
-			}
-		}
-	}
-
-	for mediaID, resolved := range manifestByMedia {
-		if seenMedia[mediaID] {
-			continue
-		}
-		media, ok := byID[mediaID]
-		if !ok {
-			got, gerr := a.TG.GetMessage(ctx, tgChID, mediaID)
-			if gerr != nil {
-				invalid++
-				_, _ = a.DB.Raw().ExecContext(ctx, `
-					insert into scan_errors(channel_id,message_id,error_code,error_message,raw_excerpt,status,first_seen_at,last_seen_at)
-					values(?,?,?,?,?,'pending',?,?)
-					on conflict(channel_id,message_id,error_code) do update set last_seen_at=excluded.last_seen_at, status='pending'`,
-					channelID, mediaID, apperr.ErrManifestInvalid, "manifest target not found", resolved.meta.CanonicalPath, now, now)
-				if opts.Strict && strictFailure == "" {
-					strictFailure = "manifest target missing"
-				}
-				continue
-			}
-			media = got
-		}
-		meta := resolved.meta
-		if meta.Deleted {
-			if opts.IncludeDeleted && meta.CanonicalPath != "" && inRoot(meta.CanonicalPath) {
-				tombstones++
-				_, _ = a.DB.Raw().ExecContext(ctx, `update files set status='deleted', node_id=null, updated_at=? where channel_id=? and message_id=? and status in ('active','missing')`,
-					now, channelID, mediaID)
-			}
-			seenMedia[mediaID] = true
-			continue
-		}
-		if meta.Size == 0 && media.FileSize > 0 {
-			meta.Size = media.FileSize
-		}
-		if meta.MIME == "" && media.MIME != "" {
-			meta.MIME = media.MIME
-		}
-		if meta.DisplayName == "" && media.FileName != "" {
-			meta.DisplayName = media.FileName
-		}
-		if meta.CanonicalPath == "" || !inRoot(meta.CanonicalPath) {
-			continue
-		}
-		seen[meta.CanonicalPath] = true
-		seenMedia[mediaID] = true
-		manID := resolved.msgID
-		indexed, err := a.indexScannedFile(ctx, channelID, mediaID, &manID, meta, now, scanActive, scanSlugs)
-		if err != nil {
-			return nil, err
-		}
-		if indexed {
-			scanActive = appendScanIndexedPath(scanActive, meta.CanonicalPath)
-			_, _ = a.DB.Raw().ExecContext(ctx, `update scan_errors set status='resolved', resolved_at=? where channel_id=? and message_id=? and status='pending'`, now, channelID, mediaID)
-		}
-	}
-
-	for _, msg := range msgs {
-		if seenMedia[msg.ID] || manifest.IsAlbumReply(msg.Text) || isPerFileManifestReply(msg) {
-			continue
-		}
-		if msg.Caption == "" && msg.Text == "" {
-			continue
-		}
-		var meta manifest.ParsedMeta
-		var parseErr error
-		mediaMessageID := msg.ID
-		if msg.Caption != "" {
-			if !manifest.HasMachineMeta(msg.Caption) {
-				// Native / unmanaged captions are not managed messages.
-				continue
-			}
-			meta, parseErr = manifest.ParseCaption(msg.Caption)
-		} else if msg.Text != "" && manifest.HasMachineMeta(msg.Text) && !strings.HasPrefix(strings.TrimSpace(msg.Text), "td-manifest:") {
-			meta, parseErr = manifest.ParseCaption(msg.Text)
-		} else {
-			// Manifest replies are resolved via manifestByMedia; other text is unmanaged.
-			continue
-		}
-		if parseErr != nil {
-			invalid++
-			_, _ = a.DB.Raw().ExecContext(ctx, `
-				insert into scan_errors(channel_id,message_id,error_code,error_message,raw_excerpt,status,first_seen_at,last_seen_at)
-				values(?,?,?,?,?,'pending',?,?)
-				on conflict(channel_id,message_id,error_code) do update set last_seen_at=excluded.last_seen_at, status='pending'`,
-				channelID, msg.ID, apperr.ErrManifestInvalid, parseErr.Error(), truncate(msg.Caption+msg.Text, 200), now, now)
-			if opts.Strict && strictFailure == "" {
-				strictFailure = "invalid managed messages found"
-			}
-			continue
-		}
-		if meta.Deleted {
-			if opts.IncludeDeleted && meta.CanonicalPath != "" && inRoot(meta.CanonicalPath) {
-				tombstones++
-				_, _ = a.DB.Raw().ExecContext(ctx, `update files set status='deleted', node_id=null, updated_at=? where channel_id=? and message_id=? and status in ('active','missing')`,
-					now, channelID, mediaMessageID)
-			}
-			continue
-		}
-		var manifestMsgID *int
-		if meta.ManifestReply {
-			resolved, ok := manifestByMedia[msg.ID]
-			if !ok {
-				invalid++
-				_, _ = a.DB.Raw().ExecContext(ctx, `
-					insert into scan_errors(channel_id,message_id,error_code,error_message,raw_excerpt,status,first_seen_at,last_seen_at)
-					values(?,?,?,?,?,'pending',?,?)
-					on conflict(channel_id,message_id,error_code) do update set last_seen_at=excluded.last_seen_at, status='pending'`,
-					channelID, msg.ID, apperr.ErrManifestInvalid, "manifest reply not found", truncate(msg.Caption, 200), now, now)
-				if opts.Strict && strictFailure == "" {
-					strictFailure = "manifest reply missing"
-				}
-				continue
-			}
-			if resolved.meta.Deleted {
-				if opts.IncludeDeleted {
-					tombstones++
-					_, _ = a.DB.Raw().ExecContext(ctx, `update files set status='deleted', node_id=null, updated_at=? where channel_id=? and message_id=? and status in ('active','missing')`,
-						now, channelID, mediaMessageID)
-				}
-				continue
-			}
-			meta = resolved.meta
-			id := resolved.msgID
-			manifestMsgID = &id
-		}
-		if meta.CanonicalPath == "" || !inRoot(meta.CanonicalPath) {
-			continue
-		}
-		if meta.Size == 0 && msg.FileSize > 0 {
-			meta.Size = msg.FileSize
-		}
-		if meta.MIME == "" && msg.MIME != "" {
-			meta.MIME = msg.MIME
-		}
-		if meta.DisplayName == "" && msg.FileName != "" {
-			meta.DisplayName = msg.FileName
-		}
-		seen[meta.CanonicalPath] = true
-		indexed, err := a.indexScannedFile(ctx, channelID, mediaMessageID, manifestMsgID, meta, now, scanActive, scanSlugs)
-		if err != nil {
-			return nil, err
-		}
-		if indexed {
-			scanActive = appendScanIndexedPath(scanActive, meta.CanonicalPath)
-			_, _ = a.DB.Raw().ExecContext(ctx, `update scan_errors set status='resolved', resolved_at=? where channel_id=? and message_id=? and status='pending'`, now, channelID, mediaMessageID)
-		}
-	}
-
-	if opts.Full {
-		err = a.DB.WithTx(ctx, func(tx *sql.Tx) error {
-			// Mark previously active files absent from this full pass missing.
-			rows, err := tx.QueryContext(ctx, `select id, canonical_path from files where channel_id=? and status='active'`, channelID)
-			if err != nil {
-				return err
-			}
-			type row struct {
-				id int64
-				cp string
-			}
-			var stale []row
-			for rows.Next() {
-				var r row
-				if err := rows.Scan(&r.id, &r.cp); err != nil {
-					_ = rows.Close()
-					return err
-				}
-				if inRoot(r.cp) && !seen[r.cp] {
-					stale = append(stale, r)
-				}
-			}
-			_ = rows.Close()
-			for _, r := range stale {
-				if _, err := tx.ExecContext(ctx, `update files set status='missing', node_id=null, updated_at=? where id=?`, now, r.id); err != nil {
-					return err
-				}
-			}
-			// Resolve scan errors whose message disappeared from the channel.
-			errRows, err := tx.QueryContext(ctx, `select id, message_id from scan_errors where channel_id=? and status='pending'`, channelID)
-			if err != nil {
-				return err
-			}
-			var gone []int64
-			for errRows.Next() {
-				var id int64
-				var msgID sql.NullInt64
-				if err := errRows.Scan(&id, &msgID); err != nil {
-					_ = errRows.Close()
-					return err
-				}
-				if msgID.Valid && !seenMsgIDs[int(msgID.Int64)] {
-					gone = append(gone, id)
-				}
-			}
-			_ = errRows.Close()
-			for _, id := range gone {
-				if _, err := tx.ExecContext(ctx, `update scan_errors set status='resolved', resolved_at=? where id=?`, now, id); err != nil {
-					return err
-				}
-			}
-			return a.rebuildNodesTx(ctx, tx, channelID, now)
-		})
-		if err != nil {
-			return nil, apperr.Wrap(apperr.ErrDB, "finalize full scan", err)
-		}
-	} else {
-		_ = a.DB.RunDirectoryGC(ctx, channelID)
-	}
-	if opts.Repair {
-		if err := a.DB.WithTx(ctx, func(tx *sql.Tx) error {
-			if _, err := tx.ExecContext(ctx, `delete from scan_errors where channel_id=? and status='resolved'`, channelID); err != nil {
-				return err
-			}
-			return a.rebuildNodesTx(ctx, tx, channelID, now)
-		}); err != nil {
-			return nil, apperr.Wrap(apperr.ErrDB, "repair", err)
-		}
-	}
-
-	fullAt := ""
-	if opts.Full {
-		fullAt = now
-	}
-	_, _ = a.DB.Raw().ExecContext(ctx, `
-		insert into scan_state(channel_id,last_scanned_message_id,last_full_scan_at,updated_at) values(?,?,?,?)
-		on conflict(channel_id) do update set last_scanned_message_id=excluded.last_scanned_message_id,
-			last_full_scan_at=coalesce(excluded.last_full_scan_at, scan_state.last_full_scan_at), updated_at=excluded.updated_at`,
-		channelID, maxID, nullIfEmpty(fullAt), now)
-
-	if strictFailure != "" {
-		return nil, apperr.New(apperr.ErrScanFailed, strictFailure)
-	}
-
-	counts := map[string]int{}
-	rows, _ := a.DB.Raw().QueryContext(ctx, `select status, count(*) from files where channel_id=? group by status`, channelID)
-	if rows != nil {
-		defer func() { _ = rows.Close() }()
-		for rows.Next() {
-			var s string
-			var n int
-			_ = rows.Scan(&s, &n)
-			counts[s] = n
-		}
-	}
-	out := map[string]any{
-		"mode":    mode,
-		"channel": tgID,
-		"active":  counts["active"],
-		"deleted": counts["deleted"],
-		"invalid": invalid + counts["invalid"],
-		"missing": counts["missing"],
-	}
-	if opts.IncludeDeleted {
-		out["tombstones"] = tombstones
-	}
-	if !opts.Full {
-		var lastFull string
-		_ = a.DB.Raw().QueryRowContext(ctx, `select coalesce(last_full_scan_at,'') from scan_state where channel_id=?`, channelID).Scan(&lastFull)
-		warn := ""
-		if lastFull == "" {
-			warn = "no full scan recorded; incremental scans cannot detect old-message edits or deletions — run td scan --full"
-		} else if t, err := time.Parse(time.RFC3339, lastFull); err == nil && time.Since(t) > 7*24*time.Hour {
-			warn = "last full scan was " + lastFull + "; run td scan --full to detect old-message drift"
-		}
-		if warn != "" {
-			out["full_scan_warning"] = warn
-		}
-	}
-	return out, nil
-}
-
-// rebuildNodesTx truncates derived directory nodes and rebuilds them from the
-// current active file set.
-func (a *App) rebuildNodesTx(ctx context.Context, tx *sql.Tx, channelID int64, now string) error {
-	if _, err := tx.ExecContext(ctx, `delete from nodes where channel_id=? and derived=1`, channelID); err != nil {
-		return err
-	}
-	rows, err := tx.QueryContext(ctx, `select canonical_path from files where channel_id=? and status='active'`, channelID)
-	if err != nil {
-		return err
-	}
-	var paths []string
-	for rows.Next() {
-		var p string
-		if err := rows.Scan(&p); err != nil {
-			_ = rows.Close()
-			return err
-		}
-		paths = append(paths, p)
-	}
-	_ = rows.Close()
-	for anc, name := range fsmodel.DeriveDirectoryNodes(paths) {
-		if _, err := tx.ExecContext(ctx, `insert or ignore into nodes(channel_id,canonical_path,parent_path,display_name,type,derived,created_at,updated_at) values(?,?,?,?,'dir',1,?,?)`,
-			channelID, anc, fsmodel.ParentPath(anc), name, now, now); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n]
-}
-
-func nullIfEmpty(s string) any {
-	if s == "" {
-		return nil
-	}
-	return s
 }
 
 // DownloadResult reports what DownloadFile actually did.
@@ -743,7 +286,7 @@ func (a *App) DownloadFile(ctx context.Context, remotePath, localDest string, po
 	if err := a.downloadTo(ctx, tgChID, messageID, w); err != nil {
 		_ = f.Close()
 		_ = a.files().Remove(ctx, tmp)
-		return nil, mapTGErr(err)
+		return nil, telegram.MapError(err)
 	}
 	if err := f.Close(); err != nil {
 		_ = a.files().Remove(ctx, tmp)
@@ -856,81 +399,69 @@ func (a *App) MoveFile(ctx context.Context, from, to string) error {
 	if err != nil {
 		return apperr.Wrap(apperr.ErrDB, "lookup source", err)
 	}
-	owner := newOwnerToken()
-	ttl := time.Duration(a.Cfg.Locks.TTLSeconds) * time.Second
-	lockKeys := []string{sqlitestore.LockKey(channelID, src), sqlitestore.LockKey(channelID, dst)}
-	sort.Strings(lockKeys)
-	var held []string
-	defer func() {
-		for _, k := range held {
-			_ = a.DB.ReleaseLock(ctx, k, owner)
-		}
-	}()
-	for _, k := range lockKeys {
-		if err := a.DB.AcquireLock(ctx, k, owner, ttl); err != nil {
+	// Path locks (sorted) with heartbeat renewal: a move touching two paths
+	// holds both for the whole operation regardless of duration.
+	lockErr := a.withLocks(ctx, lockKeysForPaths(channelID, src, dst), func(ctx context.Context) error {
+		existingSlugs, err := a.loadExistingSlugs(ctx, channelID)
+		if err != nil {
 			return err
 		}
-		held = append(held, k)
-	}
-
-	existingSlugs, err := a.loadExistingSlugs(ctx, channelID)
-	if err != nil {
-		return err
-	}
-	oldTags, _, err := pathcodec.GenerateChain(src, existingSlugs)
-	if err != nil {
-		return err
-	}
-	if !messageID.Valid {
-		return apperr.New(apperr.ErrRemoteNotFound, fmt.Sprintf("remote path %q not found", src))
-	}
-
-	oldMeta := manifest.FileMeta{
-		CanonicalPath: src,
-		DisplayName:   displayName,
-		ParentHuman:   fsmodel.HumanParent(src),
-		Size:          size,
-		Hash:          contentHash,
-		MIME:          mimeType,
-		Tags:          oldTags,
-	}
-	meta := manifest.FileMeta{
-		CanonicalPath: dst,
-		DisplayName:   fsmodel.BaseName(dst),
-		ParentHuman:   fsmodel.HumanParent(dst),
-		Size:          size,
-		Hash:          contentHash,
-		MIME:          mimeType,
-	}
-	manifestMsgID := 0
-	if manifestID.Valid {
-		manifestMsgID = int(manifestID.Int64)
-	}
-
-	if album, ok, err := a.loadAlbumManifest(ctx, tgChID, manifestMsgID); err != nil {
-		return mapTGErr(err)
-	} else if ok {
-		updated := albumReplacePath(album, int(messageID.Int64), dst)
-		if _, err := a.writeAlbumManifest(ctx, channelID, tgChID, manifestMsgID, albumFirstMediaID(updated), updated); err != nil {
+		oldTags, _, err := pathcodec.GenerateChain(src, existingSlugs)
+		if err != nil {
 			return err
 		}
-		return a.reindexAlbumMember(ctx, channelID, fileID, int(messageID.Int64), manifestMsgID, dst, contentHash, mimeType, size)
-	}
+		if !messageID.Valid {
+			return apperr.New(apperr.ErrRemoteNotFound, fmt.Sprintf("remote path %q not found", src))
+		}
 
-	if _, err := a.publisher().Publish(ctx, publisher.PublishRequest{
-		ChannelRowID:  channelID,
-		ChannelID:     tgChID,
-		FileID:        fileID,
-		MessageID:     int(messageID.Int64),
-		ManifestMsgID: manifestMsgID,
-		Meta:          meta,
-		ExistingSlugs: existingSlugs,
-		EditCaption:   true,
-		OldMeta:       &oldMeta,
-	}); err != nil {
-		return err
-	}
-	return a.DB.RunDirectoryGC(ctx, channelID)
+		oldMeta := manifest.FileMeta{
+			CanonicalPath: src,
+			DisplayName:   displayName,
+			ParentHuman:   fsmodel.HumanParent(src),
+			Size:          size,
+			Hash:          contentHash,
+			MIME:          mimeType,
+			Tags:          oldTags,
+		}
+		meta := manifest.FileMeta{
+			CanonicalPath: dst,
+			DisplayName:   fsmodel.BaseName(dst),
+			ParentHuman:   fsmodel.HumanParent(dst),
+			Size:          size,
+			Hash:          contentHash,
+			MIME:          mimeType,
+		}
+		manifestMsgID := 0
+		if manifestID.Valid {
+			manifestMsgID = int(manifestID.Int64)
+		}
+
+		if album, ok, err := a.loadAlbumManifest(ctx, tgChID, manifestMsgID); err != nil {
+			return telegram.MapError(err)
+		} else if ok {
+			updated := albumReplacePath(album, int(messageID.Int64), dst)
+			if _, err := a.writeAlbumManifest(ctx, channelID, tgChID, manifestMsgID, albumFirstMediaID(updated), updated); err != nil {
+				return err
+			}
+			return a.reindexAlbumMember(ctx, channelID, fileID, int(messageID.Int64), manifestMsgID, dst, contentHash, mimeType, size)
+		}
+
+		if _, err := a.publisher().Publish(ctx, publisher.PublishRequest{
+			ChannelRowID:  channelID,
+			ChannelID:     tgChID,
+			FileID:        fileID,
+			MessageID:     int(messageID.Int64),
+			ManifestMsgID: manifestMsgID,
+			Meta:          meta,
+			ExistingSlugs: existingSlugs,
+			EditCaption:   true,
+			OldMeta:       &oldMeta,
+		}); err != nil {
+			return err
+		}
+		return a.DB.RunDirectoryGC(ctx, channelID)
+	})
+	return lockErr
 }
 
 // DeleteOptions controls td rm behavior.
@@ -974,13 +505,25 @@ func (a *App) DeleteFile(ctx context.Context, remotePath string, opts DeleteOpti
 	if err != nil {
 		return nil, apperr.Wrap(apperr.ErrDB, "lookup file", err)
 	}
-	owner := newOwnerToken()
+	// Hold the path lock (with heartbeat renewal) for the whole delete: the
+	// Telegram mutations and the index commit must be exclusive.
 	lockKey := sqlitestore.LockKey(channelID, p)
-	ttl := time.Duration(a.Cfg.Locks.TTLSeconds) * time.Second
-	if err := a.DB.AcquireLock(ctx, lockKey, owner, ttl); err != nil {
-		return nil, err
+	var out map[string]any
+	lockErr := a.withLocks(ctx, []string{lockKey}, func(ctx context.Context) error {
+		res, err := a.deleteFileLocked(ctx, channelID, tgChID, p, fileID, messageID, manifestID, opts)
+		if err != nil {
+			return err
+		}
+		out = res
+		return nil
+	})
+	if lockErr != nil {
+		return nil, lockErr
 	}
-	defer func() { _ = a.DB.ReleaseLock(ctx, lockKey, owner) }()
+	return out, nil
+}
+
+func (a *App) deleteFileLocked(ctx context.Context, channelID, tgChID int64, p string, fileID int64, messageID, manifestID sql.NullInt64, opts DeleteOptions) (map[string]any, error) {
 
 	mode := a.Cfg.Delete.Mode
 	if opts.Tombstone {
@@ -993,11 +536,11 @@ func (a *App) DeleteFile(ctx context.Context, remotePath string, opts DeleteOpti
 		manID = int(manifestID.Int64)
 	}
 	if album, ok, err := a.loadAlbumManifest(ctx, tgChID, manID); err != nil && !isMessageGone(err) {
-		return nil, mapTGErr(err)
+		return nil, telegram.MapError(err)
 	} else if ok {
 		if messageID.Valid {
 			if err := a.TG.DeleteMessage(ctx, tgChID, int(messageID.Int64)); err != nil && !isMessageGone(err) {
-				return nil, mapTGErr(err)
+				return nil, telegram.MapError(err)
 			}
 		}
 		remaining := albumWithout(album, int(messageID.Int64))
@@ -1035,7 +578,7 @@ func (a *App) DeleteFile(ctx context.Context, remotePath string, opts DeleteOpti
 	if mode == "delete" {
 		if messageID.Valid {
 			if err := a.TG.DeleteMessage(ctx, tgChID, int(messageID.Int64)); err != nil && !isMessageGone(err) {
-				return nil, mapTGErr(err)
+				return nil, telegram.MapError(err)
 			}
 		}
 		if manifestID.Valid {
@@ -1044,7 +587,7 @@ func (a *App) DeleteFile(ctx context.Context, remotePath string, opts DeleteOpti
 	} else {
 		if messageID.Valid {
 			if err := a.TG.EditCaption(ctx, tgChID, int(messageID.Int64), manifest.RenderTombstoneCaption(fsmodel.BaseName(p), p)); err != nil && !isMessageGone(err) {
-				return nil, mapTGErr(err)
+				return nil, telegram.MapError(err)
 			}
 		}
 		if manifestID.Valid {
@@ -1056,7 +599,7 @@ func (a *App) DeleteFile(ctx context.Context, remotePath string, opts DeleteOpti
 	}
 	// Media mutation already succeeded (or the message was already gone).
 	// Commit deleted even if the manifest reply cannot be redacted.
-	err = a.DB.WithTx(ctx, func(tx *sql.Tx) error {
+	err := a.DB.WithTx(ctx, func(tx *sql.Tx) error {
 		if err := a.DB.ClearNodeID(ctx, tx, fileID); err != nil {
 			return err
 		}
@@ -1078,230 +621,6 @@ func (a *App) DeleteFile(ctx context.Context, remotePath string, opts DeleteOpti
 		}
 	}
 	return out, nil
-}
-
-// RepairPending resolves stale pending rows and expired operation locks.
-func (a *App) RepairPending(ctx context.Context) (map[string]any, error) {
-	channelID, _, err := a.channelID(ctx)
-	if err != nil {
-		return nil, err
-	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	locksCleared := int64(0)
-	if res, err := a.DB.Raw().ExecContext(ctx, `delete from operation_locks where expires_at < ?`, now); err == nil {
-		locksCleared, _ = res.RowsAffected()
-	}
-	rows, err := a.DB.Raw().QueryContext(ctx, `select id, canonical_path, original_local_path, message_id from files where channel_id=? and status='pending'`, channelID)
-	if err != nil {
-		return nil, apperr.Wrap(apperr.ErrDB, "list pending", err)
-	}
-	type pendingRow struct {
-		id    int64
-		path  string
-		local sql.NullString
-		msgID sql.NullInt64
-	}
-	var pending []pendingRow
-	for rows.Next() {
-		var r pendingRow
-		if err := rows.Scan(&r.id, &r.path, &r.local, &r.msgID); err != nil {
-			_ = rows.Close()
-			return nil, apperr.Wrap(apperr.ErrDB, "scan pending", err)
-		}
-		pending = append(pending, r)
-	}
-	_ = rows.Close()
-	repaired, invalid, orphaned := 0, 0, 0
-	for _, r := range pending {
-		switch {
-		case r.msgID.Valid:
-			// Upload reached Telegram but was never promoted; hand off to
-			// orphan repair which can complete or delete it.
-			_, _ = a.DB.Raw().ExecContext(ctx, `update files set status='orphaned', updated_at=? where id=?`, now, r.id)
-			orphaned++
-		case r.local.Valid && r.local.String != "":
-			if _, statErr := a.files().Stat(ctx, r.local.String); statErr == nil {
-				_, _ = a.DB.Raw().ExecContext(ctx, `delete from files where id=?`, r.id)
-				if _, err := a.UploadFile(ctx, r.local.String, r.path, ConflictSkip, false); err == nil {
-					repaired++
-					continue
-				}
-				invalid++
-				continue
-			}
-			_, _ = a.DB.Raw().ExecContext(ctx, `update files set status='invalid', updated_at=? where id=?`, now, r.id)
-			invalid++
-		default:
-			_, _ = a.DB.Raw().ExecContext(ctx, `update files set status='invalid', updated_at=? where id=?`, now, r.id)
-			invalid++
-		}
-	}
-	return map[string]any{"repaired": repaired, "invalid": invalid, "orphaned": orphaned, "locks_cleared": locksCleared}, nil
-}
-
-// RepairOrphaned completes or removes uploads whose media message exists on
-// Telegram but whose index promotion failed.
-func (a *App) RepairOrphaned(ctx context.Context, deleteOrphans bool) (map[string]any, error) {
-	channelID, _, err := a.channelID(ctx)
-	if err != nil {
-		return nil, err
-	}
-	tgChID, err := a.tgChannelID(ctx)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := a.DB.Raw().QueryContext(ctx, `
-		select id, canonical_path, display_name, coalesce(size,0), coalesce(content_hash,''), coalesce(mime,''), message_id
-		from files where channel_id=? and status='orphaned'`, channelID)
-	if err != nil {
-		return nil, apperr.Wrap(apperr.ErrDB, "list orphaned", err)
-	}
-	type orphanRow struct {
-		id          int64
-		path, name  string
-		size        int64
-		hash, mimeT string
-		msgID       sql.NullInt64
-	}
-	var orphans []orphanRow
-	for rows.Next() {
-		var r orphanRow
-		if err := rows.Scan(&r.id, &r.path, &r.name, &r.size, &r.hash, &r.mimeT, &r.msgID); err != nil {
-			_ = rows.Close()
-			return nil, apperr.Wrap(apperr.ErrDB, "scan orphaned", err)
-		}
-		orphans = append(orphans, r)
-	}
-	_ = rows.Close()
-	now := time.Now().UTC().Format(time.RFC3339)
-	repaired, deleted, invalid := 0, 0, 0
-	for _, r := range orphans {
-		if !r.msgID.Valid {
-			_, _ = a.DB.Raw().ExecContext(ctx, `update files set status='invalid', updated_at=? where id=?`, now, r.id)
-			invalid++
-			continue
-		}
-		if deleteOrphans {
-			err := a.TG.DeleteMessage(ctx, tgChID, int(r.msgID.Int64))
-			if err == nil || isMessageGone(err) {
-				_, _ = a.DB.Raw().ExecContext(ctx, `update files set status='deleted', node_id=null, updated_at=? where id=?`, now, r.id)
-				deleted++
-				continue
-			}
-			invalid++
-			continue
-		}
-		// Complete the interrupted upload: regenerate metadata and resend the
-		// manifest reply, then promote the row.
-		meta := manifest.FileMeta{
-			CanonicalPath: r.path,
-			DisplayName:   r.name,
-			ParentHuman:   fsmodel.HumanParent(r.path),
-			Size:          r.size,
-			Hash:          r.hash,
-			MIME:          r.mimeT,
-			Created:       now,
-		}
-		if _, err := a.publisher().Publish(ctx, publisher.PublishRequest{
-			ChannelRowID:  channelID,
-			ChannelID:     tgChID,
-			FileID:        r.id,
-			MessageID:     int(r.msgID.Int64),
-			Meta:          meta,
-			ExistingSlugs: a.loadSlugMap(ctx, channelID),
-			SetUploadedAt: true,
-		}); err != nil {
-			continue // stays orphaned for a later attempt
-		}
-		repaired++
-	}
-	return map[string]any{"repaired": repaired, "deleted": deleted, "invalid": invalid}, nil
-}
-
-// RepairPath re-renders and re-applies caption, manifest, and tags for one
-// active file, repairing caption/manifest drift.
-func (a *App) RepairPath(ctx context.Context, remotePath string) (map[string]any, error) {
-	p, err := fsmodel.NormalizeCanonicalPath(remotePath)
-	if err != nil {
-		return nil, err
-	}
-	channelID, _, err := a.channelID(ctx)
-	if err != nil {
-		return nil, err
-	}
-	tgChID, err := a.tgChannelID(ctx)
-	if err != nil {
-		return nil, err
-	}
-	var fileID int64
-	var messageID, manifestID sql.NullInt64
-	var displayName, contentHash, mimeType string
-	var size int64
-	err = a.DB.Raw().QueryRowContext(ctx, `select id, message_id, manifest_message_id, display_name, coalesce(size,0), coalesce(content_hash,''), coalesce(mime,'') from files where channel_id=? and canonical_path=? and status='active'`,
-		channelID, p).Scan(&fileID, &messageID, &manifestID, &displayName, &size, &contentHash, &mimeType)
-	if err == sql.ErrNoRows {
-		return nil, apperr.New(apperr.ErrRemoteNotFound, fmt.Sprintf("remote path %q not found", p))
-	}
-	if err != nil {
-		return nil, apperr.Wrap(apperr.ErrDB, "lookup file", err)
-	}
-	if !messageID.Valid {
-		return nil, apperr.New(apperr.ErrRemoteNotFound, fmt.Sprintf("remote path %q not found", p))
-	}
-	existingSlugs := a.loadSlugMap(ctx, channelID)
-	meta := manifest.FileMeta{
-		CanonicalPath: p,
-		DisplayName:   displayName,
-		ParentHuman:   fsmodel.HumanParent(p),
-		Size:          size,
-		Hash:          contentHash,
-		MIME:          mimeType,
-	}
-	oldMeta := meta
-	oldMeta.Tags = nil
-	manifestMsgID := 0
-	if manifestID.Valid {
-		manifestMsgID = int(manifestID.Int64)
-	}
-	if album, ok, err := a.loadAlbumManifest(ctx, tgChID, manifestMsgID); err != nil {
-		return nil, mapTGErr(err)
-	} else if ok {
-		if _, err := a.writeAlbumManifest(ctx, channelID, tgChID, manifestMsgID, albumFirstMediaID(album), album); err != nil {
-			return nil, err
-		}
-		return map[string]any{"repaired": p}, nil
-	}
-	if _, err := a.publisher().Publish(ctx, publisher.PublishRequest{
-		ChannelRowID:      channelID,
-		ChannelID:         tgChID,
-		FileID:            fileID,
-		MessageID:         int(messageID.Int64),
-		ManifestMsgID:     manifestMsgID,
-		Meta:              meta,
-		ExistingSlugs:     existingSlugs,
-		EditCaption:       true,
-		IgnoreNotEditable: true,
-		OldMeta:           &oldMeta,
-	}); err != nil {
-		return nil, err
-	}
-	return map[string]any{"repaired": p}, nil
-}
-
-// RepairScanErrors reprocesses the channel and clears resolved scan errors.
-func (a *App) RepairScanErrors(ctx context.Context) (map[string]any, error) {
-	channelID, _, err := a.channelID(ctx)
-	if err != nil {
-		return nil, err
-	}
-	var before int
-	_ = a.DB.Raw().QueryRowContext(ctx, `select count(*) from scan_errors where channel_id=? and status='pending'`, channelID).Scan(&before)
-	if _, err := a.Scan(ctx, ScanOptions{Full: true, Repair: true}); err != nil {
-		return nil, err
-	}
-	var after int
-	_ = a.DB.Raw().QueryRowContext(ctx, `select count(*) from scan_errors where channel_id=? and status='pending'`, channelID).Scan(&after)
-	return map[string]any{"resolved": before - after, "pending": after}, nil
 }
 
 // UploadRecursive uploads a directory recursively.
@@ -1429,98 +748,4 @@ func (a *App) downloadRecursive(ctx context.Context, remotePath, localDir string
 		st.downloaded++
 	}
 	return nil
-}
-
-func appendScanIndexedPath(active []fsmodel.ActivePath, canonical string) []fsmodel.ActivePath {
-	out := make([]fsmodel.ActivePath, 0, len(active)+4)
-	for _, ap := range active {
-		if ap.Canonical != canonical {
-			out = append(out, ap)
-		}
-	}
-	out = append(out, fsmodel.ActivePath{Canonical: canonical, IsDir: false})
-	for anc := range fsmodel.DeriveDirectoryNodes([]string{canonical}) {
-		found := false
-		for _, ap := range out {
-			if ap.Canonical == anc && ap.IsDir {
-				found = true
-				break
-			}
-		}
-		if !found {
-			out = append(out, fsmodel.ActivePath{Canonical: anc, IsDir: true})
-		}
-	}
-	return out
-}
-
-func (a *App) indexScannedFile(ctx context.Context, channelID int64, messageID int, manifestMsgID *int, meta manifest.ParsedMeta, now string, active []fsmodel.ActivePath, slugMap map[string]string) (bool, error) {
-	// Exclude the path being re-indexed from conflict checks.
-	filtered := make([]fsmodel.ActivePath, 0, len(active))
-	for _, ap := range active {
-		if ap.Canonical != meta.CanonicalPath {
-			filtered = append(filtered, ap)
-		}
-	}
-	if conflictErr := fsmodel.CheckUploadConflict(meta.CanonicalPath, filtered); conflictErr != nil {
-		code := apperr.ErrPathInvalid
-		if ae, ok := apperr.As(conflictErr); ok {
-			code = ae.Code
-		}
-		_, _ = a.DB.Raw().ExecContext(ctx, `
-			insert into scan_errors(channel_id,message_id,error_code,error_message,raw_excerpt,status,first_seen_at,last_seen_at)
-			values(?,?,?,?,?,'pending',?,?)
-			on conflict(channel_id,message_id,error_code) do update set last_seen_at=excluded.last_seen_at`,
-			channelID, messageID, code, conflictErr.Error(), truncate(meta.CanonicalPath, 200), now, now)
-		return false, nil
-	}
-
-	// Resolve the row this message maps to: first by message_id (a message
-	// belongs to exactly one row), then by a reactivatable row at the path.
-	// Superseded/deleted history rows are never resurrected by path — that
-	// would collide with the live row after a --replace or re-upload.
-	var fileID int64
-	err := a.DB.Raw().QueryRowContext(ctx, `
-		select id from files where channel_id=? and message_id=?`,
-		channelID, messageID).Scan(&fileID)
-	if err == sql.ErrNoRows {
-		err = a.DB.Raw().QueryRowContext(ctx, `
-			select id from files where channel_id=? and canonical_path=? and status in ('active','missing')`,
-			channelID, meta.CanonicalPath).Scan(&fileID)
-	}
-	if err != nil && err != sql.ErrNoRows {
-		return false, apperr.Wrap(apperr.ErrDB, "lookup scanned file", err)
-	}
-	// Duplicate-claim guard: another live message already holds this path.
-	// The newest message wins; the older duplicate is recorded as a scan error.
-	var otherID int64
-	var otherMsg sql.NullInt64
-	dupErr := a.DB.Raw().QueryRowContext(ctx, `
-		select id, message_id from files where channel_id=? and canonical_path=? and status='active' and id != ?`,
-		channelID, meta.CanonicalPath, fileID).Scan(&otherID, &otherMsg)
-	if dupErr == nil && otherID != 0 {
-		if otherMsg.Valid && int(otherMsg.Int64) > messageID {
-			_, _ = a.DB.Raw().ExecContext(ctx, `
-				insert into scan_errors(channel_id,message_id,error_code,error_message,raw_excerpt,status,first_seen_at,last_seen_at)
-				values(?,?,?,?,?,'pending',?,?)
-				on conflict(channel_id,message_id,error_code) do update set last_seen_at=excluded.last_seen_at, status='pending'`,
-				channelID, messageID, apperr.ErrPathConflict,
-				fmt.Sprintf("older duplicate of %s (newer message %d wins)", meta.CanonicalPath, otherMsg.Int64),
-				meta.CanonicalPath, now, now)
-			return false, nil
-		}
-		_, _ = a.DB.Raw().ExecContext(ctx, `update files set status='superseded', node_id=null, updated_at=? where id=?`, now, otherID)
-	}
-	if _, err := a.publisher().Reindex(ctx, publisher.ReindexRequest{
-		ChannelRowID:  channelID,
-		FileID:        fileID,
-		MessageID:     messageID,
-		ManifestMsgID: manifestMsgID,
-		Meta:          meta,
-		ExistingSlugs: slugMap,
-		Now:           now,
-	}); err != nil {
-		return false, apperr.Wrap(apperr.ErrDB, "index scanned file", err)
-	}
-	return true, nil
 }

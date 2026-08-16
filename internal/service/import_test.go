@@ -18,7 +18,7 @@ func TestImportDryRunDoesNotEdit(t *testing.T) {
 		ID: 50, Kind: telegram.KindDocument, MIME: "video/mp4",
 		FileName: "The Bet.mp4", FileSize: 1000, Data: []byte("video"),
 	})
-	res, err := app.Import(ctx, ImportOptions{Unmanaged: true, DryRun: true, KeepCaption: true, NoHash: true})
+	res, err := app.Import(ctx, ImportOptions{Unmanaged: true, DryRun: true, NoHash: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestImportAdoptsVideoPhotoAndText(t *testing.T) {
 	tg.AddMessage(tgChID, telegram.Message{
 		ID: 72, Kind: telegram.KindText, MIME: "text/plain", Text: "shopping list\nmilk",
 	})
-	res, err := app.Import(ctx, ImportOptions{Unmanaged: true, KeepCaption: true, NoHash: true})
+	res, err := app.Import(ctx, ImportOptions{Unmanaged: true, NoHash: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestRewriteCaptionsRestoresHumanText(t *testing.T) {
 		FileName: "clip.mp4", FileSize: 4, Data: []byte("abcd"),
 		Caption: "https://example.com\n#tag",
 	})
-	if _, err := app.Import(ctx, ImportOptions{MessageID: 80, Dest: "/videos/clip.mp4", KeepCaption: true, NoHash: true}); err != nil {
+	if _, err := app.Import(ctx, ImportOptions{MessageID: 80, Dest: "/videos/clip.mp4", NoHash: true}); err != nil {
 		t.Fatal(err)
 	}
 	// Simulate the old bug: machine metadata overwritten onto the media.
@@ -203,7 +203,7 @@ func TestImportLeavesAlbumCaptionAlone(t *testing.T) {
 		FileName: "c.mp4", FileSize: 4, Data: []byte("cccc"),
 		GroupedID: 7,
 	})
-	if _, err := app.Import(ctx, ImportOptions{Unmanaged: true, KeepCaption: true, NoHash: true}); err != nil {
+	if _, err := app.Import(ctx, ImportOptions{Unmanaged: true, NoHash: true}); err != nil {
 		t.Fatal(err)
 	}
 	first, _ := tg.GetMessage(ctx, tgChID, 200)

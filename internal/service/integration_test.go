@@ -24,6 +24,13 @@ func (f failIndex) Index(context.Context, ports.FileIndexRequest) (int64, error)
 	return 0, f.err
 }
 
+func (f failIndex) IndexBatch(_ context.Context, reqs []ports.FileIndexRequest) error {
+	if len(reqs) > 0 {
+		return f.err
+	}
+	return nil
+}
+
 func b64url(s string) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(s))
 }

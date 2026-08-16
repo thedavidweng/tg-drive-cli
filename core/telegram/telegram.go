@@ -98,6 +98,11 @@ type UploadState struct {
 	ConfirmedBytes int64
 }
 
+// ResumableBigFileBytes is the size above which uploads use the resumable
+// saveBigFilePart path (part state persisted, retries send only unconfirmed
+// parts). The service and adapters share this cutoff.
+const ResumableBigFileBytes = 10 * 1024 * 1024
+
 // Media kinds Telegram can store as a drive file.
 const (
 	KindNone     = ""
@@ -183,7 +188,6 @@ type AuthClient interface {
 type ChannelClient interface {
 	CreateChannel(ctx context.Context, title string) (*Channel, error)
 	ResolveChannel(ctx context.Context, titleOrID string) (*Channel, error)
-	BindChannel(ctx context.Context, titleOrID string) (*Channel, error)
 	GetInviteLink(ctx context.Context, channelID int64) (string, error)
 	ListChannels(ctx context.Context, opts ListChannelsOptions) ([]Channel, error)
 }
@@ -200,9 +204,34 @@ type MediaClient interface {
 	Doctor(ctx context.Context, channelID int64) (*Capabilities, error)
 }
 
+// HistoryMeta reports what a history read provably covered.
+type HistoryMeta struct {
+	// Complete is true only when pagination provably reached the channel's
+	// oldest message (or the afterID boundary). A read that merely stopped
+	// early — a short page that never crossed the boundary and never hit the
+	// reported total — sets Complete to false so callers can refuse to act on
+	// a partial view.
+	Complete bool
+	// TotalMessages is the channel's reported total message count, when known.
+	TotalMessages int
+	// OldestID is the lowest message id the read covered, 0 when none.
+	OldestID int
+}
+
 // HistoryClient fetches message history.
+//
+// Ordering contract: history reads return messages newest-first (descending
+// message id), matching Telegram's messages.getHistory. Implementations must
+// preserve that order page by page; scans rely on it for newest-message-wins
+// reconciliation.
 type HistoryClient interface {
+	// History returns messages newer than afterID, newest-first.
 	History(ctx context.Context, channelID int64, afterID int, limit int) ([]Message, error)
+	// StreamHistory feeds each message newer than afterID to fn, newest-first,
+	// without materializing the whole channel. Returning an error from fn stops
+	// the stream. The HistoryMeta describes whether the read provably covered
+	// everything down to the afterID boundary.
+	StreamHistory(ctx context.Context, channelID int64, afterID int, fn func(Message) error) (HistoryMeta, error)
 	GetMessage(ctx context.Context, channelID int64, messageID int) (Message, error)
 }
 

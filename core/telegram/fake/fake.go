@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +34,22 @@ type Client struct {
 	deleteCalls        int
 	failEditText       bool
 	denyPerms          bool
+
+	// Resumable-upload simulation knobs. The resumable path only engages
+	// above ResumableBigFileBytes, matching the real adapter's uploader
+	// selection; resumableThreshold lowers that cutoff for tests. partSize
+	// overrides the default part size so tests can exercise multi-part files
+	// without large fixtures; failUploadAfterParts fails the upload once that
+	// many parts are confirmed (state stays persisted for resume);
+	// partSubmissions counts every part byte-transfer attempt across uploads.
+	resumableThreshold   int
+	partSize             int
+	failUploadAfterParts int
+	partSubmissions      int64
+
+	// truncateHistory limits history reads to the newest N messages without
+	// reporting completion, simulating a Telegram pagination quirk. 0 disables.
+	truncateHistory int
 }
 
 // New creates a fake client.
@@ -72,6 +90,35 @@ func (c *Client) SetFailEditText(v bool) { c.failEditText = v }
 
 // SetDenyPermissions makes mutating calls return PermissionDeniedError (test hook).
 func (c *Client) SetDenyPermissions(v bool) { c.denyPerms = v }
+
+// SetPartSize overrides the simulated resumable-upload part size in bytes.
+func (c *Client) SetPartSize(n int) { c.partSize = n }
+
+// SetResumableThreshold lowers the size above which uploads take the
+// simulated resumable path (tests only).
+func (c *Client) SetResumableThreshold(n int) { c.resumableThreshold = n }
+
+// SetFailUploadAfterParts fails a resumable upload once n parts are confirmed.
+func (c *Client) SetFailUploadAfterParts(n int) { c.failUploadAfterParts = n }
+
+// PartSubmissions reports how many upload parts were submitted since the last
+// reset. Tests use it to assert confirmed parts are not re-sent on resume.
+func (c *Client) PartSubmissions() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.partSubmissions
+}
+
+// ResetPartSubmissions zeroes the part submission counter.
+func (c *Client) ResetPartSubmissions() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.partSubmissions = 0
+}
+
+// SetTruncateHistory makes history reads return only the newest n messages
+// and report the read as incomplete (simulates a Telegram pagination quirk).
+func (c *Client) SetTruncateHistory(n int) { c.truncateHistory = n }
 
 func (c *Client) Login(ctx context.Context, apiID int64, apiHash, phone string, codeFn telegram.CodeFunc, passwordFn telegram.PasswordFunc, opts telegram.LoginOptions) (*telegram.LoginResult, error) {
 	if apiID == 0 || apiHash == "" || phone == "" {
@@ -150,10 +197,6 @@ func (c *Client) ResolveChannel(ctx context.Context, titleOrID string) (*telegra
 	return nil, fmt.Errorf("channel not found")
 }
 
-func (c *Client) BindChannel(ctx context.Context, titleOrID string) (*telegram.Channel, error) {
-	return c.ResolveChannel(ctx, titleOrID)
-}
-
 func (c *Client) ListChannels(ctx context.Context, opts telegram.ListChannelsOptions) ([]telegram.Channel, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -191,12 +234,29 @@ func (c *Client) UploadMedia(ctx context.Context, req telegram.UploadRequest) (*
 	if c.failUpload {
 		return nil, fmt.Errorf("upload failed")
 	}
-	data, err := io.ReadAll(req.Reader)
-	if err != nil {
-		return nil, err
-	}
 	if req.Size > 4*1024*1024*1024 {
 		return nil, &telegram.FileTooLargeError{}
+	}
+	threshold := c.resumableThreshold
+	if threshold <= 0 {
+		threshold = telegram.ResumableBigFileBytes
+	}
+	var data []byte
+	if req.ResumableKey != "" && req.ResumableStore != nil && req.Size > int64(threshold) {
+		var err error
+		data, err = c.uploadResumable(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		if req.Reader == nil {
+			return nil, fmt.Errorf("upload requires a reader or a resumable path")
+		}
+		var err error
+		data, err = io.ReadAll(req.Reader)
+		if err != nil {
+			return nil, err
+		}
 	}
 	id := c.nextID
 	c.nextID++
@@ -204,6 +264,106 @@ func (c *Client) UploadMedia(ctx context.Context, req telegram.UploadRequest) (*
 	c.messages[req.ChannelID] = append(c.messages[req.ChannelID], msg)
 	c.save()
 	return &telegram.UploadResult{MessageID: id}, nil
+}
+
+// uploadResumable simulates Telegram's saveBigFilePart protocol: parts are
+// confirmed one at a time against the persisted state, only unconfirmed parts
+// are submitted on retry, and an injected failure keeps the state for resume.
+// Callers hold c.mu.
+func (c *Client) uploadResumable(ctx context.Context, req telegram.UploadRequest) ([]byte, error) {
+	var data []byte
+	var err error
+	switch {
+	case req.Reader != nil:
+		data, err = io.ReadAll(req.Reader)
+	case req.Path != "":
+		data, err = os.ReadFile(req.Path)
+	default:
+		return nil, fmt.Errorf("upload requires a reader or a local path")
+	}
+	if err != nil {
+		return nil, err
+	}
+	partSize := c.partSize
+	if partSize <= 0 {
+		partSize = req.PartSize
+	}
+	if partSize <= 0 {
+		partSize = 128 * 1024
+	}
+	totalParts := (len(data) + partSize - 1) / partSize
+
+	state, err := req.ResumableStore.LoadUploadState(ctx, req.ResumableKey)
+	if err != nil {
+		state = nil
+	}
+	if state != nil && (state.TotalBytes != req.Size || state.TotalParts != totalParts ||
+		(req.ContentHash != "" && state.ContentHash != req.ContentHash)) {
+		state = nil
+	}
+	if state == nil {
+		state = &telegram.UploadState{
+			FileID:      int64(time.Now().UnixNano()),
+			PartSize:    partSize,
+			TotalParts:  totalParts,
+			TotalBytes:  req.Size,
+			ContentHash: req.ContentHash,
+		}
+	}
+	confirmed := map[int]bool{}
+	for _, p := range state.ConfirmedParts {
+		confirmed[p] = true
+	}
+	confirmedCount := len(confirmed)
+	for i := 0; i < totalParts; i++ {
+		if confirmed[i] {
+			continue
+		}
+		c.partSubmissions++
+		if c.failUploadAfterParts > 0 && confirmedCount >= c.failUploadAfterParts {
+			// Interrupt: persist what is confirmed so far, then fail. The knob
+			// fires once so a retry can get through.
+			c.failUploadAfterParts = 0
+			saveErr := c.saveUploadState(ctx, req, state, confirmed)
+			if saveErr != nil {
+				return nil, saveErr
+			}
+			return nil, fmt.Errorf("upload interrupted after %d confirmed parts", confirmedCount)
+		}
+		confirmed[i] = true
+		confirmedCount++
+		if err := c.saveUploadState(ctx, req, state, confirmed); err != nil {
+			return nil, err
+		}
+		if req.Progress != nil {
+			uploaded := int64(min((i+1)*partSize, len(data)))
+			if err := req.Progress(ctx, telegram.UploadProgressState{
+				FileName: req.FileName,
+				Part:     i,
+				PartSize: partSize,
+				Uploaded: uploaded,
+				Total:    req.Size,
+			}); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err := req.ResumableStore.DeleteUploadState(ctx, req.ResumableKey); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func (c *Client) saveUploadState(ctx context.Context, req telegram.UploadRequest, state *telegram.UploadState, confirmed map[int]bool) error {
+	parts := make([]int, 0, len(confirmed))
+	for p := range confirmed {
+		parts = append(parts, p)
+	}
+	sort.Ints(parts)
+	st := *state
+	st.ConfirmedParts = parts
+	st.ConfirmedBytes = int64(len(parts)) * int64(state.PartSize)
+	return req.ResumableStore.SaveUploadState(ctx, req.ResumableKey, &st)
 }
 
 func (c *Client) SendTextReply(ctx context.Context, channelID int64, replyTo int, text string) (int, error) {
@@ -339,22 +499,52 @@ func (c *Client) Doctor(ctx context.Context, channelID int64) (*telegram.Capabil
 	}, nil
 }
 
+// historyLocked returns messages newer than afterID, newest-first, applying
+// the truncation knob. Callers hold c.mu.
+func (c *Client) historyLocked(channelID int64, afterID int, limit int) ([]telegram.Message, bool) {
+	var newer []telegram.Message
+	for _, m := range c.messages[channelID] {
+		if m.ID > afterID {
+			newer = append(newer, m)
+		}
+	}
+	// Contract: newest-first, matching messages.getHistory.
+	sort.Slice(newer, func(i, j int) bool { return newer[i].ID > newer[j].ID })
+	complete := true
+	if c.truncateHistory > 0 && len(newer) > c.truncateHistory {
+		newer = newer[:c.truncateHistory]
+		complete = false
+	}
+	if limit > 0 && len(newer) > limit {
+		newer = newer[:limit]
+	}
+	return newer, complete
+}
+
 func (c *Client) History(ctx context.Context, channelID int64, afterID int, limit int) ([]telegram.Message, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var out []telegram.Message
-	for _, m := range c.messages[channelID] {
-		if m.ID > afterID {
-			out = append(out, m)
-		}
-	}
-	if limit > 0 && len(out) > limit {
-		out = out[:limit]
-	}
+	out, _ := c.historyLocked(channelID, afterID, limit)
 	return out, nil
 }
 
-// Messages returns all messages for a channel (test helper).
+func (c *Client) StreamHistory(ctx context.Context, channelID int64, afterID int, fn func(telegram.Message) error) (telegram.HistoryMeta, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	msgs, complete := c.historyLocked(channelID, afterID, 0)
+	meta := telegram.HistoryMeta{Complete: complete}
+	for _, m := range msgs {
+		if meta.OldestID == 0 || m.ID < meta.OldestID {
+			meta.OldestID = m.ID
+		}
+		if err := fn(m); err != nil {
+			return telegram.HistoryMeta{}, err
+		}
+	}
+	return meta, nil
+}
+
+// Messages returns all messages for a channel in chronological order (test helper).
 func (c *Client) Messages(channelID int64) []telegram.Message {
 	c.mu.Lock()
 	defer c.mu.Unlock()

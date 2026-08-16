@@ -29,6 +29,8 @@ const (
 	ErrFileTooLarge               = "ERR_FILE_TOO_LARGE"
 	ErrCaptionTooLong             = "ERR_CAPTION_TOO_LONG"
 	ErrManifestInvalid            = "ERR_MANIFEST_INVALID"
+	ErrAlbumInventoryInvalid      = "ERR_ALBUM_INVENTORY_INVALID"
+	ErrScanIncomplete             = "ERR_SCAN_INCOMPLETE"
 	ErrCrossChannelMove           = "ERR_CROSS_CHANNEL_MOVE"
 	ErrDirectoryMoveUnsupported   = "ERR_DIRECTORY_MOVE_UNSUPPORTED"
 	ErrDirectoryDeleteUnsupported = "ERR_DIRECTORY_DELETE_UNSUPPORTED"
@@ -116,9 +118,10 @@ func classify(code string) (Category, bool) {
 		return CatAPI, code == ErrTelegramRateLimited || code == ErrTelegramRPC
 	case ErrCaptionTooLong:
 		return CatAPI, false
-	case ErrDB, ErrScanFailed, ErrManifestInvalid, ErrOperationLocked,
+	case ErrDB, ErrScanFailed, ErrManifestInvalid, ErrAlbumInventoryInvalid,
+		ErrScanIncomplete, ErrOperationLocked,
 		ErrRepairRequired, ErrOrphanedUpload:
-		return CatInternal, code == ErrOperationLocked
+		return CatInternal, code == ErrOperationLocked || code == ErrScanIncomplete
 	case ErrConfirmationRequired:
 		return CatSafety, false
 	default:
@@ -144,7 +147,8 @@ func ExitCode(err error) int {
 	case ErrChannelNotFound, ErrChannelPermission, ErrFileTooLarge,
 		ErrMessageNotEditable, ErrTelegramRateLimited, ErrTelegramRPC:
 		return 4
-	case ErrDB, ErrScanFailed, ErrManifestInvalid, ErrOperationLocked,
+	case ErrDB, ErrScanFailed, ErrManifestInvalid, ErrAlbumInventoryInvalid,
+		ErrScanIncomplete, ErrOperationLocked,
 		ErrRepairRequired, ErrCaptionTooLong, ErrOrphanedUpload:
 		return 5
 	case ErrConfirmationRequired:

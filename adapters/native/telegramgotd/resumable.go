@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/go-faster/errors"
 	"github.com/gotd/td/bin"
@@ -17,11 +18,14 @@ import (
 
 // resumable upload constants matching Telegram docs.
 const (
-	resumableBigFileLimit = 10 * 1024 * 1024
-	resumablePartsLimit   = 3999
-	resumableDefaultPart  = 128 * 1024
-	resumableMaxPartSize  = 512 * 1024
+	resumablePartsLimit  = 3999
+	resumableDefaultPart = 128 * 1024
+	resumableMaxPartSize = 512 * 1024
 )
+
+// partAck retries for saveBigFilePart returning ok=false (Telegram asking to
+// retry later): bounded, with backoff, so the CLI cannot busy-loop.
+const partAckMaxRetries = 5
 
 func resumableComputePartSize(total int64) int {
 	partSize := resumableDefaultPart
@@ -44,7 +48,15 @@ type partRange struct {
 	size   int
 }
 
-func resumableUploadBig(ctx context.Context, api *tg.Client, req tgtelegram.UploadRequest, store tgtelegram.ResumableStore, state *tgtelegram.UploadState) (tg.InputFileClass, error) {
+// bigFilePartSender is the seam for upload.saveBigFilePart. *tg.Client
+// satisfies it directly; tests substitute fakes.
+type bigFilePartSender interface {
+	UploadSaveBigFilePart(ctx context.Context, request *tg.UploadSaveBigFilePartRequest) (bool, error)
+}
+
+var _ bigFilePartSender = (*tg.Client)(nil)
+
+func resumableUploadBig(ctx context.Context, api bigFilePartSender, req tgtelegram.UploadRequest, store tgtelegram.ResumableStore, state *tgtelegram.UploadState) (tg.InputFileClass, error) {
 	if req.Path == "" {
 		return nil, errors.New("resumable big upload requires a local file path")
 	}
@@ -84,11 +96,16 @@ func resumableUploadBig(ctx context.Context, api *tg.Client, req tgtelegram.Uplo
 	g, ctx := errgroup.WithContext(ctx)
 	g.SetLimit(threads)
 
+	// The state mutex guards every read and copy of the shared state —
+	// including the snapshot handed to the (serialized) persistence call — so
+	// a save can never race a concurrent confirmation append.
 	var mu sync.Mutex
 	save := func() error {
 		if store == nil {
 			return nil
 		}
+		mu.Lock()
+		defer mu.Unlock()
 		st := *state
 		st.ConfirmedParts = append([]int(nil), state.ConfirmedParts...)
 		sort.Ints(st.ConfirmedParts)
@@ -137,14 +154,37 @@ func resumableUploadBig(ctx context.Context, api *tg.Client, req tgtelegram.Uplo
 		})
 	}
 
-	if err := g.Wait(); err != nil {
+	err := g.Wait()
+	if err != nil {
+		// A part failed while others may still have been in flight: run one
+		// final save on a background context so late confirmations are not
+		// lost — the caller's ctx may already be cancelled.
+		syncSaveOnBackground(store, req.ResumableKey, state, &mu)
 		return nil, err
 	}
 	return &tg.InputFileBig{ID: state.FileID, Parts: totalParts, Name: req.FileName}, nil
 }
 
-func uploadBigFilePart(ctx context.Context, api *tg.Client, fileID int64, part, totalParts int, bytes []byte) error {
-	for {
+// syncSaveOnBackground persists the current state snapshot best-effort with a
+// background context after a failure. Callers must not hold mu.
+func syncSaveOnBackground(store tgtelegram.ResumableStore, key string, state *tgtelegram.UploadState, mu *sync.Mutex) {
+	if store == nil {
+		return
+	}
+	mu.Lock()
+	st := *state
+	st.ConfirmedParts = append([]int(nil), state.ConfirmedParts...)
+	sort.Ints(st.ConfirmedParts)
+	mu.Unlock()
+	_ = store.SaveUploadState(context.Background(), key, &st)
+}
+
+// uploadBigFilePart sends one part. A server ok=false acknowledgement means
+// "resend later": retry a bounded number of times with backoff, honoring
+// context cancellation, instead of looping forever.
+func uploadBigFilePart(ctx context.Context, api bigFilePartSender, fileID int64, part, totalParts int, bytes []byte) error {
+	backoff := 100 * time.Millisecond
+	for attempt := 0; ; attempt++ {
 		ok, err := api.UploadSaveBigFilePart(ctx, &tg.UploadSaveBigFilePartRequest{
 			FileID:         fileID,
 			FilePart:       part,
@@ -157,6 +197,15 @@ func uploadBigFilePart(ctx context.Context, api *tg.Client, fileID int64, part, 
 		if ok {
 			return nil
 		}
+		if attempt >= partAckMaxRetries {
+			return errors.Errorf("upload part %d not confirmed after %d retries", part, partAckMaxRetries)
+		}
+		select {
+		case <-time.After(backoff):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		backoff *= 2
 	}
 }
 

@@ -893,10 +893,14 @@ func NewCpCmd(rt Runtime) *cobra.Command {
 				if data["skipped"] == true {
 					return r.SuccessLine("skipped %s (already exists; use --replace to overwrite)", data["path"])
 				}
+				verb := "uploaded"
+				if data["resumed"] == true {
+					verb = "resumed upload of"
+				}
 				if size, ok := data["size"].(int64); ok {
-					_ = r.SuccessLine("uploaded %s (%s)", data["path"], humanSize(size))
+					_ = r.SuccessLine("%s %s (%s)", verb, data["path"], humanSize(size))
 				} else {
-					_ = r.SuccessLine("uploaded %s", data["path"])
+					_ = r.SuccessLine("%s %s", verb, data["path"])
 				}
 				if link, ok := data["invite_link"].(string); ok && link != "" {
 					return r.SuccessLine("invite: %s", link)
@@ -1084,7 +1088,7 @@ func NewShareCmd(rt Runtime) *cobra.Command {
 }
 
 func NewImportCmd(rt Runtime) *cobra.Command {
-	var unmanaged, keepCaption, noHash, hash, confirm, dryRun, continueOnError, rewriteCaptions bool
+	var unmanaged, hash, confirm, dryRun, continueOnError, rewriteCaptions bool
 	var into string
 	c := &cobra.Command{
 		Use:   "import [message-id] [remote-path]",
@@ -1092,15 +1096,9 @@ func NewImportCmd(rt Runtime) *cobra.Command {
 		Args:  cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r := rt.Renderer()
-			if hash {
-				noHash = false
-			} else {
-				noHash = true
-			}
 			opts := service.ImportOptions{
 				Unmanaged:       unmanaged,
-				KeepCaption:     keepCaption,
-				NoHash:          noHash,
+				NoHash:          !hash,
 				DryRun:          dryRun,
 				ContinueErr:     continueOnError,
 				Into:            into,
@@ -1156,8 +1154,7 @@ func NewImportCmd(rt Runtime) *cobra.Command {
 	}
 	c.Flags().BoolVar(&unmanaged, "unmanaged", false, "adopt every unmanaged media/text message in the channel")
 	c.Flags().StringVar(&into, "into", "/", "remote directory prefix for --unmanaged")
-	c.Flags().BoolVar(&keepCaption, "keep-caption", true, "unused; import never edits Telegram captions")
-	c.Flags().BoolVar(&hash, "hash", false, "compute content hashes (downloads the file; skipped for large videos by default)")
+	c.Flags().BoolVar(&hash, "hash", false, "download each adopted file to compute and store its BLAKE3 content hash")
 	c.Flags().BoolVar(&confirm, "confirm", false, "confirm adopting existing messages into the local index")
 	c.Flags().BoolVar(&dryRun, "dry-run", false, "print the adopt plan without editing Telegram")
 	c.Flags().BoolVar(&continueOnError, "continue-on-error", false, "continue adopting after a per-message error")

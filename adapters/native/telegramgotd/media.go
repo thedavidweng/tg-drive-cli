@@ -85,10 +85,6 @@ func (c *Client) ResolveChannel(ctx context.Context, titleOrID string) (*tgteleg
 	return out, err
 }
 
-func (c *Client) BindChannel(ctx context.Context, titleOrID string) (*tgtelegram.Channel, error) {
-	return c.ResolveChannel(ctx, titleOrID)
-}
-
 const inviteCacheTTL = 5 * time.Minute
 
 func (c *Client) GetInviteLink(ctx context.Context, channelID int64) (string, error) {
@@ -235,30 +231,22 @@ func (c *Client) UploadMedia(ctx context.Context, req tgtelegram.UploadRequest) 
 			doc = doc.MIME(req.MIME)
 		}
 
+		// Message-creating RPCs are never blindly retried here: a send that
+		// may have succeeded server-side must not be re-issued (that would
+		// duplicate the media message). Flood-wait pacing and idempotent
+		// connection-level retries live in the rate-limiter middleware; the
+		// duplicate-claim guard during scan remains the reconciliation path.
 		sender := message.NewSender(api)
-		const maxRetries = 3
-		var lastErr error
-		for attempt := 0; attempt <= maxRetries; attempt++ {
-			updates, err := sender.To(peer).Media(ctx, doc)
-			if err == nil {
-				msgID, extractErr := extractMessageID(updates)
-				if extractErr != nil {
-					return extractErr
-				}
-				result = &tgtelegram.UploadResult{MessageID: msgID}
-				return nil
-			}
-			lastErr = mapRPCError(err)
-			if _, ok := lastErr.(*tgtelegram.FloodWaitError); ok {
-				return lastErr
-			}
-			if attempt < maxRetries {
-				time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
-				continue
-			}
-			return lastErr
+		updates, err := sender.To(peer).Media(ctx, doc)
+		if err != nil {
+			return mapRPCError(err)
 		}
-		return lastErr
+		msgID, extractErr := extractMessageID(updates)
+		if extractErr != nil {
+			return extractErr
+		}
+		result = &tgtelegram.UploadResult{MessageID: msgID}
+		return nil
 	})
 	return result, err
 }

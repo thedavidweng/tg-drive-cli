@@ -90,6 +90,10 @@ All JSON command output uses an envelope.
 
 The `invite_link` field is omitted when the channel has no public/join link.
 
+A retry that adopted a pending upload and sent only its unconfirmed parts adds
+`"resumed": true` (files above 10 MB; the identity — size and content hash —
+must match the interrupted attempt).
+
 ## NDJSON event stream
 
 Long-running commands such as `td cp --events` emit one JSON envelope per line:
@@ -128,7 +132,7 @@ Long-running commands such as `td cp --events` emit one JSON envelope per line:
 }
 ```
 
-Incremental scans may include `full_scan_warning`. `--include-deleted` adds `tombstones`.
+Incremental scans may include `full_scan_warning`. `--include-deleted` adds `tombstones`. A full scan that continued an interrupted run adds `"resumed": true`.
 
 ## List
 

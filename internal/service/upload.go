@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
 	"errors"
@@ -104,12 +103,6 @@ const (
 	ConflictSkip    ConflictPolicy = "skip"
 	ConflictRename  ConflictPolicy = "rename"
 )
-
-func newOwnerToken() string {
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
-}
 
 func (a *App) channelID(ctx context.Context) (int64, string, error) {
 	var id int64
@@ -257,46 +250,55 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 			break
 		}
 	}
-	for _, ap := range active {
-		if ap.Canonical == dest && !ap.IsDir {
-			switch policy {
-			case ConflictSkip:
-				return map[string]any{"path": dest, "skipped": true}, nil
-			case ConflictReplace:
-				break
-			case ConflictRename:
-				base := fsmodel.BaseName(dest)
-				prefix := fsmodel.ParentPath(dest)
-				if prefix != "/" {
-					prefix += "/"
+
+	// Classify the destination's current occupant. A pending row is a failed
+	// or crashed upload, not a live file: it is adoptable on retry (or
+	// superseded by --replace) instead of wedging the path.
+	var activeExists, pendingAdoptable bool
+	err = a.DB.Raw().QueryRowContext(ctx, `
+		select exists(select 1 from files where channel_id=? and canonical_path=? and status='active'),
+		       exists(select 1 from files where channel_id=? and canonical_path=? and status='pending' and message_id is null)`,
+		channelID, dest, channelID, dest).Scan(&activeExists, &pendingAdoptable)
+	if err != nil {
+		return nil, apperr.Wrap(apperr.ErrDB, "lookup destination state", err)
+	}
+	if activeExists && policy != ConflictReplace {
+		switch policy {
+		case ConflictSkip:
+			return map[string]any{"path": dest, "skipped": true}, nil
+		case ConflictRename:
+			base := fsmodel.BaseName(dest)
+			prefix := fsmodel.ParentPath(dest)
+			if prefix != "/" {
+				prefix += "/"
+			}
+			for i := 1; i < 1000; i++ {
+				candidate, err := fsmodel.NormalizeCanonicalPath(prefix + fsmodel.ConflictRenameCandidate(base, i))
+				if err != nil {
+					return nil, err
 				}
-				for i := 1; i < 1000; i++ {
-					candidate, err := fsmodel.NormalizeCanonicalPath(prefix + fsmodel.ConflictRenameCandidate(base, i))
-					if err != nil {
-						return nil, err
-					}
-					exists := false
-					for _, p := range active {
-						if p.Canonical == candidate {
-							exists = true
-							break
-						}
-					}
-					if !exists {
-						dest = candidate
+				exists := false
+				for _, p := range active {
+					if p.Canonical == candidate {
+						exists = true
 						break
 					}
 				}
-			default:
-				return nil, apperr.New(apperr.ErrPathExists,
-					fmt.Sprintf("remote file %q already exists (use --replace, --skip-existing, or --auto-rename)", dest))
+				if !exists {
+					dest = candidate
+					break
+				}
 			}
+		default:
+			return nil, apperr.New(apperr.ErrPathExists,
+				fmt.Sprintf("remote file %q already exists (use --replace, --skip-existing, or --auto-rename)", dest))
 		}
 	}
-	// File/dir invariants always apply; under --replace the file being
-	// replaced is excluded so replacing it is not itself a conflict.
+
+	// File/dir invariants always apply; the destination itself is excluded
+	// when this upload replaces or adopts whatever sits there.
 	checkSet := active
-	if policy == ConflictReplace {
+	if policy == ConflictReplace || pendingAdoptable {
 		checkSet = make([]fsmodel.ActivePath, 0, len(active))
 		for _, ap := range active {
 			if !ap.IsDir && ap.Canonical == dest {
@@ -324,99 +326,205 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 		}
 	}
 
-	owner := newOwnerToken()
-	lockKey := sqlitestore.LockKey(channelID, dest)
-	ttl := time.Duration(a.Cfg.Locks.TTLSeconds) * time.Second
-	if err := a.DB.AcquireLock(ctx, lockKey, owner, ttl); err != nil {
-		return nil, err
+	var data map[string]any
+	lockErr := a.withLocks(ctx, []string{sqlitestore.LockKey(channelID, dest)}, func(ctx context.Context) error {
+		var err error
+		// Hashing is required, not optional, on the resumable path: resume
+		// identity (and therefore byte-exactness) can never rest on an empty
+		// hash. --no-hash is honored only for small files.
+		hashEnabled := a.Cfg.Hash.Enabled && !noHash
+		if info.Size > telegram.ResumableBigFileBytes {
+			hashEnabled = true
+		}
+		data, err = a.uploadLocked(ctx, uploadLockedArgs{
+			localPath:     localPath,
+			dest:          dest,
+			policy:        policy,
+			hashEnabled:   hashEnabled,
+			size:          info.Size,
+			channelID:     channelID,
+			tgChID:        tgChID,
+			tgIDStr:       tgIDStr,
+			replaceFileID: replaceFileID,
+			oldMsgID:      oldMsgID,
+			oldManifestID: oldManifestID,
+		})
+		return err
+	})
+	if lockErr != nil {
+		return nil, lockErr
 	}
-	defer func() { _ = a.DB.ReleaseLock(ctx, lockKey, owner) }()
+	return data, nil
+}
 
+type uploadLockedArgs struct {
+	localPath     string
+	dest          string
+	policy        ConflictPolicy
+	hashEnabled   bool
+	size          int64
+	channelID     int64
+	tgChID        int64
+	tgIDStr       string
+	replaceFileID int64
+	oldMsgID      sql.NullInt64
+	oldManifestID sql.NullInt64
+}
+
+func (a *App) uploadLocked(ctx context.Context, args uploadLockedArgs) (map[string]any, error) {
+	dest, localPath, channelID, tgChID, tgIDStr := args.dest, args.localPath, args.channelID, args.tgChID, args.tgIDStr
 	now := time.Now().UTC().Format(time.RFC3339)
-	hashEnabled := a.Cfg.Hash.Enabled && !noHash
 	hashReader, err := a.files().Open(ctx, localPath)
 	if err != nil {
 		return nil, apperr.Wrap(apperr.ErrLocalNotFound, "hash file", err)
 	}
-	contentHash, err := computeHash(hashReader, hashEnabled)
+	contentHash, err := computeHash(hashReader, args.hashEnabled)
 	_ = hashReader.Close()
 	if err != nil {
 		return nil, apperr.Wrap(apperr.ErrLocalNotFound, "hash file", err)
 	}
-	mimeType := detectMIME(localPath)
-	displayName := fsmodel.BaseName(dest)
+	size := args.size
+	bigFile := size > telegram.ResumableBigFileBytes
+
+	// Resolve the pending row under the lock, now that the content identity
+	// is known: adopt on match (plain retry resumes the interrupted parts),
+	// supersede under --replace, block otherwise.
+	type pendingRow struct {
+		id    int64
+		size  sql.NullInt64
+		hash  sql.NullString
+		msgID sql.NullInt64
+	}
+	var pending pendingRow
+	var pendingExists bool
+	err = a.DB.Raw().QueryRowContext(ctx, `
+		select id, size, content_hash, message_id from files
+		where channel_id=? and canonical_path=? and status='pending'`,
+		channelID, dest).Scan(&pending.id, &pending.size, &pending.hash, &pending.msgID)
+	switch err {
+	case sql.ErrNoRows:
+	case nil:
+		pendingExists = true
+	default:
+		return nil, apperr.Wrap(apperr.ErrDB, "lookup pending destination", err)
+	}
+	adoptFileID := int64(0)
+	resumed := false
+	if pendingExists {
+		switch {
+		case args.policy == ConflictReplace:
+			// Supersede the pending row and its stale upload state; roll back
+			// a media message a crash left recorded but unpublished.
+			if pending.msgID.Valid {
+				_ = a.TG.DeleteMessage(ctx, tgChID, int(pending.msgID.Int64))
+			}
+			if err := a.DB.DeleteUploadStateByFile(ctx, pending.id); err != nil {
+				return nil, apperr.Wrap(apperr.ErrDB, "clear superseded upload state", err)
+			}
+			if _, err := a.DB.Raw().ExecContext(ctx, `delete from files where id=?`, pending.id); err != nil {
+				return nil, apperr.Wrap(apperr.ErrDB, "supersede pending row", err)
+			}
+		case pending.msgID.Valid:
+			// Crash window: the media exists on Telegram but was never
+			// published. Re-uploading here would duplicate it.
+			return nil, apperr.New(apperr.ErrPathExists,
+				fmt.Sprintf("an unpublished upload of %q is waiting at message %d; run: td repair --orphaned", dest, pending.msgID.Int64))
+		default:
+			sizeMatch := pending.size.Valid && pending.size.Int64 == size
+			hashMatch := !pending.hash.Valid || pending.hash.String == "" || pending.hash.String == contentHash
+			if sizeMatch && hashMatch {
+				// Adopt the pending row: reusing its id reuses its resumable
+				// state key, so only unconfirmed parts are re-sent.
+				adoptFileID = pending.id
+			} else {
+				return nil, apperr.New(apperr.ErrPathExists,
+					fmt.Sprintf("an interrupted upload of different content occupies %q (use --replace to supersede it)", dest))
+			}
+		}
+	}
 
 	existingSlugs, err := a.loadExistingSlugs(ctx, channelID)
 	if err != nil {
 		return nil, err
 	}
-	// Pre-render on a copy so the real publisher can generate and insert the
-	// slug map from the original existing-slug state.
-	slugCopy := make(map[string]string, len(existingSlugs))
-	for k, v := range existingSlugs {
-		slugCopy[k] = v
-	}
-	tags, _, err := pathcodec.GenerateChain(dest, slugCopy)
-	if err != nil {
-		return nil, err
-	}
-
+	// Render the caption exactly once and thread it into the publish step, so
+	// the caption on Telegram and the tags in the index cannot diverge.
+	displayName := fsmodel.BaseName(dest)
 	meta := manifest.FileMeta{
 		CanonicalPath: dest,
 		DisplayName:   displayName,
 		ParentHuman:   fsmodel.HumanParent(dest),
-		Size:          info.Size,
+		Size:          size,
 		Hash:          contentHash,
-		MIME:          mimeType,
+		MIME:          detectMIME(localPath),
 		Created:       now,
-		Tags:          tags,
 	}
+	tags, slugMaps, err := pathcodec.GenerateChain(dest, existingSlugs)
+	if err != nil {
+		return nil, err
+	}
+	meta.Tags = tags
 	capRes, err := manifest.RenderCaption(meta, a.Cfg.Caption.SafeMediaCaptionUTF16Units, a.Cfg.Caption.MarginUTF16Units)
 	if err != nil {
 		return nil, err
 	}
 
-	// Always insert a fresh pending row. Under --replace the old active row
-	// stays untouched until the new upload fully succeeds, so a failed upload
-	// can never lose the existing index entry.
 	var fileID int64
-	err = a.DB.WithTx(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `insert into files(channel_id,canonical_path,display_name,original_local_path,size,content_hash,mime,status,updated_at) values(?,?,?,?,?,?,?,'pending',?)`,
-			channelID, dest, displayName, localPath, info.Size, contentHash, mimeType, now)
-		if err != nil {
-			return err
+	if adoptFileID > 0 {
+		fileID = adoptFileID
+		if _, err := a.DB.Raw().ExecContext(ctx, `
+			update files set display_name=?, original_local_path=?, size=?, content_hash=?, mime=?, message_id=null, updated_at=? where id=?`,
+			displayName, localPath, size, contentHash, meta.MIME, now, fileID); err != nil {
+			return nil, apperr.Wrap(apperr.ErrDB, "adopt pending row", err)
 		}
-		fileID, _ = res.LastInsertId()
-		return nil
-	})
-	if err != nil {
-		return nil, apperr.Wrap(apperr.ErrDB, "insert pending", err)
+		if st, lerr := a.DB.LoadUploadState(ctx, fmt.Sprintf("file:%d", fileID)); lerr == nil && st != nil && st.ConfirmedBytes > 0 {
+			resumed = true
+		}
+	} else {
+		// Always insert a fresh pending row. Under --replace the old active row
+		// stays untouched until the new upload fully succeeds, so a failed
+		// upload can never lose the existing index entry.
+		err = a.DB.WithTx(ctx, func(tx *sql.Tx) error {
+			res, err := tx.ExecContext(ctx, `insert into files(channel_id,canonical_path,display_name,original_local_path,size,content_hash,mime,status,updated_at) values(?,?,?,?,?,?,?,'pending',?)`,
+				channelID, dest, displayName, localPath, size, contentHash, meta.MIME, now)
+			if err != nil {
+				return err
+			}
+			fileID, _ = res.LastInsertId()
+			return nil
+		})
+		if err != nil {
+			return nil, apperr.Wrap(apperr.ErrDB, "insert pending", err)
+		}
 	}
 
-	f, err := a.files().Open(ctx, localPath)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
 	threads := a.Cfg.Upload.Threads
 	if threads <= 0 {
 		threads = 4
 	}
 	partSize := a.Cfg.Upload.PartSizeKB * 1024
-	resumableKey := fmt.Sprintf("file:%d", fileID)
 	req := telegram.UploadRequest{
 		ChannelID:      tgChID,
 		Caption:        capRes.Caption,
 		FileName:       displayName,
-		MIME:           mimeType,
-		Size:           info.Size,
+		MIME:           meta.MIME,
+		Size:           size,
 		ContentHash:    contentHash,
-		Reader:         f,
 		Path:           localPath,
 		Threads:        threads,
 		PartSize:       partSize,
-		ResumableKey:   resumableKey,
+		ResumableKey:   fmt.Sprintf("file:%d", fileID),
 		ResumableStore: a.DB,
+	}
+	if !bigFile {
+		// Small files stream from a reader; the resumable path reads by offset
+		// and never holds a reader for the upload's duration.
+		f, err := a.files().Open(ctx, localPath)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = f.Close() }()
+		req.Reader = f
 	}
 	if a.Progress != nil {
 		req.Progress = a.Progress
@@ -425,10 +533,10 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 	if err != nil {
 		// Keep pending state only for resumable big uploads; small files and
 		// permission errors do not benefit from resuming.
-		if info.Size <= 10*1024*1024 {
+		if !bigFile {
 			_, _ = a.DB.Raw().ExecContext(ctx, `delete from files where id=?`, fileID)
 		}
-		return nil, mapTGErr(err)
+		return nil, telegram.MapError(err)
 	}
 	// Persist message_id before any further Telegram or DB work so a crash
 	// or index failure cannot look like "never uploaded" to RepairPending.
@@ -447,7 +555,10 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 		Meta:          meta,
 		ExistingSlugs: existingSlugs,
 		SetUploadedAt: true,
-		ReplaceFileID: replaceFileID,
+		ReplaceFileID: args.replaceFileID,
+		Rendered:      &capRes,
+		Tags:          tags,
+		SlugMaps:      slugMaps,
 	})
 	if pubErr != nil {
 		if a.abandonUploadedMedia(ctx, tgChID, fileID, up.MessageID, now) {
@@ -465,20 +576,20 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 	// committed; best effort — the old row is already superseded. In
 	// tombstone mode the old message must be redacted, never left claiming
 	// the path with its original content.
-	if replaceFileID > 0 {
+	if args.replaceFileID > 0 {
 		if a.Cfg.Delete.Mode == "tombstone" {
-			if oldMsgID.Valid {
-				_ = a.TG.EditCaption(ctx, tgChID, int(oldMsgID.Int64), manifest.RenderTombstoneCaption(displayName, dest))
+			if args.oldMsgID.Valid {
+				_ = a.TG.EditCaption(ctx, tgChID, int(args.oldMsgID.Int64), manifest.RenderTombstoneCaption(displayName, dest))
 			}
-			if oldManifestID.Valid {
-				_ = a.TG.EditText(ctx, tgChID, int(oldManifestID.Int64), manifest.RenderTombstoneManifest(dest))
+			if args.oldManifestID.Valid {
+				_ = a.TG.EditText(ctx, tgChID, int(args.oldManifestID.Int64), manifest.RenderTombstoneManifest(dest))
 			}
 		} else {
-			if oldMsgID.Valid {
-				_ = a.TG.DeleteMessage(ctx, tgChID, int(oldMsgID.Int64))
+			if args.oldMsgID.Valid {
+				_ = a.TG.DeleteMessage(ctx, tgChID, int(args.oldMsgID.Int64))
 			}
-			if oldManifestID.Valid {
-				_ = a.TG.DeleteMessage(ctx, tgChID, int(oldManifestID.Int64))
+			if args.oldManifestID.Valid {
+				_ = a.TG.DeleteMessage(ctx, tgChID, int(args.oldManifestID.Int64))
 			}
 		}
 	}
@@ -488,42 +599,14 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 		"channel_id":          tgIDStr,
 		"message_id":          up.MessageID,
 		"manifest_message_id": manifestMsgID,
-		"size":                info.Size,
+		"size":                size,
 		"hash":                contentHash,
+	}
+	if resumed {
+		data["resumed"] = true
 	}
 	if link, err := a.TG.GetInviteLink(ctx, tgChID); err == nil && link != "" {
 		data["invite_link"] = link
 	}
 	return data, nil
-}
-
-func mapTGErr(err error) error {
-	switch e := err.(type) {
-	case *telegram.AuthRequiredError:
-		return apperr.New(apperr.ErrAuthRequired, "not logged in; run: td auth login")
-	case *telegram.CodeInvalidError, *telegram.PasswordInvalidError, *telegram.CodeExpiredError:
-		return apperr.New(apperr.ErrAuthFailed, err.Error())
-	case *telegram.PhoneInvalidError:
-		return apperr.New(apperr.ErrConfigInvalid, err.Error())
-	case *telegram.FileTooLargeError:
-		return apperr.New(apperr.ErrFileTooLarge, err.Error())
-	case *telegram.PermissionDeniedError:
-		return apperr.New(apperr.ErrChannelPermission, err.Error())
-	case *telegram.FloodWaitError:
-		wait := time.Duration(e.Seconds) * time.Second
-		retryAt := time.Now().Add(wait)
-		return apperr.New(apperr.ErrTelegramRateLimited,
-			fmt.Sprintf("telegram rate limited this account: retry after %s (at %s)",
-				wait, retryAt.Format("2006-01-02 15:04 MST"))).
-			WithDetails(map[string]any{
-				"retry_after_seconds": e.Seconds,
-				"retry_at":            retryAt.UTC().Format(time.RFC3339),
-			})
-	case *telegram.MessageNotEditableError:
-		return apperr.New(apperr.ErrMessageNotEditable, err.Error())
-	case *telegram.MessageNotFoundError:
-		return apperr.New(apperr.ErrRemoteNotFound, err.Error())
-	default:
-		return apperr.Wrap(apperr.ErrTelegramRPC, "telegram", err)
-	}
 }

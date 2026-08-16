@@ -472,7 +472,7 @@ func TestStatusIncludesUploadLimit(t *testing.T) {
 }
 
 func TestMapTGErrFloodWaitDetails(t *testing.T) {
-	err := mapTGErr(&telegram.FloodWaitError{Seconds: 85286})
+	err := telegram.MapError(&telegram.FloodWaitError{Seconds: 85286})
 	ae, ok := apperr.As(err)
 	if !ok {
 		t.Fatalf("not an AppError: %v", err)
@@ -527,7 +527,7 @@ func TestMapTGErrLoginErrorCodes(t *testing.T) {
 		{&telegram.PhoneInvalidError{}, apperr.ErrConfigInvalid},
 	}
 	for _, tc := range cases {
-		ae, ok := apperr.As(mapTGErr(tc.err))
+		ae, ok := apperr.As(telegram.MapError(tc.err))
 		if !ok {
 			t.Fatalf("%T: not an AppError", tc.err)
 		}

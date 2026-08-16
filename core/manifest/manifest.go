@@ -151,14 +151,18 @@ func RenderCaption(m FileMeta, budget, margin int) (CaptionResult, error) {
 	compact := RenderCompact(m)
 	lines = append(lines, "", compact, "")
 
+	// UTF-16 length is additive over concatenation, so the running count
+	// tracks each appended tag instead of re-encoding the whole caption.
+	cur := UTF16Units(strings.Join(lines, "\n"))
 	var included []string
 	for _, tag := range m.Tags {
-		candidate := strings.TrimSpace(strings.Join(append(lines, tag), "\n"))
-		if UTF16Units(candidate) > limit {
+		add := UTF16Units("\n" + tag)
+		if cur+add > limit {
 			break
 		}
 		lines = append(lines, tag)
 		included = append(included, tag)
+		cur += add
 	}
 	caption := strings.TrimRight(strings.Join(lines, "\n"), "\n")
 	allTagsIncluded := len(included) == len(m.Tags)
@@ -168,14 +172,16 @@ func RenderCaption(m FileMeta, budget, margin int) (CaptionResult, error) {
 
 	// Manifest reply fallback
 	minLines := []string{m.DisplayName, m.ParentHuman + "/", "", "td:v1 manifest=reply", ""}
+	minCur := UTF16Units(strings.Join(minLines, "\n"))
 	var minTags []string
 	for _, tag := range m.Tags {
-		candidate := strings.TrimSpace(strings.Join(append(minLines, tag), "\n"))
-		if UTF16Units(candidate) > limit {
+		add := UTF16Units("\n" + tag)
+		if minCur+add > limit {
 			break
 		}
 		minLines = append(minLines, tag)
 		minTags = append(minTags, tag)
+		minCur += add
 	}
 	minCaption := strings.TrimRight(strings.Join(minLines, "\n"), "\n")
 	if !FitsTelegramCaption(minCaption, budget, margin) {
@@ -328,7 +334,7 @@ func ParseManifestReply(text string) (ParsedMeta, error) {
 }
 
 // SplitHumanAndMachine returns the human-visible prefix before any td:v1 /
-// td-manifest line. Used when adopting a message that already has a caption.
+// td-manifest / td-album line. Used when adopting a message that already has a caption.
 func SplitHumanAndMachine(s string) string {
 	if s == "" {
 		return ""
@@ -336,8 +342,7 @@ func SplitHumanAndMachine(s string) string {
 	lines := strings.Split(s, "\n")
 	cut := len(lines)
 	for i, line := range lines {
-		trim := strings.TrimSpace(line)
-		if strings.Contains(trim, "td:v1") || strings.HasPrefix(trim, "td-manifest:") || strings.HasPrefix(trim, AlbumMagic) {
+		if lineHasMachineMeta(line) {
 			cut = i
 			break
 		}
@@ -345,9 +350,25 @@ func SplitHumanAndMachine(s string) string {
 	return strings.TrimRight(strings.Join(lines[:cut], "\n"), "\n")
 }
 
-// HasMachineMeta reports whether s contains td:v1 or td-manifest:v1.
+// lineHasMachineMeta reports whether one trimmed line is a machine metadata
+// record: a line that STARTS with the td:v1 / td-manifest:v1 / td-album:v1
+// marker. Line-anchoring matters: a human caption that merely mentions "td:v1"
+// mid-sentence must not be treated as managed metadata.
+func lineHasMachineMeta(line string) bool {
+	t := strings.TrimSpace(line)
+	return strings.HasPrefix(t, "td:v1") ||
+		strings.HasPrefix(t, "td-manifest:v1") ||
+		strings.HasPrefix(t, AlbumMagic)
+}
+
+// HasMachineMeta reports whether s contains a machine metadata line.
 func HasMachineMeta(s string) bool {
-	return strings.Contains(s, "td:v1") || strings.Contains(s, "td-manifest:v1") || strings.Contains(s, AlbumMagic)
+	for _, line := range strings.Split(s, "\n") {
+		if lineHasMachineMeta(line) {
+			return true
+		}
+	}
+	return false
 }
 
 // StripAdoptScaffold removes the filename + parent/ lines import used to
@@ -384,7 +405,7 @@ func HumanVisibleCaption(body, display, parentHuman string) string {
 // ParseCaption extracts td:v1 from a full caption.
 func ParseCaption(caption string) (ParsedMeta, error) {
 	for _, line := range strings.Split(caption, "\n") {
-		if strings.Contains(line, "td:v1") {
+		if strings.HasPrefix(strings.TrimSpace(line), "td:v1") {
 			return ParseCompact(strings.TrimSpace(line))
 		}
 	}

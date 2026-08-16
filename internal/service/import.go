@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"path"
 	"sort"
@@ -16,6 +17,7 @@ import (
 	"github.com/thedavidweng/tg-drive-cli/core/publisher"
 	"github.com/thedavidweng/tg-drive-cli/core/telegram"
 	"golang.org/x/text/unicode/norm"
+	"lukechampine.com/blake3"
 )
 
 // ImportOptions controls td import / adopt.
@@ -24,7 +26,6 @@ type ImportOptions struct {
 	Dest            string
 	Into            string
 	Unmanaged       bool
-	KeepCaption     bool
 	NoHash          bool
 	DryRun          bool
 	ContinueErr     bool
@@ -83,13 +84,13 @@ func (a *App) Import(ctx context.Context, opts ImportOptions) (*ImportResult, er
 	if opts.MessageID > 0 {
 		msg, err := a.TG.GetMessage(ctx, tgChID, opts.MessageID)
 		if err != nil {
-			return nil, mapTGErr(err)
+			return nil, telegram.MapError(err)
 		}
 		msgs = []telegram.Message{msg}
 	} else {
 		all, err := a.TG.History(ctx, tgChID, 0, 0)
 		if err != nil {
-			return nil, mapTGErr(err)
+			return nil, telegram.MapError(err)
 		}
 		msgs = all
 	}
@@ -378,8 +379,6 @@ func extForMIME(mime string) string {
 }
 
 func (a *App) importOne(ctx context.Context, channelID, tgChID int64, msg telegram.Message, dest string, opts ImportOptions) error {
-	_ = tgChID
-	_ = opts
 	// Import only claims the message in the local index. Telegram captions
 	// stay untouched so media albums keep their single human caption.
 	display := fsmodel.BaseName(dest)
@@ -388,28 +387,49 @@ func (a *App) importOne(ctx context.Context, channelID, tgChID int64, msg telegr
 	if mimeType == "" && importKind(msg) == "text" {
 		mimeType = "text/plain"
 	}
+	body := manifest.SplitHumanAndMachine(msg.Text)
 	if importKind(msg) == "text" && size == 0 {
-		size = int64(len([]byte(manifest.SplitHumanAndMachine(msg.Text))))
+		size = int64(len([]byte(body)))
 	}
 
-	existingSlugs, err := a.loadExistingSlugs(ctx, channelID)
-	if err != nil {
-		return err
+	// --hash is opt-in because it downloads every adopted file's media; the
+	// stored hash makes post-rebuild downloads verify content.
+	contentHash := ""
+	if !opts.NoHash {
+		h := blake3.New(32, nil)
+		if importKind(msg) == "text" {
+			_, _ = h.Write([]byte(body))
+		} else {
+			if err := a.TG.DownloadMedia(ctx, tgChID, msg.ID, h); err != nil {
+				return telegram.MapError(err)
+			}
+		}
+		contentHash = "blake3:" + hex.EncodeToString(h.Sum(nil))
 	}
-	if _, err := a.publisher().Reindex(ctx, publisher.ReindexRequest{
-		ChannelRowID: channelID,
-		MessageID:    msg.ID,
-		Meta: manifest.ParsedMeta{
-			CanonicalPath: dest,
-			DisplayName:   display,
-			Size:          size,
-			MIME:          mimeType,
-		},
-		ExistingSlugs: existingSlugs,
-	}); err != nil {
-		return err
-	}
-	return nil
+
+	// The adoption writes the index under the destination's path lock, so it
+	// cannot race a concurrent move or delete of the same path.
+	return a.withLocks(ctx, lockKeysForPaths(channelID, dest), func(ctx context.Context) error {
+		existingSlugs, err := a.loadExistingSlugs(ctx, channelID)
+		if err != nil {
+			return err
+		}
+		if _, err := a.publisher().Reindex(ctx, publisher.ReindexRequest{
+			ChannelRowID: channelID,
+			MessageID:    msg.ID,
+			Meta: manifest.ParsedMeta{
+				CanonicalPath: dest,
+				DisplayName:   display,
+				Size:          size,
+				Hash:          contentHash,
+				MIME:          mimeType,
+			},
+			ExistingSlugs: existingSlugs,
+		}); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 func (a *App) rewriteAdoptCaptions(ctx context.Context, opts ImportOptions) (*ImportResult, error) {
@@ -440,7 +460,7 @@ func (a *App) rewriteAdoptCaptions(ctx context.Context, opts ImportOptions) (*Im
 
 	history, err := a.TG.History(ctx, tgChID, 0, 0)
 	if err != nil {
-		return nil, mapTGErr(err)
+		return nil, telegram.MapError(err)
 	}
 
 	out := &ImportResult{DryRun: opts.DryRun, Items: []ImportPlanItem{}}
@@ -462,7 +482,7 @@ func (a *App) rewriteAdoptCaptions(ctx context.Context, opts ImportOptions) (*Im
 			out.Failed++
 			out.Items = append(out.Items, item)
 			if !opts.ContinueErr {
-				return out, mapTGErr(err)
+				return out, telegram.MapError(err)
 			}
 			continue
 		}
@@ -503,7 +523,7 @@ func (a *App) rewriteAdoptCaptions(ctx context.Context, opts ImportOptions) (*Im
 	if !opts.DryRun {
 		history, err = a.TG.History(ctx, tgChID, 0, 0)
 		if err != nil {
-			return out, mapTGErr(err)
+			return out, telegram.MapError(err)
 		}
 	}
 	if err := a.ensureTelegramManifests(ctx, channelID, tgChID, history, opts, out); err != nil {
@@ -548,7 +568,7 @@ func (a *App) restoreAlbumCaptions(ctx context.Context, tgChID int64, members []
 			out.Failed++
 			out.Items = append(out.Items, item)
 			if !opts.ContinueErr {
-				return mapTGErr(err)
+				return telegram.MapError(err)
 			}
 			continue
 		}
@@ -591,7 +611,7 @@ func (a *App) restoreSingleCaption(ctx context.Context, tgChID int64, msg telegr
 		out.Failed++
 		out.Items = append(out.Items, item)
 		if !opts.ContinueErr {
-			return mapTGErr(err)
+			return telegram.MapError(err)
 		}
 		return nil
 	}

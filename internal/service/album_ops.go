@@ -84,6 +84,7 @@ func (a *App) ensureTelegramManifests(ctx context.Context, channelID, tgChID int
 		members := albums[gid]
 		sort.Slice(members, func(i, j int) bool { return members[i].ID < members[j].ID })
 		meta := manifest.AlbumMeta{GroupedID: gid}
+		memberPaths := make([]string, 0, len(members))
 		for _, m := range members {
 			r := byMsg[m.ID]
 			meta.Files = append(meta.Files, manifest.AlbumFile{
@@ -94,6 +95,7 @@ func (a *App) ensureTelegramManifests(ctx context.Context, channelID, tgChID int
 				Hash:          r.hash,
 				MIME:          r.mime,
 			})
+			memberPaths = append(memberPaths, r.path)
 		}
 		body, err := manifest.RenderAlbumReplyFitting(meta, manifest.DefaultTextBudget, a.Cfg.Caption.MarginUTF16Units)
 		if err != nil {
@@ -122,34 +124,41 @@ func (a *App) ensureTelegramManifests(ctx context.Context, channelID, tgChID int
 			out.Items = append(out.Items, item)
 			continue
 		}
-		var replyID int
-		if has {
-			if err := a.TG.EditText(ctx, tgChID, existing.ID, body); err != nil {
-				item.Action = "fail"
-				item.Reason = err.Error()
-				out.Failed++
-				out.Items = append(out.Items, item)
-				if !opts.ContinueErr {
-					return mapTGErr(err)
+		// The inventory rewrite locks every member path (sorted by the lock
+		// helper) so it cannot race a concurrent move or delete of a member.
+		var sendErr error
+		lockErr := a.withLocks(ctx, lockKeysForPaths(channelID, memberPaths...), func(ctx context.Context) error {
+			var replyID int
+			if has {
+				if err := a.TG.EditText(ctx, tgChID, existing.ID, body); err != nil {
+					sendErr = err
+					return nil
 				}
-				continue
-			}
-			replyID = existing.ID
-		} else {
-			id, err := a.TG.SendTextReply(ctx, tgChID, members[0].ID, body)
-			if err != nil {
-				item.Action = "fail"
-				item.Reason = err.Error()
-				out.Failed++
-				out.Items = append(out.Items, item)
-				if !opts.ContinueErr {
-					return mapTGErr(err)
+				replyID = existing.ID
+			} else {
+				id, err := a.TG.SendTextReply(ctx, tgChID, members[0].ID, body)
+				if err != nil {
+					sendErr = err
+					return nil
 				}
-				continue
+				replyID = id
 			}
-			replyID = id
+			_, _ = a.DB.Raw().ExecContext(ctx, `update files set manifest_message_id=?, updated_at=? where channel_id=? and message_id in (`+intJoin(msgIDs(members))+`)`, replyID, now, channelID)
+			return nil
+		})
+		if lockErr != nil {
+			return lockErr
 		}
-		_, _ = a.DB.Raw().ExecContext(ctx, `update files set manifest_message_id=?, updated_at=? where channel_id=? and message_id in (`+intJoin(msgIDs(members))+`)`, replyID, now, channelID)
+		if sendErr != nil {
+			item.Action = "fail"
+			item.Reason = sendErr.Error()
+			out.Failed++
+			out.Items = append(out.Items, item)
+			if !opts.ContinueErr {
+				return telegram.MapError(sendErr)
+			}
+			continue
+		}
 		out.Imported++
 		out.Items = append(out.Items, item)
 	}
@@ -177,18 +186,29 @@ func (a *App) ensureTelegramManifests(ctx context.Context, channelID, tgChID int
 			Hash:          r.hash,
 			MIME:          r.mime,
 		}, manifest.DefaultTextBudget, a.Cfg.Caption.MarginUTF16Units)
-		id, err := a.TG.SendTextReply(ctx, tgChID, msg.ID, reply)
-		if err != nil {
+		var sendErr error
+		lockErr := a.withLocks(ctx, lockKeysForPaths(channelID, r.path), func(ctx context.Context) error {
+			id, err := a.TG.SendTextReply(ctx, tgChID, msg.ID, reply)
+			if err != nil {
+				sendErr = err
+				return nil
+			}
+			_, _ = a.DB.Raw().ExecContext(ctx, `update files set manifest_message_id=?, updated_at=? where id=?`, id, now, r.fileID)
+			return nil
+		})
+		if lockErr != nil {
+			return lockErr
+		}
+		if sendErr != nil {
 			item.Action = "fail"
-			item.Reason = err.Error()
+			item.Reason = sendErr.Error()
 			out.Failed++
 			out.Items = append(out.Items, item)
 			if !opts.ContinueErr {
-				return mapTGErr(err)
+				return telegram.MapError(sendErr)
 			}
 			continue
 		}
-		_, _ = a.DB.Raw().ExecContext(ctx, `update files set manifest_message_id=?, updated_at=? where id=?`, id, now, r.fileID)
 		out.Imported++
 		out.Items = append(out.Items, item)
 	}
@@ -249,13 +269,13 @@ func (a *App) writeAlbumManifest(ctx context.Context, channelID, tgChID int64, m
 	}
 	if manifestID > 0 {
 		if err := a.TG.EditText(ctx, tgChID, manifestID, body); err != nil {
-			return 0, mapTGErr(err)
+			return 0, telegram.MapError(err)
 		}
 		return manifestID, nil
 	}
 	id, err := a.TG.SendTextReply(ctx, tgChID, firstMediaID, body)
 	if err != nil {
-		return 0, mapTGErr(err)
+		return 0, telegram.MapError(err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	ids := make([]int, len(meta.Files))

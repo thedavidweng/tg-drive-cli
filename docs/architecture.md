@@ -47,7 +47,9 @@ td cp
 
 ## Failure model
 
-- Before Telegram upload: drop the pending row (small files) or leave it for resume (big files).
+- Before Telegram upload: drop the pending row (small files) or leave it for
+  resume (big files). A retry to the same destination with matching content
+  identity adopts the pending row and sends only unconfirmed parts.
 - After Telegram upload: `message_id` is recorded immediately. Publish/index failure deletes the media when possible; otherwise the row is `orphaned` so `td repair --pending` will not upload a second copy.
 - After a successful media delete or tombstone: the local row is `deleted` even if the manifest reply cannot be redacted.
 - DB write failure after a Telegram edit: run `td scan --full` to reconcile.

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/thedavidweng/tg-drive-cli/core/telegram"
 )
@@ -23,9 +24,25 @@ type persistedState struct {
 // (login, init, cp, ls, get, ...) across separate invocations without a real
 // Telegram account: set TD_FAKE_TELEGRAM=1 and TD_FAKE_TELEGRAM_STATE=<path>.
 // The login code is the fake default ("12345").
+//
+// Test knobs read from the environment (each applies once at construction):
+//   - TD_FAKE_PART_SIZE: simulated resumable-upload part size in bytes.
+//   - TD_FAKE_FAIL_UPLOAD_AFTER_PARTS: fail the first resumable upload once
+//     this many parts are confirmed (state stays persisted for resume); the
+//     knob disables itself after firing once so a retry can succeed.
 func NewPersistent(path string) *Client {
 	c := New()
 	c.statePath = path
+	if v := os.Getenv("TD_FAKE_PART_SIZE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			c.partSize = n
+		}
+	}
+	if v := os.Getenv("TD_FAKE_FAIL_UPLOAD_AFTER_PARTS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			c.failUploadAfterParts = n
+		}
+	}
 	c.load()
 	return c
 }

@@ -70,7 +70,7 @@ func (bigUploader) upload(ctx context.Context, api *tg.Client, req tgtelegram.Up
 
 // selectMediaUploader picks the right uploader for a request.
 func selectMediaUploader(req tgtelegram.UploadRequest) mediaUploader {
-	if req.ResumableKey != "" && req.Size > resumableBigFileLimit && req.ResumableStore != nil && req.Path != "" {
+	if req.ResumableKey != "" && req.Size > tgtelegram.ResumableBigFileBytes && req.ResumableStore != nil && req.Path != "" {
 		return bigUploader{}
 	}
 	return smallUploader{}

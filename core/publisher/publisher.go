@@ -3,7 +3,6 @@ package publisher
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	apperr "github.com/thedavidweng/tg-drive-cli/core/errors"
@@ -65,6 +64,14 @@ type PublishRequest struct {
 	SetUploadedAt bool
 	// Now is the RFC3339 timestamp to use; empty uses time.Now().
 	Now string
+
+	// Rendered, when non-nil, is the caption the caller already rendered for
+	// this publication (the upload path renders once and threads it here so
+	// the sent caption and the indexed tags cannot diverge). Tags and
+	// SlugMaps must be the outputs of the same rendering pass.
+	Rendered *manifest.CaptionResult
+	Tags     []string
+	SlugMaps []pathcodec.SlugMapping
 }
 
 // PublishResult is the result of a publication.
@@ -113,15 +120,26 @@ func (p *Publisher) Publish(ctx context.Context, req PublishRequest) (*PublishRe
 	p.fillMeta(&req.Meta)
 	now := p.now(req.Now)
 
-	tags, slugMaps, err := pathcodec.GenerateChain(req.Meta.CanonicalPath, req.ExistingSlugs)
-	if err != nil {
-		return nil, err
-	}
-	req.Meta.Tags = tags
-
-	capRes, err := manifest.RenderCaption(req.Meta, p.cfg.SafeMediaCaptionUTF16Units, p.cfg.MarginUTF16Units)
-	if err != nil {
-		return nil, err
+	var tags []string
+	var slugMaps []pathcodec.SlugMapping
+	var capRes manifest.CaptionResult
+	if req.Rendered != nil {
+		// The caller already rendered this caption once; reuse its outputs
+		// verbatim instead of re-rendering.
+		capRes = *req.Rendered
+		tags = req.Tags
+		slugMaps = req.SlugMaps
+	} else {
+		var err error
+		tags, slugMaps, err = pathcodec.GenerateChain(req.Meta.CanonicalPath, req.ExistingSlugs)
+		if err != nil {
+			return nil, err
+		}
+		req.Meta.Tags = tags
+		capRes, err = manifest.RenderCaption(req.Meta, p.cfg.SafeMediaCaptionUTF16Units, p.cfg.MarginUTF16Units)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	manifestMsgID := req.ManifestMsgID
@@ -136,12 +154,12 @@ func (p *Publisher) Publish(ctx context.Context, req PublishRequest) (*PublishRe
 				if err := p.rollbackManifest(ctx, req, manifestMsgID, manifestChanged, newManifest); err != nil {
 					return nil, err
 				}
-				return nil, mapTGErr(err)
+				return nil, telegram.MapError(err)
 			}
 		} else {
 			id, err := p.tg.SendTextReply(ctx, req.ChannelID, req.MessageID, capRes.ManifestReply)
 			if err != nil {
-				return nil, mapTGErr(err)
+				return nil, telegram.MapError(err)
 			}
 			manifestMsgID = id
 			manifestChanged = true
@@ -157,7 +175,7 @@ func (p *Publisher) Publish(ctx context.Context, req PublishRequest) (*PublishRe
 			if err := p.rollbackManifest(ctx, req, manifestMsgID, manifestChanged, newManifest); err != nil {
 				return nil, err
 			}
-			return nil, mapTGErr(err)
+			return nil, telegram.MapError(err)
 		}
 	}
 
@@ -169,7 +187,7 @@ func (p *Publisher) Publish(ctx context.Context, req PublishRequest) (*PublishRe
 				if err := p.rollbackManifest(ctx, req, manifestMsgID, manifestChanged, newManifest); err != nil {
 					return nil, err
 				}
-				return nil, mapTGErr(err)
+				return nil, telegram.MapError(err)
 			}
 		}
 	}
@@ -267,7 +285,7 @@ func (p *Publisher) rollbackManifest(ctx context.Context, req PublishRequest, ma
 		// We sent a new manifest; delete it so it does not dangle.
 		if err := p.tg.DeleteMessage(ctx, req.ChannelID, manifestMsgID); err != nil {
 			if !isNotFound(err) {
-				return mapTGErr(err)
+				return telegram.MapError(err)
 			}
 		}
 		return nil
@@ -281,7 +299,7 @@ func (p *Publisher) rollbackManifest(ctx context.Context, req PublishRequest, ma
 	fullMeta.Tags = oldTags
 	if err := p.tg.EditText(ctx, req.ChannelID, req.ManifestMsgID, manifest.RenderManifestReplyFitting(fullMeta, manifest.DefaultTextBudget, p.cfg.MarginUTF16Units)); err != nil {
 		if !isNotEditable(err) && !isNotFound(err) {
-			return mapTGErr(err)
+			return telegram.MapError(err)
 		}
 	}
 	return nil
@@ -295,50 +313,4 @@ func isNotEditable(err error) bool {
 func isNotFound(err error) bool {
 	var e *telegram.MessageNotFoundError
 	return errors.As(err, &e)
-}
-
-func mapTGErr(err error) error {
-	if err == nil {
-		return nil
-	}
-	var fw *telegram.FloodWaitError
-	if errors.As(err, &fw) {
-		wait := time.Duration(fw.Seconds) * time.Second
-		retryAt := time.Now().Add(wait)
-		return apperr.New(apperr.ErrTelegramRateLimited,
-			fmt.Sprintf("telegram rate limited this account: retry after %s (at %s)",
-				wait, retryAt.Format("2006-01-02 15:04 MST"))).
-			WithDetails(map[string]any{
-				"retry_after_seconds": fw.Seconds,
-				"retry_at":            retryAt.UTC().Format(time.RFC3339),
-			})
-	}
-
-	var auth *telegram.AuthRequiredError
-	var code *telegram.CodeInvalidError
-	var pass *telegram.PasswordInvalidError
-	var exp *telegram.CodeExpiredError
-	var phone *telegram.PhoneInvalidError
-	var large *telegram.FileTooLargeError
-	var perm *telegram.PermissionDeniedError
-	var notEditable *telegram.MessageNotEditableError
-	var notFound *telegram.MessageNotFoundError
-
-	switch {
-	case errors.As(err, &auth):
-		return apperr.New(apperr.ErrAuthRequired, "not logged in; run: td auth login")
-	case errors.As(err, &code), errors.As(err, &pass), errors.As(err, &exp):
-		return apperr.New(apperr.ErrAuthFailed, err.Error())
-	case errors.As(err, &phone):
-		return apperr.New(apperr.ErrConfigInvalid, err.Error())
-	case errors.As(err, &large):
-		return apperr.New(apperr.ErrFileTooLarge, err.Error())
-	case errors.As(err, &perm):
-		return apperr.New(apperr.ErrChannelPermission, err.Error())
-	case errors.As(err, &notEditable):
-		return apperr.New(apperr.ErrMessageNotEditable, err.Error())
-	case errors.As(err, &notFound):
-		return apperr.New(apperr.ErrRemoteNotFound, err.Error())
-	}
-	return apperr.Wrap(apperr.ErrTelegramRPC, "telegram", err)
 }

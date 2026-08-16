@@ -28,7 +28,7 @@ func (a *App) AuthLogin(ctx context.Context, codeFn telegram.CodeFunc, passwordF
 	}
 	res, err := a.TG.Login(ctx, a.Cfg.Telegram.APIID, a.Cfg.Telegram.APIHash, phone, codeFn, passwordFn, opts)
 	if err != nil {
-		return nil, mapTGErr(err)
+		return nil, telegram.MapError(err)
 	}
 	user := res.User
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -48,7 +48,7 @@ func (a *App) AuthLogin(ctx context.Context, codeFn telegram.CodeFunc, passwordF
 func (a *App) AuthStatus(ctx context.Context) (map[string]any, error) {
 	user, ok, err := a.TG.Status(ctx)
 	if err != nil {
-		return nil, mapTGErr(err)
+		return nil, telegram.MapError(err)
 	}
 	if !ok {
 		return map[string]any{"authenticated": false}, nil
@@ -75,7 +75,7 @@ func (a *App) ListChannels(ctx context.Context, onlyDrive bool) ([]telegram.Chan
 func (a *App) InitRoot(ctx context.Context, localRoot, channelTitle string, create, bind string) (map[string]any, error) {
 	user, ok, err := a.TG.Status(ctx)
 	if err != nil {
-		return nil, mapTGErr(err)
+		return nil, telegram.MapError(err)
 	}
 	if !ok {
 		return nil, apperr.New(apperr.ErrAuthRequired, "not logged in; run: td auth login")
@@ -98,7 +98,7 @@ func (a *App) InitRoot(ctx context.Context, localRoot, channelTitle string, crea
 	case create != "":
 		ch, err = a.TG.CreateChannel(ctx, create)
 	case bind != "":
-		ch, err = a.TG.BindChannel(ctx, bind)
+		ch, err = a.TG.ResolveChannel(ctx, bind)
 	case channelTitle != "":
 		ch, err = a.TG.ResolveChannel(ctx, channelTitle)
 		if err != nil {
@@ -108,7 +108,7 @@ func (a *App) InitRoot(ctx context.Context, localRoot, channelTitle string, crea
 		return nil, apperr.New(apperr.ErrUsage, "channel title or --create-channel/--bind-channel required")
 	}
 	if err != nil {
-		return nil, mapTGErr(err)
+		return nil, telegram.MapError(err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	var accountID int64
@@ -190,7 +190,7 @@ func (a *App) Share(ctx context.Context, remotePath string) (map[string]any, err
 	}
 	link, err := a.TG.GetInviteLink(ctx, tgChID)
 	if err != nil {
-		return nil, mapTGErr(err)
+		return nil, telegram.MapError(err)
 	}
 	var tag string
 	_ = a.DB.Raw().QueryRowContext(ctx, `

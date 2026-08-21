@@ -283,7 +283,8 @@ func (a *App) DownloadFile(ctx context.Context, remotePath, localDest string, po
 		h = blake3.New(32, nil)
 		w = io.MultiWriter(f, h)
 	}
-	if err := a.downloadTo(ctx, tgChID, messageID, w); err != nil {
+	nativePhoto, err := a.downloadTo(ctx, tgChID, messageID, w)
+	if err != nil {
 		_ = f.Close()
 		_ = a.files().Remove(ctx, tmp)
 		return nil, telegram.MapError(err)
@@ -292,22 +293,28 @@ func (a *App) DownloadFile(ctx context.Context, remotePath, localDest string, po
 		_ = a.files().Remove(ctx, tmp)
 		return nil, err
 	}
-	if size > 0 {
-		info, err := a.files().Stat(ctx, tmp)
-		if err != nil {
-			_ = a.files().Remove(ctx, tmp)
-			return nil, err
+	// Native photos are Telegram's own recompressed representations: the
+	// stored size/hash describe the original upload bytes, which the platform
+	// never serves back (docs/integration-notes.md). Documents and attributed
+	// videos keep strict verification because their bytes are untouched.
+	if !nativePhoto {
+		if size > 0 {
+			info, err := a.files().Stat(ctx, tmp)
+			if err != nil {
+				_ = a.files().Remove(ctx, tmp)
+				return nil, err
+			}
+			if info.Size != size {
+				_ = a.files().Remove(ctx, tmp)
+				return nil, apperr.New(apperr.ErrTelegramRPC, "size mismatch")
+			}
 		}
-		if info.Size != size {
-			_ = a.files().Remove(ctx, tmp)
-			return nil, apperr.New(apperr.ErrTelegramRPC, "size mismatch")
-		}
-	}
-	if hashEnabled {
-		got := "blake3:" + hex.EncodeToString(h.Sum(nil))
-		if got != hash {
-			_ = a.files().Remove(ctx, tmp)
-			return nil, apperr.New(apperr.ErrTelegramRPC, "content hash mismatch")
+		if hashEnabled {
+			got := "blake3:" + hex.EncodeToString(h.Sum(nil))
+			if got != hash {
+				_ = a.files().Remove(ctx, tmp)
+				return nil, apperr.New(apperr.ErrTelegramRPC, "content hash mismatch")
+			}
 		}
 	}
 	if err := a.files().Rename(ctx, tmp, localDest); err != nil {
@@ -317,7 +324,12 @@ func (a *App) DownloadFile(ctx context.Context, remotePath, localDest string, po
 	return &DownloadResult{Path: p, Dest: localDest, Size: size}, nil
 }
 
-func (a *App) downloadTo(ctx context.Context, tgChID int64, messageID int, w io.Writer) error {
+// downloadTo streams the message's downloadable body. It reports whether the
+// message is a native photo: Telegram serves its own recompressed
+// representation for photos, so the stored size/hash of the original bytes
+// cannot hold for what comes back.
+func (a *App) downloadTo(ctx context.Context, tgChID int64, messageID int, w io.Writer) (bool, error) {
+	nativePhoto := false
 	if msg, err := a.TG.GetMessage(ctx, tgChID, messageID); err == nil {
 		if msg.Kind == telegram.KindText || (msg.MIME == "text/plain" && len(msg.Data) == 0 && msg.FileName == "") {
 			body := msg.Text
@@ -325,10 +337,12 @@ func (a *App) downloadTo(ctx context.Context, tgChID int64, messageID int, w io.
 				body = msg.Caption
 			}
 			_, err := w.Write([]byte(manifest.SplitHumanAndMachine(body)))
-			return err
+			return false, err
 		}
+		nativePhoto = msg.Kind == telegram.KindPhoto
 	}
-	return a.TG.DownloadMedia(ctx, tgChID, messageID, w)
+	err := a.TG.DownloadMedia(ctx, tgChID, messageID, w)
+	return nativePhoto, err
 }
 
 func autoRenameLocal(ctx context.Context, files ports.FileSystem, path string) string {

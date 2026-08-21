@@ -49,6 +49,15 @@ td cp <local> <remote-path>
   [--width <px>] [--height <px>]       # video dimensions (--as video)
   [--streaming]                        # streaming hint (--as video)
   [--thumb <file.jpg>]                 # JPEG thumbnail (document/video kinds)
+```
+
+`--as photo` sends a native photo message: Telegram recompresses the bytes,
+downloads fetch the largest representation, and strict size/hash verification
+does not apply to them. `--as video` keeps the bytes untouched. See
+`docs/integration-notes.md` for the full semantics of the three content
+forms.
+
+```text
 td get <remote-path> <local-dest>
   [--recursive] [--replace] [--skip-existing] [--auto-rename] [--continue-on-error]
 td mv <remote-from> <remote-to>

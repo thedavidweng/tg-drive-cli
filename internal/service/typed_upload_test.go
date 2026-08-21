@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	apperr "github.com/thedavidweng/tg-drive-cli/core/errors"
+	"github.com/thedavidweng/tg-drive-cli/core/manifest"
 	"github.com/thedavidweng/tg-drive-cli/core/telegram"
 	"github.com/thedavidweng/tg-drive-cli/core/telegram/fake"
 	"lukechampine.com/blake3"
@@ -140,13 +141,16 @@ func TestZeroPresentationMatchesPlainSend(t *testing.T) {
 }
 
 // TestPhotoUploadNativePresentation checks the photo kind publishes a native
-// photo message as native clients see it.
+// photo message as native clients see it, and that it downloads back through
+// the normal path (offline the fake models photo read-back verbatim; real
+// Telegram serves its recompressed largest representation).
 func TestPhotoUploadNativePresentation(t *testing.T) {
 	app, tg := testApp(t)
 	loginAndInit(t, app, tg)
 	ctx := context.Background()
 
-	data, err := app.UploadFileAs(ctx, writeLocal(t, "pixels"), "/pics/beach.jpg", ConflictFail, false, Presentation{Kind: telegram.KindPhoto})
+	content := []byte("pixels")
+	data, err := app.UploadFileAs(ctx, writeLocal(t, string(content)), "/pics/beach.jpg", ConflictFail, false, Presentation{Kind: telegram.KindPhoto})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,6 +167,75 @@ func TestPhotoUploadNativePresentation(t *testing.T) {
 	}
 	if !strings.Contains(msg.Caption, "td:v1") {
 		t.Fatalf("caption lost machine meta: %q", msg.Caption)
+	}
+
+	dest := filepath.Join(t.TempDir(), "beach.jpg")
+	if _, err := app.DownloadFile(ctx, "/pics/beach.jpg", dest, ConflictFail); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Fatal("downloaded bytes differ from source")
+	}
+}
+
+// TestNativePhotoDownloadServesRecompressedBytes pins the photo download
+// contract: Telegram serves its own recompressed representation for native
+// photos, so stored size/hash of the original bytes must not fail
+// verification. Documents keep strict verification — their bytes are
+// untouched by the platform.
+func TestNativePhotoDownloadServesRecompressedBytes(t *testing.T) {
+	app, tg := testApp(t)
+	loginAndInit(t, app, tg)
+	ctx := context.Background()
+	tgChID, _ := app.tgChannelID(ctx)
+
+	served := []byte("recompressed jpeg served by telegram")
+	originalHash := blake3Hex([]byte("original bytes telegram no longer holds"))
+	tg.AddMessage(tgChID, telegram.Message{
+		ID: 60, Kind: telegram.KindPhoto, MIME: "image/jpeg",
+		Caption: manifest.RenderCompact(manifest.FileMeta{
+			CanonicalPath: "/pics/beach.jpg",
+			DisplayName:   "beach.jpg",
+			Size:          int64(len(served)) + 4096,
+			Hash:          originalHash,
+			MIME:          "image/jpeg",
+		}),
+		Data: served,
+	})
+	tg.AddMessage(tgChID, telegram.Message{
+		ID: 61, Kind: telegram.KindDocument, FileName: "report.pdf", MIME: "application/pdf",
+		Caption: manifest.RenderCompact(manifest.FileMeta{
+			CanonicalPath: "/docs/report.pdf",
+			DisplayName:   "report.pdf",
+			Size:          int64(len(served)) + 4096,
+			Hash:          originalHash,
+			MIME:          "application/pdf",
+		}),
+		Data: served,
+	})
+
+	if _, err := app.Scan(ctx, ScanOptions{Full: true}); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(t.TempDir(), "beach.jpg")
+	if _, err := app.DownloadFile(ctx, "/pics/beach.jpg", dest, ConflictFail); err != nil {
+		t.Fatalf("native photo download must serve the recompressed representation: %v", err)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, served) {
+		t.Fatal("photo download did not persist the served bytes")
+	}
+
+	docDest := filepath.Join(t.TempDir(), "report.pdf")
+	if _, docErr := app.DownloadFile(ctx, "/docs/report.pdf", docDest, ConflictFail); docErr == nil {
+		t.Fatal("document with mismatching metadata must fail verification")
 	}
 }
 
@@ -237,84 +310,121 @@ func TestPresentationValidateRejectsInvalid(t *testing.T) {
 }
 
 // TestTypedUploadCaptionBudgetIdentical proves caption budget enforcement
-// fails a typed upload exactly like a plain one. The display name alone
-// overflows the minimal manifest-reply caption, so RenderCaption errors.
+// fails a typed upload exactly like a plain one, for every kind. The display
+// name alone overflows the minimal manifest-reply caption, so RenderCaption
+// errors.
 func TestTypedUploadCaptionBudgetIdentical(t *testing.T) {
-	app, tg := testApp(t)
-	loginAndInit(t, app, tg)
-	ctx := context.Background()
-	dest := "/" + strings.Repeat("x", 2048) + ".mp4"
+	for _, pres := range []Presentation{
+		{Kind: telegram.KindPhoto},
+		{Kind: telegram.KindVideo, DurationSeconds: 5, Width: 10, Height: 10},
+	} {
+		app, tg := testApp(t)
+		loginAndInit(t, app, tg)
+		ctx := context.Background()
+		dest := "/" + strings.Repeat("x", 2048) + ".mp4"
 
-	_, plainErr := app.UploadFile(ctx, writeLocal(t, "x"), dest, ConflictFail, false)
-	if code := appErrCode(t, plainErr); code != apperr.ErrCaptionTooLong {
-		t.Fatalf("plain code = %s, want ERR_CAPTION_TOO_LONG", code)
-	}
-	_, typedErr := app.UploadFileAs(ctx, writeLocal(t, "x"), dest, ConflictFail, false, Presentation{
-		Kind: telegram.KindVideo, DurationSeconds: 5, Width: 10, Height: 10,
-	})
-	if code := appErrCode(t, typedErr); code != apperr.ErrCaptionTooLong {
-		t.Fatalf("typed code = %s, want ERR_CAPTION_TOO_LONG", code)
+		_, plainErr := app.UploadFile(ctx, writeLocal(t, "x"), dest, ConflictFail, false)
+		if code := appErrCode(t, plainErr); code != apperr.ErrCaptionTooLong {
+			t.Fatalf("kind %q: plain code = %s, want ERR_CAPTION_TOO_LONG", pres.Kind, code)
+		}
+		_, typedErr := app.UploadFileAs(ctx, writeLocal(t, "x"), dest, ConflictFail, false, pres)
+		if code := appErrCode(t, typedErr); code != apperr.ErrCaptionTooLong {
+			t.Fatalf("kind %q: typed code = %s, want ERR_CAPTION_TOO_LONG", pres.Kind, code)
+		}
 	}
 }
 
 // TestTypedUploadResumeAdoptsPendingRow covers the pending-row lifecycle for
-// typed uploads: an interrupted resumable video upload leaves an adoptable
-// pending row whose retry carries the same presentation.
+// typed uploads of every kind: an interrupted resumable upload leaves an
+// adoptable pending row whose retry carries the same presentation.
 func TestTypedUploadResumeAdoptsPendingRow(t *testing.T) {
-	app, tg := testApp(t)
-	loginAndInit(t, app, tg)
-	ctx := context.Background()
+	cases := []struct {
+		name  string
+		pres  Presentation
+		check func(t *testing.T, msg telegram.Message)
+	}{
+		{
+			name: "photo",
+			pres: Presentation{Kind: telegram.KindPhoto},
+			check: func(t *testing.T, msg telegram.Message) {
+				t.Helper()
+				if msg.Kind != telegram.KindPhoto || msg.Video != nil {
+					t.Fatalf("resumed message lost presentation: kind=%q video=%+v", msg.Kind, msg.Video)
+				}
+			},
+		},
+		{
+			name: "video",
+			pres: Presentation{
+				Kind:              telegram.KindVideo,
+				DurationSeconds:   600,
+				Width:             1920,
+				Height:            1080,
+				SupportsStreaming: true,
+			},
+			check: func(t *testing.T, msg telegram.Message) {
+				t.Helper()
+				if msg.Kind != telegram.KindVideo || msg.Video == nil || msg.Video.DurationSeconds != 600 || !msg.Video.SupportsStreaming {
+					t.Fatalf("resumed message lost presentation: kind=%q video=%+v", msg.Kind, msg.Video)
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			app, tg := testApp(t)
+			loginAndInit(t, app, tg)
+			ctx := context.Background()
 
-	big := filepath.Join(t.TempDir(), "big.mp4")
-	if err := os.WriteFile(big, bytes.Repeat([]byte{0xA5}, 11*1024*1024), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	tg.SetPartSize(1024 * 1024)
-	tg.SetFailUploadAfterParts(2)
-	pres := Presentation{
-		Kind:              telegram.KindVideo,
-		DurationSeconds:   600,
-		Width:             1920,
-		Height:            1080,
-		SupportsStreaming: true,
-	}
-	if _, err := app.UploadFileAs(ctx, big, "/media/big.mp4", ConflictFail, false, pres); err == nil {
-		t.Fatal("expected interrupted upload to fail")
-	}
-	if got := fileStatus(t, app, "/media/big.mp4"); got != "pending" {
-		t.Fatalf("status after interruption = %q, want pending", got)
-	}
+			big := filepath.Join(t.TempDir(), "big.bin")
+			if err := os.WriteFile(big, bytes.Repeat([]byte{0xA5}, 11*1024*1024), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			tg.SetPartSize(1024 * 1024)
+			tg.SetFailUploadAfterParts(2)
+			if _, err := app.UploadFileAs(ctx, big, "/media/big.bin", ConflictFail, false, tc.pres); err == nil {
+				t.Fatal("expected interrupted upload to fail")
+			}
+			if got := fileStatus(t, app, "/media/big.bin"); got != "pending" {
+				t.Fatalf("status after interruption = %q, want pending", got)
+			}
 
-	tg.SetFailUploadAfterParts(0)
-	tg.ResetPartSubmissions()
-	data, err := app.UploadFileAs(ctx, big, "/media/big.mp4", ConflictFail, false, pres)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if data["resumed"] != true {
-		t.Fatalf("retry data = %v, want resumed:true", data)
-	}
-	tgChID, _ := app.tgChannelID(ctx)
-	msg := messageByID(t, tg, tgChID, data["message_id"].(int))
-	if msg.Kind != telegram.KindVideo || msg.Video == nil || msg.Video.DurationSeconds != 600 || !msg.Video.SupportsStreaming {
-		t.Fatalf("resumed message lost presentation: kind=%q video=%+v", msg.Kind, msg.Video)
-	}
-	if got := fileStatus(t, app, "/media/big.mp4"); got != "active" {
-		t.Fatalf("status after resume = %q, want active", got)
+			tg.SetFailUploadAfterParts(0)
+			tg.ResetPartSubmissions()
+			data, err := app.UploadFileAs(ctx, big, "/media/big.bin", ConflictFail, false, tc.pres)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if data["resumed"] != true {
+				t.Fatalf("retry data = %v, want resumed:true", data)
+			}
+			tgChID, _ := app.tgChannelID(ctx)
+			msg := messageByID(t, tg, tgChID, data["message_id"].(int))
+			tc.check(t, msg)
+			if got := fileStatus(t, app, "/media/big.bin"); got != "active" {
+				t.Fatalf("status after resume = %q, want active", got)
+			}
+		})
 	}
 }
 
 // TestTypedUploadScanReconstruction follows the established lifecycle:
 // publish typed content, wipe the index, scan --full, verify reconstruction.
+// A published photo must index exactly like an adopted native photo — same
+// columns populated from the caption (path, size, hash).
 func TestTypedUploadScanReconstruction(t *testing.T) {
 	app, tg := testApp(t)
 	loginAndInit(t, app, tg)
 	ctx := context.Background()
+	tgChID, _ := app.tgChannelID(ctx)
 
 	content := []byte("reconstruct me")
+	adopted := []byte("adopted native jpeg")
 	paths := map[string][]byte{
-		"/media/scene.mp4": content,
-		"/docs/note.txt":   []byte("plain"),
+		"/media/scene.mp4":  content,
+		"/docs/note.txt":    []byte("plain"),
+		"/pics/beach.jpg":   []byte("pixels"),
+		"/pics/adopted.jpg": adopted,
 	}
 	if _, err := app.UploadFileAs(ctx, writeLocal(t, string(content)), "/media/scene.mp4", ConflictFail, false, Presentation{
 		Kind:              telegram.KindVideo,
@@ -329,6 +439,20 @@ func TestTypedUploadScanReconstruction(t *testing.T) {
 	if _, err := app.UploadFile(ctx, writeLocal(t, "plain"), "/docs/note.txt", ConflictFail, false); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := app.UploadFileAs(ctx, writeLocal(t, "pixels"), "/pics/beach.jpg", ConflictFail, false, Presentation{Kind: telegram.KindPhoto}); err != nil {
+		t.Fatal(err)
+	}
+	tg.AddMessage(tgChID, telegram.Message{
+		ID: 90, Kind: telegram.KindPhoto, MIME: "image/jpeg",
+		Caption: manifest.RenderCompact(manifest.FileMeta{
+			CanonicalPath: "/pics/adopted.jpg",
+			DisplayName:   "adopted.jpg",
+			Size:          int64(len(adopted)),
+			Hash:          blake3Hex(adopted),
+			MIME:          "image/jpeg",
+		}),
+		Data: adopted,
+	})
 
 	for _, table := range []string{"path_tags", "path_segment_slugs", "files", "nodes", "scan_state"} {
 		if _, err := app.DB.Raw().Exec(`delete from ` + table); err != nil {
@@ -347,6 +471,26 @@ func TestTypedUploadScanReconstruction(t *testing.T) {
 			t.Fatalf("%s status = %q after rebuild", p, got)
 		}
 	}
+
+	// Published and adopted photos land in the index identically: path,
+	// size, and provenance hash all populated from their captions.
+	channelID, _, err := app.channelID(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string][]byte{"/pics/beach.jpg": []byte("pixels"), "/pics/adopted.jpg": adopted} {
+		var size int64
+		var hash string
+		if err := app.DB.Raw().QueryRowContext(ctx,
+			`select size, content_hash from files where channel_id=? and canonical_path=? and status='active'`,
+			channelID, path).Scan(&size, &hash); err != nil {
+			t.Fatalf("%s missing from rebuilt index: %v", path, err)
+		}
+		if size != int64(len(want)) || hash != blake3Hex(want) {
+			t.Fatalf("%s indexed as size=%d hash=%q, want %d %s", path, size, hash, len(want), blake3Hex(want))
+		}
+	}
+
 	dest := filepath.Join(t.TempDir(), "out.bin")
 	dl, err := app.DownloadFile(ctx, "/media/scene.mp4", dest, ConflictFail)
 	if err != nil {
@@ -358,5 +502,16 @@ func TestTypedUploadScanReconstruction(t *testing.T) {
 	}
 	if !bytes.Equal(got, content) || dl.Size != int64(len(content)) {
 		t.Fatalf("reconstructed content mismatch: size=%d", dl.Size)
+	}
+	photoDest := filepath.Join(t.TempDir(), "beach.jpg")
+	if _, err := app.DownloadFile(ctx, "/pics/beach.jpg", photoDest, ConflictFail); err != nil {
+		t.Fatal(err)
+	}
+	pgot, err := os.ReadFile(photoDest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(pgot, paths["/pics/beach.jpg"]) {
+		t.Fatal("reconstructed photo content mismatch")
 	}
 }

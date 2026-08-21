@@ -263,7 +263,10 @@ func findTreeNode(nodes any, name string) map[string]any {
 
 // TestE2ETypedLifecycle publishes typed content through the real binary,
 // verifies byte identity and NDJSON parity, then wipes the database and
-// reconstructs purely from the channel with scan --full.
+// reconstructs purely from the channel with scan --full. Covers the typed
+// photo and video kinds; offline the fake models photo read-back verbatim,
+// while real Telegram serves its recompressed largest representation
+// (docs/integration-notes.md).
 func TestE2ETypedLifecycle(t *testing.T) {
 	dir := t.TempDir()
 	bin, cfgPath, dbPath, statePath, root := e2eSetup(t, dir)
@@ -279,6 +282,11 @@ func TestE2ETypedLifecycle(t *testing.T) {
 	poster := append([]byte{0xFF, 0xD8, 0xFF, 0xE0}, bytes.Repeat([]byte{0x00}, 32)...)
 	posterPath := filepath.Join(dir, "poster.jpg")
 	if err := os.WriteFile(posterPath, poster, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pixels := bytes.Repeat([]byte("photo-pixels-"), 512)
+	photoLocal := filepath.Join(dir, "beach.jpg")
+	if err := os.WriteFile(photoLocal, pixels, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -299,6 +307,13 @@ func TestE2ETypedLifecycle(t *testing.T) {
 		t.Fatalf("typed cp size = %v", upTyped["size"])
 	}
 
+	upPhoto := runE2EJSON(t, bin, cfgPath, dbPath, statePath,
+		"cp", photoLocal, "/pics/beach.jpg", "--as", "photo")
+	wantPhotoHash := blake3Hex(pixels)
+	if upPhoto["hash"] != wantPhotoHash {
+		t.Fatalf("photo cp hash = %v, want %s", upPhoto["hash"], wantPhotoHash)
+	}
+
 	// Byte fidelity: the attributed video downloads back bit-identical.
 	restore := filepath.Join(dir, "restored.mp4")
 	runE2EJSON(t, bin, cfgPath, dbPath, statePath, "get", "/media/scene.mp4", restore)
@@ -309,20 +324,33 @@ func TestE2ETypedLifecycle(t *testing.T) {
 	if !bytes.Equal(got, content) {
 		t.Fatal("restored bytes differ from source")
 	}
+	photoRestore := filepath.Join(dir, "restored.jpg")
+	runE2EJSON(t, bin, cfgPath, dbPath, statePath, "get", "/pics/beach.jpg", photoRestore)
+	photoGot, err := os.ReadFile(photoRestore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(photoGot, pixels) {
+		t.Fatal("photo bytes differ from source")
+	}
 
 	// NDJSON parity: typed uploads emit the same event shapes as plain ones.
 	plainLocal := e2eLocalFile(t, dir, "plain.bin", "plain payload")
 	plainEvents := runE2EEvents(t, bin, cfgPath, dbPath, statePath, "cp", plainLocal, "/docs/plain.bin", "--events")
 	typedEvents := runE2EEvents(t, bin, cfgPath, dbPath, statePath,
 		"cp", videoLocal, "/media/again.mp4", "--as", "video", "--duration", "1", "--width", "2", "--height", "2", "--events")
-	if len(plainEvents) != 1 || len(typedEvents) != 1 {
-		t.Fatalf("event counts = %d / %d, want 1 / 1", len(plainEvents), len(typedEvents))
-	}
-	if cmd(plainEvents[0]) != "cp" || cmd(typedEvents[0]) != "cp" {
-		t.Fatalf("event commands = %q / %q, want cp", cmd(plainEvents[0]), cmd(typedEvents[0]))
-	}
-	if !equalKeys(plainEvents[0]["data"], typedEvents[0]["data"]) {
-		t.Fatalf("typed cp event shape differs: plain=%v typed=%v", keys(plainEvents[0]["data"]), keys(typedEvents[0]["data"]))
+	photoEvents := runE2EEvents(t, bin, cfgPath, dbPath, statePath,
+		"cp", photoLocal, "/pics/again.jpg", "--as", "photo", "--events")
+	for name, events := range map[string][]map[string]any{"plain": plainEvents, "video": typedEvents, "photo": photoEvents} {
+		if len(events) != 1 {
+			t.Fatalf("%s event count = %d, want 1", name, len(events))
+		}
+		if cmd(events[0]) != "cp" {
+			t.Fatalf("%s event command = %q, want cp", name, cmd(events[0]))
+		}
+		if !equalKeys(plainEvents[0]["data"], events[0]["data"]) {
+			t.Fatalf("%s cp event shape differs: plain=%v typed=%v", name, keys(plainEvents[0]["data"]), keys(events[0]["data"]))
+		}
 	}
 
 	// Reconstruction: wipe the local cache entirely, rebind, scan --full.
@@ -331,8 +359,8 @@ func TestE2ETypedLifecycle(t *testing.T) {
 	}
 	runE2EJSON(t, bin, cfgPath, dbPath, statePath, "init", root, "--bind-channel=Drive")
 	scanData := runE2EJSON(t, bin, cfgPath, dbPath, statePath, "scan", "--full")
-	if n, _ := scanData["active"].(float64); n != 3 {
-		t.Fatalf("scan = %v, want 3 active", scanData)
+	if n, _ := scanData["active"].(float64); n != 5 {
+		t.Fatalf("scan = %v, want 5 active", scanData)
 	}
 	lsData := runE2EJSON(t, bin, cfgPath, dbPath, statePath, "ls", "/media")
 	entries, _ := lsData["entries"].([]any)
@@ -349,6 +377,21 @@ func TestE2ETypedLifecycle(t *testing.T) {
 	if size, _ := entry["size"].(float64); size != float64(len(content)) {
 		t.Fatalf("reconstructed size = %v", entry["size"])
 	}
+	picsData := runE2EJSON(t, bin, cfgPath, dbPath, statePath, "ls", "/pics")
+	picEntries, _ := picsData["entries"].([]any)
+	var photoEntry map[string]any
+	for _, e := range picEntries {
+		m, _ := e.(map[string]any)
+		if m["name"] == "beach.jpg" {
+			photoEntry = m
+		}
+	}
+	if photoEntry == nil {
+		t.Fatalf("ls /pics missing beach.jpg: %v", picsData)
+	}
+	if size, _ := photoEntry["size"].(float64); size != float64(len(pixels)) {
+		t.Fatalf("reconstructed photo size = %v", photoEntry["size"])
+	}
 	rebuilt := filepath.Join(dir, "rebuilt.mp4")
 	runE2EJSON(t, bin, cfgPath, dbPath, statePath, "get", "/media/scene.mp4", rebuilt)
 	reGot, err := os.ReadFile(rebuilt)
@@ -357,6 +400,15 @@ func TestE2ETypedLifecycle(t *testing.T) {
 	}
 	if !bytes.Equal(reGot, content) || blake3Hex(reGot) != wantHash {
 		t.Fatal("reconstructed content or hash mismatch")
+	}
+	rebuiltPhoto := filepath.Join(dir, "rebuilt.jpg")
+	runE2EJSON(t, bin, cfgPath, dbPath, statePath, "get", "/pics/beach.jpg", rebuiltPhoto)
+	rePhotoGot, err := os.ReadFile(rebuiltPhoto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(rePhotoGot, pixels) {
+		t.Fatal("reconstructed photo content mismatch")
 	}
 }
 

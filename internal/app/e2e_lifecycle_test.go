@@ -152,6 +152,20 @@ func TestE2ELifecycle(t *testing.T) {
 	if len(entries) != 2 {
 		t.Fatalf("ls /docs = %v", lsData)
 	}
+	// ls --json contract (docs/contracts/json-contract.md): file entries
+	// always carry the stored blake3 content hash.
+	for name, want := range map[string]string{
+		"a.txt": blake3Hex([]byte("hello from a\n")),
+		"b.txt": blake3Hex([]byte(strings.Repeat("b", 4096))),
+	} {
+		entry := findEntry(entries, name)
+		if entry == nil {
+			t.Fatalf("ls /docs missing %s: %v", name, lsData)
+		}
+		if entry["hash"] != want {
+			t.Fatalf("ls %s hash = %v, want %s", name, entry["hash"], want)
+		}
+	}
 
 	treeData := runE2EJSON(t, bin, cfgPath, dbPath, statePath, "tree", "/")
 	docs := findTreeNode(treeData["tree"], "docs")
@@ -251,6 +265,24 @@ func findTreeNode(nodes any, name string) map[string]any {
 	}
 	for _, n := range list {
 		m, ok := n.(map[string]any)
+		if !ok {
+			continue
+		}
+		if m["name"] == name {
+			return m
+		}
+	}
+	return nil
+}
+
+// findEntry finds a listing entry by name in an ls --json payload.
+func findEntry(entries any, name string) map[string]any {
+	list, ok := entries.([]any)
+	if !ok {
+		return nil
+	}
+	for _, e := range list {
+		m, ok := e.(map[string]any)
 		if !ok {
 			continue
 		}
@@ -377,6 +409,11 @@ func TestE2ETypedLifecycle(t *testing.T) {
 	if size, _ := entry["size"].(float64); size != float64(len(content)) {
 		t.Fatalf("reconstructed size = %v", entry["size"])
 	}
+	// The manifest-restored hash must surface through ls --json after the
+	// wipe + scan --full rebuild.
+	if entry["hash"] != wantHash {
+		t.Fatalf("reconstructed hash = %v, want %s", entry["hash"], wantHash)
+	}
 	picsData := runE2EJSON(t, bin, cfgPath, dbPath, statePath, "ls", "/pics")
 	picEntries, _ := picsData["entries"].([]any)
 	var photoEntry map[string]any
@@ -391,6 +428,9 @@ func TestE2ETypedLifecycle(t *testing.T) {
 	}
 	if size, _ := photoEntry["size"].(float64); size != float64(len(pixels)) {
 		t.Fatalf("reconstructed photo size = %v", photoEntry["size"])
+	}
+	if photoEntry["hash"] != wantPhotoHash {
+		t.Fatalf("reconstructed photo hash = %v, want %s", photoEntry["hash"], wantPhotoHash)
 	}
 	rebuilt := filepath.Join(dir, "rebuilt.mp4")
 	runE2EJSON(t, bin, cfgPath, dbPath, statePath, "get", "/media/scene.mp4", rebuilt)

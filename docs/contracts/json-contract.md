@@ -143,11 +143,20 @@ Incremental scans may include `full_scan_warning`. `--include-deleted` adds `tom
     "path": "/Pictures/2024",
     "entries": [
       {"type": "dir", "name": "06", "path": "/Pictures/2024/06"},
-      {"type": "file", "name": "beach.jpg", "path": "/Pictures/2024/beach.jpg", "size": 2482911}
+      {"type": "file", "name": "beach.jpg", "path": "/Pictures/2024/beach.jpg", "size": 2482911, "hash": "blake3:fullhexvalue"}
     ]
   }
 }
 ```
+
+File entries always carry `hash` — the stored BLAKE3 content hash, `""` when
+unknown (rows adopted without `--hash`). Directory entries never carry it.
+The field is additive: consumers written against earlier versions keep
+working.
+
+The example omits two conditional keys for brevity: file entries of active
+rows also carry `"status": "active"`, and directory entries may carry
+`"ephemeral": true`.
 
 ## Tree
 

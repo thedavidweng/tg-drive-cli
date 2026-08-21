@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -26,13 +27,46 @@ import (
 )
 
 // LSEntry is one directory listing entry.
+//
+// The td ls --json wire shape is contract-tested: file entries always carry
+// hash (see MarshalJSON); dir entries keep their historical key set.
 type LSEntry struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+	Type string `json:"type"`
+	Size int64  `json:"size,omitempty"`
+	// Hash is the stored BLAKE3 content hash ("blake3:<hex>"); empty when
+	// unknown, e.g. rows adopted without --hash. Emitted only for file
+	// entries, where it is always present (possibly "") so no-download
+	// integrity audits can rely on the key.
+	Hash      string `json:"-"`
+	Status    string `json:"status,omitempty"`
+	Ephemeral bool   `json:"ephemeral,omitempty"`
+}
+
+// lsFileJSON is the wire shape of a file entry in ls --json output.
+type lsFileJSON struct {
 	Name      string `json:"name"`
 	Path      string `json:"path"`
 	Type      string `json:"type"`
 	Size      int64  `json:"size,omitempty"`
+	Hash      string `json:"hash"`
 	Status    string `json:"status,omitempty"`
 	Ephemeral bool   `json:"ephemeral,omitempty"`
+}
+
+// lsDirJSON is the wire shape of a directory entry; it predates the hash
+// field and must not grow one.
+type lsDirJSON LSEntry
+
+// MarshalJSON pins the ls --json entry contract: file entries always carry
+// hash — the stored blake3 value, "" when unknown — while dir entries keep
+// their historical key set.
+func (e LSEntry) MarshalJSON() ([]byte, error) {
+	if e.Type == "file" {
+		return json.Marshal(lsFileJSON(e))
+	}
+	return json.Marshal(lsDirJSON(e))
 }
 
 // ListDir lists children of a remote path.
@@ -50,10 +84,10 @@ func (a *App) ListDir(ctx context.Context, remotePath string) ([]LSEntry, error)
 		prefix += "/"
 	}
 	rows, err := a.DB.Raw().QueryContext(ctx, `
-		select canonical_path, display_name, 'file' as type, coalesce(size,0), status, 0
+		select canonical_path, display_name, 'file' as type, coalesce(size,0), status, 0, coalesce(content_hash,'')
 		from files where channel_id=? and status='active' and canonical_path like ? escape '\'
 		union
-		select canonical_path, display_name, 'dir', 0, '', ephemeral
+		select canonical_path, display_name, 'dir', 0, '', ephemeral, ''
 		from nodes where channel_id=? and type='dir' and parent_path=?
 		order by type desc, display_name`, channelID, escapeLike(prefix)+"%", channelID, p)
 	if err != nil {
@@ -63,10 +97,10 @@ func (a *App) ListDir(ctx context.Context, remotePath string) ([]LSEntry, error)
 	seen := map[string]bool{}
 	var out []LSEntry
 	for rows.Next() {
-		var fullPath, name, typ, status string
+		var fullPath, name, typ, status, contentHash string
 		var size int64
 		var ephemeral int
-		if err := rows.Scan(&fullPath, &name, &typ, &size, &status, &ephemeral); err != nil {
+		if err := rows.Scan(&fullPath, &name, &typ, &size, &status, &ephemeral, &contentHash); err != nil {
 			return nil, err
 		}
 		childName := name
@@ -84,17 +118,21 @@ func (a *App) ListDir(ctx context.Context, remotePath string) ([]LSEntry, error)
 			continue
 		}
 		seen[fullPath] = true
-		out = append(out, LSEntry{Name: childName, Path: fullPath, Type: typ, Size: size, Status: status, Ephemeral: ephemeral == 1})
+		entry := LSEntry{Name: childName, Path: fullPath, Type: typ, Size: size, Status: status, Ephemeral: ephemeral == 1}
+		if typ == "file" {
+			entry.Hash = contentHash
+		}
+		out = append(out, entry)
 	}
 	if len(out) == 0 && p != "/" {
 		// Nothing under p: it is either a file (list it, like Unix ls), an
 		// empty directory (empty listing), or absent (error).
-		var name, status string
+		var name, status, contentHash string
 		var size int64
-		err := a.DB.Raw().QueryRowContext(ctx, `select display_name, coalesce(size,0), status from files where channel_id=? and canonical_path=? and status='active'`, channelID, p).Scan(&name, &size, &status)
+		err := a.DB.Raw().QueryRowContext(ctx, `select display_name, coalesce(size,0), status, coalesce(content_hash,'') from files where channel_id=? and canonical_path=? and status='active'`, channelID, p).Scan(&name, &size, &status, &contentHash)
 		switch err {
 		case nil:
-			return []LSEntry{{Name: name, Path: p, Type: "file", Size: size, Status: status}}, nil
+			return []LSEntry{{Name: name, Path: p, Type: "file", Size: size, Hash: contentHash, Status: status}}, nil
 		case sql.ErrNoRows:
 			var one int
 			dirErr := a.DB.Raw().QueryRowContext(ctx, `select 1 from nodes where channel_id=? and canonical_path=? and type='dir'`, channelID, p).Scan(&one)

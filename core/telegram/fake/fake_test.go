@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/thedavidweng/tg-drive-cli/core/telegram"
@@ -165,4 +166,120 @@ func (m *memStore) DeleteUploadState(context.Context, string) error {
 	m.deleted = true
 	m.saved = nil
 	return nil
+}
+
+// TestTypedUploadRecordsKindAttributesThumb verifies the fake accepts and
+// persists typed uploads the way native clients would observe them.
+func TestTypedUploadRecordsKindAttributesThumb(t *testing.T) {
+	c := New()
+	loginFake(t, c)
+	ctx := context.Background()
+	ch, err := c.CreateChannel(ctx, "Typed")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	thumb := []byte{0xFF, 0xD8, 0xFF, 't', 'h', 'u', 'm', 'b'}
+	up, err := c.UploadMedia(ctx, telegram.UploadRequest{
+		ChannelID: ch.ID, FileName: "scene.mp4", MIME: "video/mp4", Size: 9,
+		Reader: strings.NewReader("videobytes"),
+		Kind:   telegram.KindVideo,
+		Video:  &telegram.VideoAttributes{DurationSeconds: 97.5, Width: 1280, Height: 720, SupportsStreaming: true},
+		Thumb:  thumb,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, err := c.GetMessage(ctx, ch.ID, up.MessageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.Kind != telegram.KindVideo {
+		t.Fatalf("kind = %q, want video", msg.Kind)
+	}
+	if msg.Video == nil || msg.Video.DurationSeconds != 97.5 || msg.Video.Width != 1280 ||
+		msg.Video.Height != 720 || !msg.Video.SupportsStreaming {
+		t.Fatalf("video attributes = %+v", msg.Video)
+	}
+	if string(msg.Thumb) != string(thumb) {
+		t.Fatalf("thumb = %v", msg.Thumb)
+	}
+	if msg.FileName != "scene.mp4" || msg.MIME != "video/mp4" || string(msg.Data) != "videobytes" {
+		t.Fatalf("document identity = %+v", msg)
+	}
+
+	// Photos read back as native photos: no filename, JPEG mime.
+	upPhoto, err := c.UploadMedia(ctx, telegram.UploadRequest{
+		ChannelID: ch.ID, FileName: "beach.jpg", Size: 6,
+		Reader: strings.NewReader("pixels"),
+		Kind:   telegram.KindPhoto,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	photo, err := c.GetMessage(ctx, ch.ID, upPhoto.MessageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if photo.Kind != telegram.KindPhoto || photo.MIME != "image/jpeg" || photo.FileName != "" {
+		t.Fatalf("photo = kind %q mime %q name %q", photo.Kind, photo.MIME, photo.FileName)
+	}
+
+	// Unknown kinds are rejected, mirroring Telegram's input validation.
+	if _, err := c.UploadMedia(ctx, telegram.UploadRequest{
+		ChannelID: ch.ID, FileName: "x.bin", Size: 1,
+		Reader: strings.NewReader("x"), Kind: "hologram",
+	}); err == nil {
+		t.Fatal("expected unsupported kind error")
+	}
+
+	// The default stays today's document-only send.
+	upPlain, err := c.UploadMedia(ctx, telegram.UploadRequest{
+		ChannelID: ch.ID, FileName: "a.bin", Size: 1, Reader: strings.NewReader("x"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := c.GetMessage(ctx, ch.ID, upPlain.MessageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.Kind != telegram.KindDocument || plain.Video != nil || plain.Thumb != nil {
+		t.Fatalf("plain = kind %q video=%v thumb=%v", plain.Kind, plain.Video, plain.Thumb)
+	}
+}
+
+// TestPersistentTypedStateSurvivesRestart proves the persisted fake state
+// carries kinds, attributes, and thumbs across process restarts, which is
+// what binary-level e2e tests rely on.
+func TestPersistentTypedStateSurvivesRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "fake.json")
+	ctx := context.Background()
+
+	c1 := NewPersistent(path)
+	loginFake(t, c1)
+	ch, err := c1.CreateChannel(ctx, "Typed Persist")
+	if err != nil {
+		t.Fatal(err)
+	}
+	up, err := c1.UploadMedia(ctx, telegram.UploadRequest{
+		ChannelID: ch.ID, FileName: "clip.mp4", MIME: "video/mp4", Size: 4,
+		Reader: strings.NewReader("body"),
+		Kind:   telegram.KindVideo,
+		Video:  &telegram.VideoAttributes{DurationSeconds: 3, Width: 10, Height: 10, SupportsStreaming: true},
+		Thumb:  []byte("jpegbytes"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c2 := NewPersistent(path)
+	msg, err := c2.GetMessage(ctx, ch.ID, up.MessageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.Kind != telegram.KindVideo || msg.Video == nil || msg.Video.DurationSeconds != 3 ||
+		!msg.Video.SupportsStreaming || string(msg.Thumb) != "jpegbytes" {
+		t.Fatalf("restored message = kind %q video %+v thumb %q", msg.Kind, msg.Video, msg.Thumb)
+	}
 }

@@ -1,12 +1,17 @@
 package app
 
 import (
+	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
+
+	"lukechampine.com/blake3"
 )
 
 // e2eEnvelope mirrors docs/contracts/json-contract.md.
@@ -254,4 +259,190 @@ func findTreeNode(nodes any, name string) map[string]any {
 		}
 	}
 	return nil
+}
+
+// TestE2ETypedLifecycle publishes typed content through the real binary,
+// verifies byte identity and NDJSON parity, then wipes the database and
+// reconstructs purely from the channel with scan --full.
+func TestE2ETypedLifecycle(t *testing.T) {
+	dir := t.TempDir()
+	bin, cfgPath, dbPath, statePath, root := e2eSetup(t, dir)
+
+	e2eLogin(t, bin, cfgPath, dbPath, statePath)
+	runE2EJSON(t, bin, cfgPath, dbPath, statePath, "init", root, "--create-channel=Drive")
+
+	content := bytes.Repeat([]byte("scene-frame-"), 2048)
+	videoLocal := filepath.Join(dir, "scene.mp4")
+	if err := os.WriteFile(videoLocal, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	poster := append([]byte{0xFF, 0xD8, 0xFF, 0xE0}, bytes.Repeat([]byte{0x00}, 32)...)
+	posterPath := filepath.Join(dir, "poster.jpg")
+	if err := os.WriteFile(posterPath, poster, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	upTyped := runE2EJSON(t, bin, cfgPath, dbPath, statePath,
+		"cp", videoLocal, "/media/scene.mp4",
+		"--as", "video",
+		"--duration", "97.5",
+		"--width", "1280",
+		"--height", "720",
+		"--streaming",
+		"--thumb", posterPath,
+	)
+	wantHash := blake3Hex(content)
+	if upTyped["hash"] != wantHash {
+		t.Fatalf("typed cp hash = %v, want %s", upTyped["hash"], wantHash)
+	}
+	if size, _ := upTyped["size"].(float64); size != float64(len(content)) {
+		t.Fatalf("typed cp size = %v", upTyped["size"])
+	}
+
+	// Byte fidelity: the attributed video downloads back bit-identical.
+	restore := filepath.Join(dir, "restored.mp4")
+	runE2EJSON(t, bin, cfgPath, dbPath, statePath, "get", "/media/scene.mp4", restore)
+	got, err := os.ReadFile(restore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Fatal("restored bytes differ from source")
+	}
+
+	// NDJSON parity: typed uploads emit the same event shapes as plain ones.
+	plainLocal := e2eLocalFile(t, dir, "plain.bin", "plain payload")
+	plainEvents := runE2EEvents(t, bin, cfgPath, dbPath, statePath, "cp", plainLocal, "/docs/plain.bin", "--events")
+	typedEvents := runE2EEvents(t, bin, cfgPath, dbPath, statePath,
+		"cp", videoLocal, "/media/again.mp4", "--as", "video", "--duration", "1", "--width", "2", "--height", "2", "--events")
+	if len(plainEvents) != 1 || len(typedEvents) != 1 {
+		t.Fatalf("event counts = %d / %d, want 1 / 1", len(plainEvents), len(typedEvents))
+	}
+	if cmd(plainEvents[0]) != "cp" || cmd(typedEvents[0]) != "cp" {
+		t.Fatalf("event commands = %q / %q, want cp", cmd(plainEvents[0]), cmd(typedEvents[0]))
+	}
+	if !equalKeys(plainEvents[0]["data"], typedEvents[0]["data"]) {
+		t.Fatalf("typed cp event shape differs: plain=%v typed=%v", keys(plainEvents[0]["data"]), keys(typedEvents[0]["data"]))
+	}
+
+	// Reconstruction: wipe the local cache entirely, rebind, scan --full.
+	if err := os.Remove(dbPath); err != nil {
+		t.Fatal(err)
+	}
+	runE2EJSON(t, bin, cfgPath, dbPath, statePath, "init", root, "--bind-channel=Drive")
+	scanData := runE2EJSON(t, bin, cfgPath, dbPath, statePath, "scan", "--full")
+	if n, _ := scanData["active"].(float64); n != 3 {
+		t.Fatalf("scan = %v, want 3 active", scanData)
+	}
+	lsData := runE2EJSON(t, bin, cfgPath, dbPath, statePath, "ls", "/media")
+	entries, _ := lsData["entries"].([]any)
+	var entry map[string]any
+	for _, e := range entries {
+		m, _ := e.(map[string]any)
+		if m["name"] == "scene.mp4" {
+			entry = m
+		}
+	}
+	if entry == nil {
+		t.Fatalf("ls /media missing scene.mp4: %v", lsData)
+	}
+	if size, _ := entry["size"].(float64); size != float64(len(content)) {
+		t.Fatalf("reconstructed size = %v", entry["size"])
+	}
+	rebuilt := filepath.Join(dir, "rebuilt.mp4")
+	runE2EJSON(t, bin, cfgPath, dbPath, statePath, "get", "/media/scene.mp4", rebuilt)
+	reGot, err := os.ReadFile(rebuilt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(reGot, content) || blake3Hex(reGot) != wantHash {
+		t.Fatal("reconstructed content or hash mismatch")
+	}
+}
+
+// TestE2ETypedFlagUsage pins the typed-upload flag failures to the contract
+// exit-code mapping (usage errors: exit 2).
+func TestE2ETypedFlagUsage(t *testing.T) {
+	dir := t.TempDir()
+	bin, cfgPath, dbPath, statePath, root := e2eSetup(t, dir)
+	e2eLogin(t, bin, cfgPath, dbPath, statePath)
+	runE2EJSON(t, bin, cfgPath, dbPath, statePath, "init", root, "--create-channel=Drive")
+	local := e2eLocalFile(t, dir, "v.mp4", "x")
+
+	runE2EExpectError(t, bin, cfgPath, dbPath, statePath, 2, "ERR_USAGE",
+		"cp", local, "/v.mp4", "--as", "hologram")
+	runE2EExpectError(t, bin, cfgPath, dbPath, statePath, 2, "ERR_USAGE",
+		"cp", local, "/v.mp4", "--width", "100")
+	runE2EExpectError(t, bin, cfgPath, dbPath, statePath, 2, "ERR_USAGE",
+		"cp", local, "/v.mp4", "--duration", "-1", "--as", "video")
+	runE2EExpectError(t, bin, cfgPath, dbPath, statePath, 2, "ERR_USAGE",
+		"cp", local, "/v.mp4", "--as", "photo", "--thumb", "poster.jpg")
+	runE2EExpectError(t, bin, cfgPath, dbPath, statePath, 2, "ERR_USAGE",
+		"cp", "--recursive", local, "/media", "--as", "video")
+
+	// A valid photo upload still succeeds end to end.
+	up := runE2EJSON(t, bin, cfgPath, dbPath, statePath, "cp", local, "/pics/v.mp4", "--as", "photo")
+	if up["path"] != "/pics/v.mp4" {
+		t.Fatalf("photo cp = %v", up)
+	}
+}
+
+// runE2EEvents runs td --events and returns every emitted envelope.
+func runE2EEvents(t *testing.T, bin, cfgPath, dbPath, statePath string, args ...string) []map[string]any {
+	t.Helper()
+	stdout, stderr, err := runTD(t, bin, cfgPath, dbPath, statePath, nil, "", prependJSON(args...)...)
+	if err != nil {
+		t.Fatalf("%v: stdout=%s stderr=%s", args, stdout, stderr)
+	}
+	var out []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
+		if line == "" {
+			continue
+		}
+		var env map[string]any
+		if err := json.Unmarshal([]byte(line), &env); err != nil {
+			t.Fatalf("bad event line %q: %v", line, err)
+		}
+		out = append(out, env)
+	}
+	return out
+}
+
+func cmd(env map[string]any) string {
+	meta, _ := env["meta"].(map[string]any)
+	c, _ := meta["command"].(string)
+	return c
+}
+
+func keys(v any) []string {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func equalKeys(a, b any) bool {
+	ka, kb := keys(a), keys(b)
+	if len(ka) != len(kb) {
+		return false
+	}
+	for i := range ka {
+		if ka[i] != kb[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// blake3Hex mirrors the service's content-hash format.
+func blake3Hex(b []byte) string {
+	h := blake3.New(32, nil)
+	_, _ = h.Write(b)
+	return "blake3:" + hex.EncodeToString(h.Sum(nil))
 }

@@ -205,8 +205,16 @@ func messageFromTG(msg *tg.Message) tgtelegram.Message {
 			out.FileSize = doc.Size
 			out.MIME = doc.MimeType
 			for _, attr := range doc.Attributes {
-				if fn, ok := attr.(*tg.DocumentAttributeFilename); ok {
-					out.FileName = fn.FileName
+				switch a := attr.(type) {
+				case *tg.DocumentAttributeFilename:
+					out.FileName = a.FileName
+				case *tg.DocumentAttributeVideo:
+					out.Video = &tgtelegram.VideoAttributes{
+						DurationSeconds:   a.Duration,
+						Width:             a.W,
+						Height:            a.H,
+						SupportsStreaming: a.SupportsStreaming,
+					}
 				}
 			}
 		}

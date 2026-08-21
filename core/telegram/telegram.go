@@ -109,7 +109,23 @@ const (
 	KindDocument = "document"
 	KindPhoto    = "photo"
 	KindText     = "text"
+	// KindVideo requests a document carrying a video attribute block: bytes
+	// are stored untouched (it is still a document) but native clients render
+	// it as a playable, streamable video card.
+	KindVideo = "video"
 )
+
+// VideoAttributes is the video attribute block of a video-kind upload or
+// message. Callers supply the values; td never probes media files itself.
+type VideoAttributes struct {
+	// DurationSeconds is the video length in seconds.
+	DurationSeconds float64
+	// Width and Height are the pixel dimensions.
+	Width  int
+	Height int
+	// SupportsStreaming marks the video as streamable in native clients.
+	SupportsStreaming bool
+}
 
 // Message represents a channel message with optional media.
 type Message struct {
@@ -127,6 +143,13 @@ type Message struct {
 	// part of an album. Members of one album share a single human caption
 	// on the first item and appear as one timeline block.
 	GroupedID int64
+	// Video carries the video attribute block of a video-kind document;
+	// nil means the message has none.
+	Video *VideoAttributes
+	// Thumb holds JPEG thumbnail bytes attached at upload time; nil means
+	// the message has none. History reads cannot recover thumbnail bytes,
+	// so only uploads and the fake adapter populate this.
+	Thumb []byte
 }
 
 // UploadRequest is a media upload request.
@@ -138,6 +161,18 @@ type UploadRequest struct {
 	Size        int64
 	ContentHash string
 	Reader      io.Reader
+	// Kind selects how native clients present the upload: KindNone or
+	// KindDocument sends a plain file card (the historical behavior),
+	// KindPhoto a native photo message, KindVideo a document with video
+	// attributes.
+	Kind string
+	// Video carries the attribute block for KindVideo uploads. Adapters send
+	// a (possibly zero-valued) video attribute block whenever Kind is
+	// KindVideo, filling it from this field when present.
+	Video *VideoAttributes
+	// Thumb is an optional JPEG thumbnail body attached to document sends so
+	// previews appear immediately, before Telegram generates its own.
+	Thumb []byte
 	// Path is the local file path, used by resumable big-file uploads.
 	Path string
 	// Threads is the number of parallel upload goroutines. <=1 uses defaults.

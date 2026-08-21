@@ -43,6 +43,12 @@ td cp <local> <remote-path>
   [--recursive] [--continue-on-error] [--include-empty-dirs]
   [--upload-threads <n>] [--upload-part-size-kb <n>]
   [--confirm] [--dry-run] [--events]
+  # typed uploads (single-file only; rejected with --recursive)
+  [--as <photo|video|document>]        # presentation kind (default document)
+  [--duration <seconds>]               # video length (--as video)
+  [--width <px>] [--height <px>]       # video dimensions (--as video)
+  [--streaming]                        # streaming hint (--as video)
+  [--thumb <file.jpg>]                 # JPEG thumbnail (document/video kinds)
 td get <remote-path> <local-dest>
   [--recursive] [--replace] [--skip-existing] [--auto-rename] [--continue-on-error]
 td mv <remote-from> <remote-to>

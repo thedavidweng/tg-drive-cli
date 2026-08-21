@@ -237,6 +237,11 @@ func (c *Client) UploadMedia(ctx context.Context, req telegram.UploadRequest) (*
 	if req.Size > 4*1024*1024*1024 {
 		return nil, &telegram.FileTooLargeError{}
 	}
+	switch req.Kind {
+	case telegram.KindNone, telegram.KindDocument, telegram.KindPhoto, telegram.KindVideo:
+	default:
+		return nil, fmt.Errorf("unsupported media kind %q", req.Kind)
+	}
 	threshold := c.resumableThreshold
 	if threshold <= 0 {
 		threshold = telegram.ResumableBigFileBytes
@@ -260,7 +265,18 @@ func (c *Client) UploadMedia(ctx context.Context, req telegram.UploadRequest) (*
 	}
 	id := c.nextID
 	c.nextID++
-	msg := telegram.Message{ID: id, Caption: req.Caption, FileName: req.FileName, FileSize: req.Size, MIME: req.MIME, Kind: telegram.KindDocument, Data: data}
+	kind := req.Kind
+	if kind == telegram.KindNone {
+		kind = telegram.KindDocument
+	}
+	msg := telegram.Message{ID: id, Caption: req.Caption, FileSize: req.Size, Kind: kind, Data: data, Video: req.Video, Thumb: req.Thumb}
+	if kind == telegram.KindPhoto {
+		// Native photos carry no filename; Telegram reports them as JPEG.
+		msg.MIME = "image/jpeg"
+	} else {
+		msg.FileName = req.FileName
+		msg.MIME = req.MIME
+	}
 	c.messages[req.ChannelID] = append(c.messages[req.ChannelID], msg)
 	c.save()
 	return &telegram.UploadResult{MessageID: id}, nil

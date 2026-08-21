@@ -226,18 +226,26 @@ func (c *Client) UploadMedia(ctx context.Context, req tgtelegram.UploadRequest) 
 			return mapRPCError(err)
 		}
 
-		doc := message.UploadedDocument(uploaded, styling.Plain(req.Caption)).Filename(req.FileName)
-		if req.MIME != "" {
-			doc = doc.MIME(req.MIME)
-		}
-
 		// Message-creating RPCs are never blindly retried here: a send that
 		// may have succeeded server-side must not be re-issued (that would
 		// duplicate the media message). Flood-wait pacing and idempotent
 		// connection-level retries live in the rate-limiter middleware; the
 		// duplicate-claim guard during scan remains the reconciliation path.
 		sender := message.NewSender(api)
-		updates, err := sender.To(peer).Media(ctx, doc)
+		var updates tg.UpdatesClass
+		if req.Kind == tgtelegram.KindPhoto {
+			// Native photo message: full preview UX; Telegram recompresses
+			// the bytes server-side.
+			updates, err = sender.To(peer).Media(ctx,
+				message.UploadedPhoto(uploaded, styling.Plain(req.Caption)))
+		} else {
+			var media message.MediaOption
+			media, buildErr := c.documentMedia(ctx, api, uploaded, req, req.Kind == tgtelegram.KindVideo)
+			if buildErr != nil {
+				return buildErr
+			}
+			updates, err = sender.To(peer).Media(ctx, media)
+		}
 		if err != nil {
 			return mapRPCError(err)
 		}
@@ -249,6 +257,34 @@ func (c *Client) UploadMedia(ctx context.Context, req tgtelegram.UploadRequest) 
 		return nil
 	})
 	return result, err
+}
+
+// documentMedia builds the uploaded-document media option for document and
+// video kinds. Video adds a video attribute block (streaming enabled when
+// requested); both attach the optional upload thumbnail.
+func (c *Client) documentMedia(ctx context.Context, api *tg.Client, uploaded tg.InputFileClass, req tgtelegram.UploadRequest, video bool) (message.MediaOption, error) {
+	doc := message.UploadedDocument(uploaded, styling.Plain(req.Caption)).Filename(req.FileName)
+	if req.MIME != "" {
+		doc = doc.MIME(req.MIME)
+	}
+	if len(req.Thumb) > 0 {
+		thumbFile, err := uploadThumbnail(ctx, api, req.Thumb)
+		if err != nil {
+			return nil, mapRPCError(err)
+		}
+		doc = doc.Thumb(thumbFile)
+	}
+	if video {
+		attr := &tg.DocumentAttributeVideo{}
+		if req.Video != nil {
+			attr.Duration = req.Video.DurationSeconds
+			attr.W = req.Video.Width
+			attr.H = req.Video.Height
+			attr.SupportsStreaming = req.Video.SupportsStreaming
+		}
+		doc = doc.Attributes(attr)
+	}
+	return doc, nil
 }
 
 func extractMessageID(updates tg.UpdatesClass) (int, error) {

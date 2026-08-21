@@ -1,6 +1,7 @@
 package telegramgotd
 
 import (
+	"bytes"
 	"context"
 
 	"github.com/go-faster/errors"
@@ -8,6 +9,17 @@ import (
 	"github.com/gotd/td/tg"
 	tgtelegram "github.com/thedavidweng/tg-drive-cli/core/telegram"
 )
+
+// thumbFileName is the synthetic name under which upload thumbnails are
+// registered with Telegram; only the JPEG bytes matter to clients.
+const thumbFileName = "thumb.jpg"
+
+// uploadThumbnail uploads thumbnail bytes as an input file so a document
+// send can reference them as its preview.
+func uploadThumbnail(ctx context.Context, api *tg.Client, thumb []byte) (tg.InputFileClass, error) {
+	up := uploader.NewUploader(api)
+	return up.Upload(ctx, uploader.NewUpload(thumbFileName, bytes.NewReader(thumb), int64(len(thumb))))
+}
 
 // mediaUploader uploads file bytes to Telegram and returns an InputFile.
 type mediaUploader interface {

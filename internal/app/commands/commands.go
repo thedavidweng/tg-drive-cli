@@ -819,10 +819,43 @@ func conflictPolicy(replace, skip, autoRename bool) (service.ConflictPolicy, err
 	return service.ConflictFail, nil
 }
 
+// presentationFlags assembles the typed-upload flags into a Presentation,
+// rejecting invalid values and combinations up front so usage errors never
+// depend on app context.
+func presentationFlags(kind string, duration float64, width, height int, streaming bool, thumb string) (service.Presentation, error) {
+	pres := service.Presentation{
+		Kind:              kind,
+		DurationSeconds:   duration,
+		Width:             width,
+		Height:            height,
+		SupportsStreaming: streaming,
+		ThumbPath:         thumb,
+	}
+	if err := pres.Validate(); err != nil {
+		return service.Presentation{}, err
+	}
+	return pres, nil
+}
+
+// presentationFlagsSet reports whether any typed-upload flag was passed
+// explicitly, so they cannot silently no-op on --recursive uploads.
+func presentationFlagsSet(c *cobra.Command) bool {
+	for _, name := range []string{"as", "duration", "width", "height", "streaming", "thumb"} {
+		if c.Flags().Changed(name) {
+			return true
+		}
+	}
+	return false
+}
+
 func NewCpCmd(rt Runtime) *cobra.Command {
 	var recursive, replace, skip, autoRename, noHash, continueOnError, includeEmptyDirs bool
 	var uploadThreads, uploadPartSizeKB int
 	var confirm, dryRun, events bool
+	var asKind, thumbPath string
+	var duration float64
+	var width, height int
+	var streaming bool
 	c := &cobra.Command{
 		Use:   "cp <local> <remote-path>",
 		Short: "Upload local file or directory",
@@ -830,6 +863,10 @@ func NewCpCmd(rt Runtime) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r := rt.Renderer()
 			policy, err := conflictPolicy(replace, skip, autoRename)
+			if err != nil {
+				return r.Error(err)
+			}
+			pres, err := presentationFlags(asKind, duration, width, height, streaming, thumbPath)
 			if err != nil {
 				return r.Error(err)
 			}
@@ -863,6 +900,9 @@ func NewCpCmd(rt Runtime) *cobra.Command {
 				}
 			}
 			if recursive {
+				if presentationFlagsSet(cmd) {
+					return r.Error(apperr.New(apperr.ErrUsage, "presentation flags apply to single-file uploads only"))
+				}
 				data, err := app.UploadRecursive(context.Background(), args[0], args[1], policy, continueOnError, noHash, includeEmptyDirs)
 				if err != nil {
 					return r.Error(err)
@@ -882,7 +922,7 @@ func NewCpCmd(rt Runtime) *cobra.Command {
 			if includeEmptyDirs {
 				return r.Error(apperr.New(apperr.ErrUsage, "--include-empty-dirs requires --recursive"))
 			}
-			data, err := app.UploadFile(context.Background(), args[0], args[1], policy, noHash)
+			data, err := app.UploadFileAs(context.Background(), args[0], args[1], policy, noHash, pres)
 			if err != nil {
 				return r.Error(err)
 			}
@@ -922,6 +962,12 @@ func NewCpCmd(rt Runtime) *cobra.Command {
 	c.Flags().BoolVar(&confirm, "confirm", false, "confirm destructive operations such as --replace")
 	c.Flags().BoolVar(&dryRun, "dry-run", false, "preview the upload plan without executing")
 	c.Flags().BoolVar(&events, "events", false, "emit NDJSON progress events during upload")
+	c.Flags().StringVar(&asKind, "as", "", "present the upload as photo, video, or document (default document)")
+	c.Flags().Float64Var(&duration, "duration", 0, "video duration in seconds (with --as video)")
+	c.Flags().IntVar(&width, "width", 0, "video width in pixels (with --as video)")
+	c.Flags().IntVar(&height, "height", 0, "video height in pixels (with --as video)")
+	c.Flags().BoolVar(&streaming, "streaming", false, "mark the video as streamable (with --as video)")
+	c.Flags().StringVar(&thumbPath, "thumb", "", "JPEG file to attach as the upload thumbnail")
 	return c
 }
 

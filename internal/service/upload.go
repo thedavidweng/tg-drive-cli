@@ -202,8 +202,22 @@ func (a *App) uploadLimit(ctx context.Context) int64 {
 	return limit
 }
 
-// UploadFile uploads a single local file.
+// UploadFile uploads a single local file as a plain document.
 func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, policy ConflictPolicy, noHash bool) (map[string]any, error) {
+	return a.uploadFile(ctx, localPath, remotePath, policy, noHash, Presentation{})
+}
+
+// UploadFileAs uploads a single local file with presentation metadata that
+// selects how native Telegram clients render the message. The zero
+// Presentation behaves exactly like UploadFile.
+func (a *App) UploadFileAs(ctx context.Context, localPath, remotePath string, policy ConflictPolicy, noHash bool, pres Presentation) (map[string]any, error) {
+	return a.uploadFile(ctx, localPath, remotePath, policy, noHash, pres)
+}
+
+func (a *App) uploadFile(ctx context.Context, localPath, remotePath string, policy ConflictPolicy, noHash bool, pres Presentation) (map[string]any, error) {
+	if err := pres.Validate(); err != nil {
+		return nil, err
+	}
 	info, err := a.files().Stat(ctx, localPath)
 	if err != nil {
 		return nil, apperr.New(apperr.ErrLocalNotFound, fmt.Sprintf("local file %q not found", localPath))
@@ -348,6 +362,7 @@ func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, poli
 			replaceFileID: replaceFileID,
 			oldMsgID:      oldMsgID,
 			oldManifestID: oldManifestID,
+			pres:          pres,
 		})
 		return err
 	})
@@ -369,6 +384,7 @@ type uploadLockedArgs struct {
 	replaceFileID int64
 	oldMsgID      sql.NullInt64
 	oldManifestID sql.NullInt64
+	pres          Presentation
 }
 
 func (a *App) uploadLocked(ctx context.Context, args uploadLockedArgs) (map[string]any, error) {
@@ -515,6 +531,19 @@ func (a *App) uploadLocked(ctx context.Context, args uploadLockedArgs) (map[stri
 		PartSize:       partSize,
 		ResumableKey:   fmt.Sprintf("file:%d", fileID),
 		ResumableStore: a.DB,
+	}
+	args.pres.apply(&req)
+	if args.pres.ThumbPath != "" {
+		tf, err := a.files().Open(ctx, args.pres.ThumbPath)
+		if err != nil {
+			return nil, apperr.Wrap(apperr.ErrLocalNotFound, "open thumbnail", err)
+		}
+		thumb, err := io.ReadAll(tf)
+		_ = tf.Close()
+		if err != nil {
+			return nil, apperr.Wrap(apperr.ErrLocalNotFound, "read thumbnail", err)
+		}
+		req.Thumb = thumb
 	}
 	if !bigFile {
 		// Small files stream from a reader; the resumable path reads by offset

@@ -24,6 +24,13 @@ ls, get, mv, rm, scan, share — can be exercised this way.
 Integration tests under `internal/service` use the same fake for upload,
 scan, move, delete, repair, and crash-recovery paths.
 
+Binary-level end-to-end tests live in `internal/app`
+(`e2e_lifecycle_test.go`, `resume_cli_test.go`, `app_test.go`). They build
+the real `td` binary and drive the full user journey — login, init,
+channels, cp, ls, tree, get (single and recursive), mv, rm, share, scan,
+status, config get/set, `doctor path-codec`, logout — asserting JSON
+envelopes and contract exit codes against the fake.
+
 ## Manual tests
 
 Real-account checks need a Telegram account, `api_id`, and `api_hash`. Use a

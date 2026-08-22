@@ -38,12 +38,12 @@ td ls [remote-path]
 td tree [remote-path]
   [--depth <n>]
 td completion [bash|zsh|fish|powershell]
-td cp <local> <remote-path>
+td cp <local> [local...] <remote-path>
   [--replace] [--skip-existing] [--auto-rename] [--no-hash]
   [--recursive] [--continue-on-error] [--include-empty-dirs]
   [--upload-threads <n>] [--upload-part-size-kb <n>]
   [--confirm] [--dry-run] [--events]
-  # typed uploads (single-file only; rejected with --recursive)
+  # typed uploads (single-file and multi-file; rejected with --recursive)
   [--as <photo|video|document>]        # presentation kind (default document)
   [--duration <seconds>]               # video length (--as video)
   [--width <px>] [--height <px>]       # video dimensions (--as video)
@@ -51,9 +51,26 @@ td cp <local> <remote-path>
   [--thumb <file.jpg>]                 # JPEG thumbnail (document/video kinds)
 ```
 
+Two argument forms:
+
+- `td cp <local> <remote-path>` — single file, one message per upload
+  (unchanged behavior).
+- `td cp <local...> <remote-dir>` — two or more sources publish as native
+  Telegram media groups (albums): one td:v1 caption on the first member,
+  empty sibling captions, one `td-album:v1` inventory reply per group. Sets
+  larger than 10 members split into consecutive groups of up to 10.
+  `<remote-dir>` is `/`, a path ending in `/`, or an existing remote
+  directory. `--replace` is not supported in this form (`ERR_USAGE`);
+  `--skip-existing` and `--auto-rename` apply per file, and a lone survivor
+  after skips publishes as an ordinary single message.
+
+`--recursive` uploads each source directory's direct children as one album
+(split at 10); nested directories recurse.
+
 `--as photo` sends a native photo message: Telegram recompresses the bytes,
 downloads fetch the largest representation, and strict size/hash verification
-does not apply to them. `--as video` keeps the bytes untouched. See
+does not apply to them. `--as video` keeps the bytes untouched. In multi-file
+form the presentation flags apply uniformly to every member. See
 `docs/integration-notes.md` for the full semantics of the three content
 forms.
 

@@ -190,7 +190,14 @@ type UploadRequest struct {
 // UploadResult is returned after upload.
 type UploadResult struct {
 	MessageID int
+	// GroupedID is Telegram's media-album id for members sent through
+	// UploadMediaGroup; 0 for single uploads.
+	GroupedID int64
 }
+
+// MaxMediaGroupMembers is Telegram's per-group member limit for
+// UploadMediaGroup.
+const MaxMediaGroupMembers = 10
 
 // Capabilities describes runtime Telegram capabilities.
 type Capabilities struct {
@@ -230,6 +237,13 @@ type ChannelClient interface {
 // MediaClient handles media operations.
 type MediaClient interface {
 	UploadMedia(ctx context.Context, req UploadRequest) (*UploadResult, error)
+	// UploadMediaGroup sends 1..MaxMediaGroupMembers requests as one native
+	// media group (sendMultiMedia). All requests must target the same
+	// channel and carry the same Kind; only the first request's Caption is
+	// honored — sibling captions stay empty, matching the album conventions
+	// of ADR 0013. It returns one result per request, in request order, all
+	// sharing a single non-zero GroupedID.
+	UploadMediaGroup(ctx context.Context, reqs []UploadRequest) ([]UploadResult, error)
 	SendTextReply(ctx context.Context, channelID int64, replyTo int, text string) (int, error)
 	EditCaption(ctx context.Context, channelID int64, messageID int, caption string) error
 	EditText(ctx context.Context, channelID int64, messageID int, text string) error

@@ -857,9 +857,9 @@ func NewCpCmd(rt Runtime) *cobra.Command {
 	var width, height int
 	var streaming bool
 	c := &cobra.Command{
-		Use:   "cp <local> <remote-path>",
-		Short: "Upload local file or directory",
-		Args:  cobra.ExactArgs(2),
+		Use:   "cp <local> [local...] <remote-path>",
+		Short: "Upload local file, directory, or multi-file album",
+		Args:  cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r := rt.Renderer()
 			policy, err := conflictPolicy(replace, skip, autoRename)
@@ -871,9 +871,9 @@ func NewCpCmd(rt Runtime) *cobra.Command {
 				return r.Error(err)
 			}
 			if dryRun {
-				plan := map[string]any{"local": args[0], "remote": args[1], "policy": string(policy)}
+				plan := map[string]any{"local": args[:len(args)-1], "remote": args[len(args)-1], "policy": string(policy)}
 				if replace {
-					plan["would_replace"] = args[1]
+					plan["would_replace"] = args[len(args)-1]
 				}
 				if events {
 					return r.Event("cp.dry-run", plan)
@@ -898,6 +898,29 @@ func NewCpCmd(rt Runtime) *cobra.Command {
 				app.Progress = func(ctx context.Context, state telegram.UploadProgressState) error {
 					return r.Event("cp.progress", state)
 				}
+			}
+			if len(args) > 2 {
+				if recursive {
+					return r.Error(apperr.New(apperr.ErrUsage, "--recursive accepts exactly one source directory"))
+				}
+				if includeEmptyDirs {
+					return r.Error(apperr.New(apperr.ErrUsage, "--include-empty-dirs requires --recursive"))
+				}
+				data, err := app.UploadFilesAs(context.Background(), args[:len(args)-1], args[len(args)-1], policy, noHash, pres)
+				if err != nil {
+					return r.Error(err)
+				}
+				if events {
+					return r.Event("cp", data)
+				}
+				if !rt.JSON() {
+					_ = r.SuccessLine("uploaded %v files in %v album(s)", data["uploaded"], len(data["albums"].([]service.AlbumGroup)))
+					if link, ok := data["invite_link"].(string); ok && link != "" {
+						return r.SuccessLine("invite: %s", link)
+					}
+					return nil
+				}
+				return r.Success(data)
 			}
 			if recursive {
 				if presentationFlagsSet(cmd) {

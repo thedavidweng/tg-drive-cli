@@ -173,11 +173,11 @@ Flags:
 
 ### td cp
 
-Upload local file or directory.
+Upload local file, directory, or multi-file album.
 
 ```text
 Usage:
-  td cp <local> <remote-path> [flags]
+  td cp <local> [local...] <remote-path> [flags]
 
 Flags:
       --as string                 present the upload as photo, video, or document (default document)
@@ -191,7 +191,7 @@ Flags:
       --include-empty-dirs        include empty directories (unsupported in V1)
       --no-hash                   skip content hash
       --recursive                 upload directory recursively
-      --replace                   replace existing remote file
+      --replace                   replace existing remote file (single-file form only)
       --skip-existing             skip existing remote file
       --streaming                 mark the video as streamable (with --as video)
       --thumb string              JPEG file to attach as the upload thumbnail
@@ -202,13 +202,21 @@ Flags:
 
 `--replace` requires `--confirm`.
 
+Two or more sources publish as native Telegram albums: one caption on the
+first member, one `td-album:v1` inventory reply per group of up to 10 members
+(larger sets split into consecutive groups). The destination must be `/`, end
+with `/`, or name an existing remote directory; `--replace` is not available
+in this form — use `--skip-existing` or `--auto-rename` instead.
+`--recursive` uploads each source directory's direct children as one album
+and recurses into nested directories.
+
 `--as photo` sends a native photo message: Telegram recompresses the bytes,
 so downloads fetch the largest representation and strict size/hash
 verification does not apply. `--as video` keeps the bytes untouched and can
-carry duration, dimensions, a streaming hint, and a thumbnail. Typed
-attributes are single-file only and rejected with `--recursive`. See
-`docs/integration-notes.md` for the full semantics of the three content
-forms.
+carry duration, dimensions, a streaming hint, and a thumbnail. In multi-file
+form these flags apply uniformly to every member and are rejected with
+`--recursive`. See `docs/integration-notes.md` for the full semantics of the
+three content forms.
 
 ### td get
 

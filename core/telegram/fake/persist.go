@@ -11,12 +11,13 @@ import (
 
 // persistedState is the JSON image of a persistent fake client.
 type persistedState struct {
-	LoggedIn bool                         `json:"logged_in"`
-	User     *telegram.User               `json:"user,omitempty"`
-	Channels map[int64]*telegram.Channel  `json:"channels"`
-	Messages map[int64][]telegram.Message `json:"messages"`
-	NextID   int                          `json:"next_id"`
-	NextChID int64                        `json:"next_ch_id"`
+	LoggedIn      bool                         `json:"logged_in"`
+	User          *telegram.User               `json:"user,omitempty"`
+	Channels      map[int64]*telegram.Channel  `json:"channels"`
+	Messages      map[int64][]telegram.Message `json:"messages"`
+	NextID        int                          `json:"next_id"`
+	NextChID      int64                        `json:"next_ch_id"`
+	NextGroupedID int64                        `json:"next_grouped_id,omitempty"`
 }
 
 // NewPersistent creates a fake client whose state survives process restarts
@@ -72,6 +73,9 @@ func (c *Client) load() {
 	if st.NextChID > 0 {
 		c.nextChID = st.NextChID
 	}
+	if st.NextGroupedID > 0 {
+		c.nextGroupedID = st.NextGroupedID
+	}
 }
 
 // save writes state best-effort. Callers must hold c.mu.
@@ -80,12 +84,13 @@ func (c *Client) save() {
 		return
 	}
 	st := persistedState{
-		LoggedIn: c.loggedIn,
-		User:     c.user,
-		Channels: c.channels,
-		Messages: c.messages,
-		NextID:   c.nextID,
-		NextChID: c.nextChID,
+		LoggedIn:      c.loggedIn,
+		User:          c.user,
+		Channels:      c.channels,
+		Messages:      c.messages,
+		NextID:        c.nextID,
+		NextChID:      c.nextChID,
+		NextGroupedID: c.nextGroupedID,
 	}
 	data, err := json.Marshal(st)
 	if err != nil {

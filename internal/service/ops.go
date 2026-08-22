@@ -71,7 +71,9 @@ func (e LSEntry) MarshalJSON() ([]byte, error) {
 
 // ListDir lists children of a remote path.
 func (a *App) ListDir(ctx context.Context, remotePath string) ([]LSEntry, error) {
-	p, err := fsmodel.NormalizeCanonicalPath(remotePath)
+	// Trailing slashes are accepted directory intent; canonical paths drop
+	// them (fsmodel rejects them outright).
+	p, err := fsmodel.NormalizeCanonicalPath(strings.TrimRight(remotePath, "/"))
 	if err != nil {
 		return nil, err
 	}
@@ -675,12 +677,15 @@ func (a *App) deleteFileLocked(ctx context.Context, channelID, tgChID int64, p s
 	return out, nil
 }
 
-// UploadRecursive uploads a directory recursively.
+// UploadRecursive uploads a directory recursively. Files are published as
+// native media groups: each source directory's direct children form one
+// album, split into consecutive groups of MaxMediaGroupMembers (issue #26).
 func (a *App) UploadRecursive(ctx context.Context, localDir, remoteDir string, policy ConflictPolicy, continueOnError, noHash, includeEmptyDirs bool) (map[string]any, error) {
 	if includeEmptyDirs {
 		return nil, apperr.New(apperr.ErrEmptyDirsUnsupported, "empty directories cannot be persisted to Telegram in V1")
 	}
-	remoteDir, err := fsmodel.NormalizeCanonicalPath(remoteDir)
+	// Trailing slashes are directory intent; the canonical form drops them.
+	remoteDir, err := fsmodel.NormalizeCanonicalPath(strings.TrimRight(remoteDir, "/"))
 	if err != nil {
 		return nil, err
 	}
@@ -706,16 +711,51 @@ func (a *App) UploadRecursive(ctx context.Context, localDir, remoteDir string, p
 		return nil, apperr.Wrap(apperr.ErrLocalNotFound, "walk local directory", err)
 	}
 	sort.Strings(files)
+
+	channelID, tgIDStr, err := a.channelID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tgChID, err := a.tgChannelID(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	uploaded, skipped, failed := 0, 0, 0
 	var errs []string
+	albums := []AlbumGroup{}
+	// Each source directory's children become one album batch.
+	groups := map[string][]albumSource{}
+	order := []string{}
 	for _, f := range files {
+		dir := filepath.Dir(f)
+		if _, ok := groups[dir]; !ok {
+			order = append(order, dir)
+		}
 		rel, _ := filepath.Rel(localDir, f)
 		dest := remoteDir
 		if dest != "/" {
 			dest += "/"
 		}
 		dest += filepath.ToSlash(rel)
-		data, err := a.UploadFile(ctx, f, dest, policy, noHash)
+		groups[dir] = append(groups[dir], albumSource{localPath: f, dest: dest})
+	}
+	sort.Strings(order)
+	for _, dir := range order {
+		batch, failures, err := a.planAlbumBatch(ctx, groups[dir], policy, noHash, Presentation{}, continueOnError)
+		failed += len(failures)
+		errs = append(errs, failures...)
+		if err != nil && !continueOnError {
+			return nil, err
+		}
+		if err != nil {
+			continue
+		}
+		skipped += batch.skipped
+		if len(batch.members) == 0 {
+			continue
+		}
+		data, err := a.runAlbumBatch(ctx, batch, channelID, tgChID, tgIDStr)
 		if err != nil {
 			failed++
 			errs = append(errs, err.Error())
@@ -724,18 +764,16 @@ func (a *App) UploadRecursive(ctx context.Context, localDir, remoteDir string, p
 			}
 			continue
 		}
-		if data["skipped"] == true {
-			skipped++
-			continue
+		uploaded += data["uploaded"].(int)
+		if gs, ok := data["albums"].([]AlbumGroup); ok {
+			albums = append(albums, gs...)
 		}
-		uploaded++
 	}
-	data := map[string]any{"uploaded": uploaded, "skipped": skipped, "failed": failed, "errors": errs}
-	if tgChID, err := a.tgChannelID(ctx); err == nil {
-		if link, err := a.TG.GetInviteLink(ctx, tgChID); err == nil && link != "" {
-			data["invite_link"] = link
-			data["channel_id"] = fmt.Sprintf("%d", tgChID)
-		}
+
+	data := map[string]any{"uploaded": uploaded, "skipped": skipped, "failed": failed, "errors": errs, "albums": albums}
+	if link, err := a.TG.GetInviteLink(ctx, tgChID); err == nil && link != "" {
+		data["invite_link"] = link
+		data["channel_id"] = fmt.Sprintf("%d", tgChID)
 	}
 	return data, nil
 }

@@ -128,6 +128,41 @@ uploaded /2024/trip.jpg (2.4 MB)
 Alternatives on conflict: `--skip-existing` keeps the remote file, and
 `--auto-rename` uploads under a non-conflicting name.
 
+## Upload several files as one album
+
+**Scenario:** a batch of photos or videos should appear as a single grouped
+post in the channel, not a pile of separate messages. Pass two or more
+sources and a destination directory:
+
+```sh
+td cp ~/trip/day1.jpg ~/trip/day2.jpg ~/trip/day3.jpg /2024/trip/
+```
+
+*Illustrative:*
+
+```text
+uploaded 3 files in 1 album(s)
+```
+
+Native clients show the set as one swipeable album block. The first member
+carries td's caption; each group of at most 10 members carries one
+`td-album:v1` inventory reply, so `td scan --full` rebuilds everything after
+a wipe. Sets larger than 10 files split into consecutive groups
+automatically.
+
+Rules worth knowing:
+
+- The destination must be `/`, end with `/`, or name an existing remote
+  directory.
+- Conflict flags apply per file. `--skip-existing` may leave a single
+  survivor — it then publishes as an ordinary single message, since Telegram
+  albums need at least two members.
+- `--replace` is not available in this form; replace existing files
+  individually with single-path `td cp --replace`.
+- Presentation flags (`--as`, `--thumb`, …) apply uniformly to every member;
+  they are still rejected with `--recursive`, which groups each source
+  directory's direct children into their own album.
+
 ## What moves and deletes cannot do
 
 - Directory move/rename/delete are unsupported — file-level only.

@@ -52,6 +52,11 @@ type PublishRequest struct {
 	// IgnoreNotEditable tells the publisher to ignore MessageNotEditableError
 	// when editing the caption. Useful for repair operations.
 	IgnoreNotEditable bool
+	// SkipManifestReply suppresses sending or editing a per-file manifest
+	// reply. Album members use it: their reconstructable record is the one
+	// td-album:v1 inventory of the group (ADR 0013), posted by the caller,
+	// whose message id arrives as ManifestMsgID.
+	SkipManifestReply bool
 	// ManifestMsgID is the existing manifest reply message id, or 0 if none.
 	ManifestMsgID int
 	// OldMeta is the previous metadata, used to restore the manifest reply if
@@ -146,7 +151,10 @@ func (p *Publisher) Publish(ctx context.Context, req PublishRequest) (*PublishRe
 	manifestChanged := false
 	newManifest := false
 
-	if capRes.NeedsManifestReply {
+	switch {
+	case req.SkipManifestReply:
+		// The caller owns the group inventory; keep only the provided id.
+	case capRes.NeedsManifestReply:
 		if req.ManifestMsgID > 0 {
 			manifestMsgID = req.ManifestMsgID
 			manifestChanged = true
@@ -165,7 +173,7 @@ func (p *Publisher) Publish(ctx context.Context, req PublishRequest) (*PublishRe
 			manifestChanged = true
 			newManifest = true
 		}
-	} else if req.ManifestMsgID > 0 {
+	case req.ManifestMsgID > 0:
 		// Caption is self-contained; keep the manifest consistent with the full tag set.
 		manifestMsgID = req.ManifestMsgID
 		manifestChanged = true

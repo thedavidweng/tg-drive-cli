@@ -236,6 +236,36 @@ td repair --orphaned   # uploads that only partially landed on Telegram
 
 ## Documentation
 
+Guides ([Diátaxis](https://diataxis.fr) taxonomy — all under
+[`docs/guides/`](docs/guides/)):
+
+Learning
+
+- [Getting started](docs/guides/getting-started.md) — first login, upload,
+  browse, download, share
+
+Task-oriented how-tos
+
+- [Recover the index](docs/guides/recover-the-index.md) — rebuild after
+  database loss, repair pending/orphaned uploads
+- [Import an existing channel](docs/guides/import-an-existing-channel.md) —
+  adopt messages without re-uploading
+- [Organize files](docs/guides/organize-files.md) — move, rename, delete,
+  tombstone safely
+- [Share folders](docs/guides/share-and-navigate.md) — invite links and
+  hashtag navigation
+- [Script with JSON](docs/guides/script-with-json.md) — envelopes, events,
+  exit codes
+- [Troubleshoot](docs/guides/troubleshoot.md) — doctor, rate limits, common
+  errors
+
+Understanding & reference
+
+- [How td works](docs/guides/how-td-works.md) — the model behind the CLI
+- [CLI reference](docs/guides/cli-reference.md) — every command and flag
+
+Developer documentation
+
 - [Architecture](docs/architecture.md)
 - [CLI contract](docs/contracts/cli-contract.md)
 - [JSON contract](docs/contracts/json-contract.md)

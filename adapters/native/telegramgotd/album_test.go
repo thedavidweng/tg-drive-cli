@@ -100,3 +100,45 @@ func TestExtractMediaGroupResults(t *testing.T) {
 		t.Fatal("member without grouped id must error")
 	}
 }
+
+// TestMediaReference pins the two-phase album contract: the MessageMedia
+// returned by messages.uploadMedia becomes a referencing inputMedia
+// constructor carrying id, access hash, and file reference.
+func TestMediaReference(t *testing.T) {
+	photo := &tg.Photo{ID: 11, AccessHash: 22, FileReference: []byte("ref")}
+	ref, err := mediaReference(&tg.MessageMediaPhoto{Photo: photo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pm, ok := ref.(*tg.InputMediaPhoto)
+	if !ok {
+		t.Fatalf("photo media reference = %T", ref)
+	}
+	inPhoto, ok := pm.ID.(*tg.InputPhoto)
+	if !ok || inPhoto.ID != 11 || inPhoto.AccessHash != 22 || string(inPhoto.FileReference) != "ref" {
+		t.Fatalf("photo input = %+v", pm.ID)
+	}
+
+	doc := &tg.Document{ID: 33, AccessHash: 44, FileReference: []byte("dref")}
+	dref, err := mediaReference(&tg.MessageMediaDocument{Document: doc})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dm, ok := dref.(*tg.InputMediaDocument)
+	if !ok {
+		t.Fatalf("document media reference = %T", dref)
+	}
+	inDoc, ok := dm.ID.(*tg.InputDocument)
+	if !ok || inDoc.ID != 33 || inDoc.AccessHash != 44 || string(inDoc.FileReference) != "dref" {
+		t.Fatalf("document input = %+v", dm.ID)
+	}
+
+	for _, bad := range []tg.MessageMediaClass{
+		&tg.MessageMediaEmpty{},
+		&tg.MessageMediaPhoto{Photo: &tg.PhotoEmpty{}},
+	} {
+		if _, err := mediaReference(bad); err == nil {
+			t.Fatalf("%T must error", bad)
+		}
+	}
+}

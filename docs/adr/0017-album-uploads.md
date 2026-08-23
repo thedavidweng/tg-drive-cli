@@ -21,6 +21,12 @@ reproduce that presentation.
   contract mirrors what Telegram guarantees: only the first member's caption
   is honored, sibling captions stay empty. Single uploads keep
   `UploadMedia` unchanged.
+- Album sends are two-phase at the wire level (found in live verification:
+  one-phase sends fail with `MEDIA_INVALID`). Each member's bytes are
+  uploaded, registered server-side via `messages.uploadMedia`, and the group
+  then references the returned photo/document ids through
+  `messages.sendMultiMedia`. Raw `inputMediaUploaded*` constructors inside
+  `sendMultiMedia` are rejected by the server.
 - Multi-file `td cp <local...> <remote-dir>` and per-directory grouping under
   `--recursive` publish through that port. Each source directory's direct
   children form one album; nested directories recurse.

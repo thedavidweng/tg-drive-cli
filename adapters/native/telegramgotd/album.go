@@ -39,7 +39,22 @@ func (c *Client) UploadMediaGroup(ctx context.Context, reqs []tgtelegram.UploadR
 				}
 			}
 			input := buildAlbumInputMedia(uploaded, thumbFile, req)
-			single := tg.InputSingleMedia{Media: input, RandomID: randInt64()}
+			// sendMultiMedia rejects raw inputMediaUploaded* constructors with
+			// MEDIA_INVALID: every member must first be registered server-side
+			// via messages.uploadMedia, and the group references the returned
+			// photo/document ids.
+			registered, err := api.MessagesUploadMedia(ctx, &tg.MessagesUploadMediaRequest{
+				Peer:  peer,
+				Media: input,
+			})
+			if err != nil {
+				return mapRPCError(err)
+			}
+			ref, err := mediaReference(registered)
+			if err != nil {
+				return err
+			}
+			single := tg.InputSingleMedia{Media: ref, RandomID: randInt64()}
 			if i == 0 {
 				// sendMultiMedia carries captions on the wrapper, not the
 				// media; sibling messages stay empty per ADR 0013.
@@ -97,6 +112,36 @@ func buildAlbumInputMedia(uploaded tg.InputFileClass, thumb tg.InputFileClass, r
 		Attributes: attributes,
 	}
 	return doc
+}
+
+// mediaReference converts the MessageMedia that messages.uploadMedia returns
+// into the referencing inputMedia constructor sendMultiMedia expects: the
+// server-registered photo/document id plus its file reference.
+func mediaReference(m tg.MessageMediaClass) (tg.InputMediaClass, error) {
+	switch v := m.(type) {
+	case *tg.MessageMediaPhoto:
+		photo, ok := v.Photo.(*tg.Photo)
+		if !ok {
+			return nil, errors.New("album photo registration returned no photo")
+		}
+		return &tg.InputMediaPhoto{ID: &tg.InputPhoto{
+			ID:            photo.ID,
+			AccessHash:    photo.AccessHash,
+			FileReference: photo.FileReference,
+		}}, nil
+	case *tg.MessageMediaDocument:
+		doc, ok := v.Document.(*tg.Document)
+		if !ok {
+			return nil, errors.New("album document registration returned no document")
+		}
+		return &tg.InputMediaDocument{ID: &tg.InputDocument{
+			ID:            doc.ID,
+			AccessHash:    doc.AccessHash,
+			FileReference: doc.FileReference,
+		}}, nil
+	default:
+		return nil, errors.New("unsupported album media registration result")
+	}
 }
 
 // extractMediaGroupResults pairs the update stream back to the requests:

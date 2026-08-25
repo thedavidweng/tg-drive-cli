@@ -30,6 +30,7 @@ const (
 	ErrCaptionTooLong             = "ERR_CAPTION_TOO_LONG"
 	ErrManifestInvalid            = "ERR_MANIFEST_INVALID"
 	ErrAlbumInventoryInvalid      = "ERR_ALBUM_INVENTORY_INVALID"
+	ErrDiscussionMissing          = "ERR_DISCUSSION_MISSING"
 	ErrScanIncomplete             = "ERR_SCAN_INCOMPLETE"
 	ErrCrossChannelMove           = "ERR_CROSS_CHANNEL_MOVE"
 	ErrDirectoryMoveUnsupported   = "ERR_DIRECTORY_MOVE_UNSUPPORTED"
@@ -114,7 +115,8 @@ func classify(code string) (Category, bool) {
 		ErrCrossChannelMove, ErrEmptyDirsUnsupported, ErrSlugCollision:
 		return CatValidation, false
 	case ErrChannelNotFound, ErrChannelPermission, ErrFileTooLarge,
-		ErrMessageNotEditable, ErrTelegramRateLimited, ErrTelegramRPC:
+		ErrMessageNotEditable, ErrTelegramRateLimited, ErrTelegramRPC,
+		ErrDiscussionMissing:
 		return CatAPI, code == ErrTelegramRateLimited || code == ErrTelegramRPC
 	case ErrCaptionTooLong:
 		return CatAPI, false
@@ -145,7 +147,8 @@ func ExitCode(err error) int {
 	case ErrAuthRequired, ErrAuthFailed, ErrConfigMissing, ErrConfigInvalid:
 		return 3
 	case ErrChannelNotFound, ErrChannelPermission, ErrFileTooLarge,
-		ErrMessageNotEditable, ErrTelegramRateLimited, ErrTelegramRPC:
+		ErrMessageNotEditable, ErrTelegramRateLimited, ErrTelegramRPC,
+		ErrDiscussionMissing:
 		return 4
 	case ErrDB, ErrScanFailed, ErrManifestInvalid, ErrAlbumInventoryInvalid,
 		ErrScanIncomplete, ErrOperationLocked,

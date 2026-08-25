@@ -40,6 +40,11 @@ type Client struct {
 
 	connMu sync.Mutex
 	conn   *conn
+
+	// discMu guards the linked discussion group peer cache (ADR 0018):
+	// drive channel id -> resolved group peer.
+	discMu     sync.Mutex
+	discussion map[int64]discussionPeer
 }
 
 type conn struct {
@@ -66,6 +71,7 @@ func New(apiID int64, apiHash, sessionPath string, waitFlood bool, maxWait time.
 		channelTitle:  make(map[string]int64),
 		channelTitles: make(map[int64]string),
 		inviteCache:   make(map[int64]cachedInvite),
+		discussion:    make(map[int64]discussionPeer),
 	}
 }
 

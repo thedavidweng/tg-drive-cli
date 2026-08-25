@@ -61,11 +61,12 @@ This document exists to prevent implementation drift. Do not replace these choic
 
 ## Manifest and caption
 
-- Machine reconstruction uses `td:v1`, `td-manifest:v1`, or `td-album:v1`, not hashtags.
-- A Telegram media album is one human post and one machine inventory: human caption on the first item, one `td-album:v1` reply for the group.
+- Machine reconstruction uses `td-manifest:v1` / `td-album:v1` comment records first, then legacy `td:v1` captions and in-channel replies — never hashtags.
+- Machine records live in the linked discussion group's comment threads (ADR 0018); media captions carry human text only for new uploads.
+- A Telegram media album is one human post and one machine inventory: human caption on the first item, one `td-album:v1` comment on the first member's thread.
 - Media caption budget is 1024 UTF-16 code units with 16-unit margin.
 - Text manifest budget is 4096 UTF-16 code units with 16-unit margin.
-- Minimal caption overflow returns `ERR_CAPTION_TOO_LONG`.
+- Minimal caption overflow returns `ERR_CAPTION_TOO_LONG` (legacy caption carrier only).
 - Hashtags are shallow-to-deep and are truncated from the deep side.
 
 ## Slugs and hashtags

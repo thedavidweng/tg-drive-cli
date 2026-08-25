@@ -88,8 +88,9 @@ func TestTypedVideoUploadCarriesPresentation(t *testing.T) {
 	if msg.FileName != "scene.mp4" || msg.MIME != detectMIME(local) {
 		t.Fatalf("file identity = %s %s", msg.MIME, msg.FileName)
 	}
-	if !strings.Contains(msg.Caption, "td:v1") {
-		t.Fatalf("caption lost machine meta: %q", msg.Caption)
+	// ADR 0018: captions are human-only; the machine record is a comment.
+	if strings.Contains(msg.Caption, "td:v1") {
+		t.Fatalf("caption carries machine meta: %q", msg.Caption)
 	}
 	if got := fileStatus(t, app, "/media/scene.mp4"); got != "active" {
 		t.Fatalf("status = %q, want active", got)
@@ -165,8 +166,9 @@ func TestPhotoUploadNativePresentation(t *testing.T) {
 	if msg.Video != nil || msg.Thumb != nil {
 		t.Fatal("photos carry no attribute block or thumb")
 	}
-	if !strings.Contains(msg.Caption, "td:v1") {
-		t.Fatalf("caption lost machine meta: %q", msg.Caption)
+	// ADR 0018: captions are human-only; the machine record is a comment.
+	if strings.Contains(msg.Caption, "td:v1") {
+		t.Fatalf("caption carries machine meta: %q", msg.Caption)
 	}
 
 	dest := filepath.Join(t.TempDir(), "beach.jpg")

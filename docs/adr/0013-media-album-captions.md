@@ -3,6 +3,8 @@
 ## Status
 
 Accepted. Supersedes the local-index-only adopt policy in the first revision.
+The in-channel reply carrier is superseded by ADR 0018 (comment threads);
+the caption and inventory conventions carry over.
 
 ## Context
 

@@ -99,7 +99,12 @@ func (a *App) UploadFilesAs(ctx context.Context, localPaths []string, remoteDir 
 	var sources []albumSource
 	seen := map[string]bool{}
 	for _, lp := range localPaths {
-		dest, err := fsmodel.NormalizeCanonicalPath(dir + "/" + filepath.Base(lp))
+		// dir is "/" at the root; avoid joining to "//name".
+		join := dir
+		if dir != "/" {
+			join += "/"
+		}
+		dest, err := fsmodel.NormalizeCanonicalPath(join + filepath.Base(lp))
 		if err != nil {
 			return nil, err
 		}
@@ -473,6 +478,12 @@ func (a *App) runAlbumBatch(ctx context.Context, batch *albumBatch, channelID, t
 // message with its own td:v1 caption (and per-file manifest reply when the
 // caption budget demands one) — the exact single-upload semantics.
 func (a *App) sendSingleAlbumMember(ctx context.Context, m *albumMember, channelID, tgChID int64, pres Presentation, threads, partSize int, thumb []byte) (int, error) {
+	// The lone survivor publishes with its own machine record; the comment
+	// carrier must be linked (ADR 0018).
+	manifestChat, err := a.discussionChatID(ctx, channelID)
+	if err != nil {
+		return 0, err
+	}
 	req := telegram.UploadRequest{
 		ChannelID:      tgChID,
 		Caption:        m.capRes.Caption,
@@ -516,16 +527,17 @@ func (a *App) sendSingleAlbumMember(ctx context.Context, m *albumMember, channel
 	}
 	existingSlugs := a.loadSlugMap(ctx, channelID)
 	if _, pubErr := a.publisher().Publish(ctx, publisher.PublishRequest{
-		ChannelRowID:  channelID,
-		ChannelID:     tgChID,
-		FileID:        m.fileID,
-		MessageID:     up.MessageID,
-		Meta:          m.meta,
-		ExistingSlugs: existingSlugs,
-		SetUploadedAt: true,
-		Rendered:      &m.capRes,
-		Tags:          m.tags,
-		SlugMaps:      m.slugMaps,
+		ChannelRowID:   channelID,
+		ChannelID:      tgChID,
+		FileID:         m.fileID,
+		MessageID:      up.MessageID,
+		Meta:           m.meta,
+		ExistingSlugs:  existingSlugs,
+		SetUploadedAt:  true,
+		ManifestChatID: manifestChat,
+		Rendered:       &m.capRes,
+		Tags:           m.tags,
+		SlugMaps:       m.slugMaps,
 	}); pubErr != nil {
 		if a.abandonUploadedMedia(ctx, tgChID, m.fileID, up.MessageID, now) {
 			return 0, apperr.New(apperr.ErrOrphanedUpload,
@@ -542,6 +554,12 @@ func (a *App) sendSingleAlbumMember(ctx context.Context, m *albumMember, channel
 // chunk (messages deleted, rows cleaned or orphaned), mirroring the
 // single-upload crash windows.
 func (a *App) sendAlbumChunk(ctx context.Context, chunk []*albumMember, channelID, tgChID int64, pres Presentation, withCaption bool, threads, partSize int, thumb []byte) (*AlbumGroup, error) {
+	// Inventory comments need the linked discussion group (ADR 0018); fail
+	// before uploading any bytes when it is not linked.
+	manifestChat, err := a.discussionChatID(ctx, channelID)
+	if err != nil {
+		return nil, err
+	}
 	reqs := make([]telegram.UploadRequest, 0, len(chunk))
 	var readers []io.Closer
 	defer func() {
@@ -609,7 +627,7 @@ func (a *App) sendAlbumChunk(ctx context.Context, chunk []*albumMember, channelI
 			MIME:          chunk[i].mime,
 		}))
 	}
-	replyID, err := a.writeAlbumManifest(ctx, channelID, tgChID, 0, results[0].MessageID, meta)
+	replyID, err := a.writeAlbumManifest(ctx, channelID, tgChID, manifestChat, 0, results[0].MessageID, meta)
 	if err != nil {
 		a.abandonAlbumChunk(ctx, tgChID, chunk, results, 0, now)
 		return nil, err
@@ -624,6 +642,7 @@ func (a *App) sendAlbumChunk(ctx context.Context, chunk []*albumMember, channelI
 			FileID:            m.fileID,
 			MessageID:         res.MessageID,
 			ManifestMsgID:     replyID,
+			ManifestChatID:    manifestChat,
 			SkipManifestReply: true,
 			Meta:              m.meta,
 			ExistingSlugs:     existingSlugs,

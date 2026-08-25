@@ -67,6 +67,12 @@ func (a *App) Import(ctx context.Context, opts ImportOptions) (*ImportResult, er
 	if err != nil {
 		return nil, err
 	}
+	// New machine records are comment threads (ADR 0018): import needs the
+	// linked discussion group.
+	manifestChat, err := a.discussionChatID(ctx, channelID)
+	if err != nil {
+		return nil, err
+	}
 	tgChID, err := a.tgChannelID(ctx)
 	if err != nil {
 		return nil, err
@@ -188,7 +194,7 @@ func (a *App) Import(ctx context.Context, opts ImportOptions) (*ImportResult, er
 		previewNewManifests(msgs, out)
 		return out, nil
 	}
-	if err := a.ensureTelegramManifests(ctx, channelID, tgChID, msgs, opts, out); err != nil {
+	if err := a.ensureTelegramManifests(ctx, channelID, tgChID, manifestChat, msgs, opts, out); err != nil {
 		return out, err
 	}
 	return out, nil
@@ -437,6 +443,12 @@ func (a *App) rewriteAdoptCaptions(ctx context.Context, opts ImportOptions) (*Im
 	if err != nil {
 		return nil, err
 	}
+	// Conversion posts comment records (ADR 0018): the discussion group
+	// must be linked.
+	manifestChat, err := a.discussionChatID(ctx, channelID)
+	if err != nil {
+		return nil, err
+	}
 	tgChID, err := a.tgChannelID(ctx)
 	if err != nil {
 		return nil, err
@@ -526,7 +538,7 @@ func (a *App) rewriteAdoptCaptions(ctx context.Context, opts ImportOptions) (*Im
 			return out, telegram.MapError(err)
 		}
 	}
-	if err := a.ensureTelegramManifests(ctx, channelID, tgChID, history, opts, out); err != nil {
+	if err := a.ensureTelegramManifests(ctx, channelID, tgChID, manifestChat, history, opts, out); err != nil {
 		return out, err
 	}
 	return out, nil

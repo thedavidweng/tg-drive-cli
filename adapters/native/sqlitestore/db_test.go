@@ -258,85 +258,29 @@ func TestForeignKeyEnforcedOnFreshConnection(t *testing.T) {
 	}
 }
 
-// buildV1Database creates a database in the pre-v2 state: v1 schema applied
-// and version row set, without the v2 migration.
-func buildV1Database(t *testing.T, path string) *sql.DB {
-	t.Helper()
-	raw, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tx, err := raw.Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tx.Exec(schemaSQL); err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := tx.Exec(`insert into schema_version(version, applied_at) values(1, ?)`, now); err != nil {
-		t.Fatal(err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	return raw
-}
-
-func TestMigrationV2UpgradesExistingDatabase(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "v1.db")
-	raw := buildV1Database(t, path)
-	now := time.Now().UTC().Format(time.RFC3339)
-	_, _ = raw.Exec(`insert into accounts(id,tg_user_id,created_at,updated_at) values(1,'u1',?,?)`, now, now)
-	_, _ = raw.Exec(`insert into channels(id,account_id,tg_channel_id,title,root_local_path,created_at,updated_at) values(1,1,'c1','t','/tmp',?,?)`, now, now)
-	// One live file row and one state row referencing it, written with v1
-	// semantics: the key carries the row id, file_id holds Telegram's random
-	// big-file id. Plus an orphaned state row whose key names no file row.
-	res, _ := raw.Exec(`insert into files(channel_id,canonical_path,display_name,status,updated_at) values(1,'/a.bin','a','pending',?)`, now)
-	fileID, _ := res.LastInsertId()
-	_, _ = raw.Exec(`insert into upload_progress(key,file_id,content_hash,part_size,total_parts,total_bytes,confirmed_parts,confirmed_bytes,updated_at) values(?,?,NULL,512,4,4096,'0,1',1024,?)`,
-		fmt.Sprintf("file:%d", fileID), int64(987654321), now)
-	_, _ = raw.Exec(`insert into upload_progress(key,file_id,content_hash,part_size,total_parts,total_bytes,confirmed_parts,confirmed_bytes,updated_at) values('file:424242',424242,NULL,1,1,10,'0',0,?)`, now)
-	_, _ = raw.Exec(`insert into scan_state(channel_id,last_scanned_message_id,updated_at) values(1,5,?)`, now)
-	_ = raw.Close()
-
+// TestSquashedBaselineSchema pins the pre-release squash policy: one
+// idempotent baseline carrying the full current shape — ADR 0018 carrier
+// columns, scan cursors, and the upload-progress foreign key included.
+func TestSquashedBaselineSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "baseline.db")
 	d, err := Open(path)
 	if err != nil {
-		t.Fatalf("upgrade existing database: %v", err)
+		t.Fatal(err)
 	}
 	defer func() { _ = d.Close() }()
-
-	var version int
-	if err := d.Raw().QueryRow(`select max(version) from schema_version`).Scan(&version); err != nil {
-		t.Fatal(err)
+	for _, probe := range []string{
+		`select discussion_tg_channel_id, discussion_access_hash, discussion_title from channels limit 1`,
+		`select manifest_chat_tg_id from files limit 1`,
+		`select checkpoint_message_id, full_scan_started_at, discussion_last_scanned_message_id from scan_state limit 1`,
+		`select telegram_file_id from upload_progress limit 1`,
+	} {
+		if _, err := d.Raw().Exec(probe); err != nil {
+			t.Fatalf("baseline schema missing columns: %v (%s)", err, probe)
+		}
 	}
-	if version != 2 {
-		t.Fatalf("schema version = %d, want 2", version)
-	}
-	var states int
-	if err := d.Raw().QueryRow(`select count(*) from upload_progress`).Scan(&states); err != nil {
-		t.Fatal(err)
-	}
-	if states != 1 {
-		t.Fatalf("upload states = %d, want 1 (orphan dropped)", states)
-	}
-	var confirmed string
-	var telegramFileID int64
-	if err := d.Raw().QueryRow(`select confirmed_parts, telegram_file_id from upload_progress where file_id=?`, fileID).Scan(&confirmed, &telegramFileID); err != nil {
-		t.Fatalf("surviving state row: %v", err)
-	}
-	if confirmed != "0,1" {
-		t.Fatalf("confirmed_parts = %q, want preserved %q", confirmed, "0,1")
-	}
-	if telegramFileID != 987654321 {
-		t.Fatalf("telegram_file_id = %d, want the v1 file_id value preserved", telegramFileID)
-	}
-	var newCols int
-	if err := d.Raw().QueryRow(`select count(*) from pragma_table_info('scan_state') where name in ('checkpoint_message_id','full_scan_started_at')`).Scan(&newCols); err != nil {
-		t.Fatal(err)
-	}
-	if newCols != 2 {
-		t.Fatalf("scan_state gained %d new columns, want 2", newCols)
+	// The upload-progress foreign key is part of the baseline shape.
+	if _, err := d.Raw().Exec(`insert into upload_progress(key,file_id,part_size,total_parts,total_bytes,confirmed_parts,updated_at) values('file:999',999,1,1,1,'','2020-01-01T00:00:00Z')`); err == nil {
+		t.Fatal("upload_progress.file_id foreign key not enforced")
 	}
 }
 

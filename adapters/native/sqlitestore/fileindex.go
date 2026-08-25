@@ -45,6 +45,7 @@ func indexTx(ctx context.Context, tx *sql.Tx, req ports.FileIndexRequest) (int64
 	if req.ManifestMsgID > 0 {
 		mfID = sql.NullInt64{Int64: int64(req.ManifestMsgID), Valid: true}
 	}
+	mfChat := req.ManifestChatID
 
 	var fileID int64
 	if req.FileID > 0 {
@@ -53,9 +54,9 @@ func indexTx(ctx context.Context, tx *sql.Tx, req ports.FileIndexRequest) (int64
 			uploadedAtCase = 1
 		}
 		_, err := tx.ExecContext(ctx, `
-			update files set status='active', message_id=?, manifest_message_id=?, canonical_path=?, display_name=?, size=?, content_hash=?, mime=?, node_id=null, uploaded_at = case when ? then ? else uploaded_at end, updated_at=?
+			update files set status='active', message_id=?, manifest_message_id=?, manifest_chat_tg_id=?, canonical_path=?, display_name=?, size=?, content_hash=?, mime=?, node_id=null, uploaded_at = case when ? then ? else uploaded_at end, updated_at=?
 			where id=?`,
-			req.MessageID, mfID, req.Meta.CanonicalPath, req.Meta.DisplayName, req.Meta.Size, req.Meta.Hash, req.Meta.MIME, uploadedAtCase, req.Now, req.Now, req.FileID)
+			req.MessageID, mfID, mfChat, req.Meta.CanonicalPath, req.Meta.DisplayName, req.Meta.Size, req.Meta.Hash, req.Meta.MIME, uploadedAtCase, req.Now, req.Now, req.FileID)
 		if err != nil {
 			return 0, err
 		}
@@ -66,9 +67,9 @@ func indexTx(ctx context.Context, tx *sql.Tx, req ports.FileIndexRequest) (int64
 			uploadedAt = req.Now
 		}
 		res, err := tx.ExecContext(ctx, `
-			insert into files(channel_id,message_id,manifest_message_id,canonical_path,display_name,size,content_hash,mime,status,uploaded_at,updated_at)
-			values(?,?,?,?,?,?,?,?,'active',?,?)`,
-			req.ChannelRowID, req.MessageID, mfID, req.Meta.CanonicalPath, req.Meta.DisplayName, req.Meta.Size, req.Meta.Hash, req.Meta.MIME, uploadedAt, req.Now)
+			insert into files(channel_id,message_id,manifest_message_id,manifest_chat_tg_id,canonical_path,display_name,size,content_hash,mime,status,uploaded_at,updated_at)
+			values(?,?,?,?,?,?,?,?,?,'active',?,?)`,
+			req.ChannelRowID, req.MessageID, mfID, mfChat, req.Meta.CanonicalPath, req.Meta.DisplayName, req.Meta.Size, req.Meta.Hash, req.Meta.MIME, uploadedAt, req.Now)
 		if err != nil {
 			return 0, err
 		}

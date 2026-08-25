@@ -254,18 +254,19 @@ func TestTombstoneModeRedactsBoth(t *testing.T) {
 	if res["mode"] != "tombstone" {
 		t.Fatalf("res = %v", res)
 	}
-	tgChID, _ := app.tgChannelID(ctx)
-	var sawTombCaption, sawTombManifest bool
-	for _, m := range tg.Messages(tgChID) {
-		if strings.Contains(m.Caption, "td:v1 deleted=true p=") {
-			sawTombCaption = true
+	// ADR 0018: the media caption stays human-only; the tombstone record
+	// lives in the comment thread.
+	var cleanCaption, sawTombComment bool
+	for _, m := range machineRecords(t, app, ctx) {
+		if strings.Contains(m.Caption, "td:v1") {
+			cleanCaption = true
 		}
 		if strings.HasPrefix(m.Text, "td-manifest:v1\ndeleted=true") {
-			sawTombManifest = true
+			sawTombComment = true
 		}
 	}
-	if !sawTombCaption || !sawTombManifest {
-		t.Fatalf("tombstone redaction incomplete: caption=%v manifest=%v", sawTombCaption, sawTombManifest)
+	if cleanCaption || !sawTombComment {
+		t.Fatalf("tombstone redaction incomplete: machineOnCaption=%v tombstoneComment=%v", cleanCaption, sawTombComment)
 	}
 	// Default rescan must not resurrect or error on the tombstone.
 	scanRes, err := app.Scan(ctx, ScanOptions{Full: true})
@@ -829,17 +830,17 @@ func TestMoveCaptionFailureRestoresManifest(t *testing.T) {
 	if err := app.MoveFile(ctx, src, dst); err == nil {
 		t.Fatal("expected move to fail")
 	}
-	// The manifest reply must still encode the OLD path so a rescan does not
-	// silently complete the move.
-	for _, m := range tg.Messages(tgChID) {
+	// The manifest comment must still encode the OLD path so a rescan does
+	// not silently complete the move.
+	for _, m := range machineRecords(t, app, ctx) {
 		if m.ID == manifestID {
 			if !strings.Contains(m.Text, b64url(src)) {
-				t.Fatalf("manifest reply not restored to source path: %q", m.Text)
+				t.Fatalf("manifest comment not restored to source path: %q", m.Text)
 			}
 			return
 		}
 	}
-	t.Fatal("manifest reply message not found")
+	t.Fatal("manifest comment message not found")
 }
 
 func TestDirectoryGCAfterDelete(t *testing.T) {
@@ -1027,12 +1028,22 @@ func TestTombstoneCommitsWhenManifestEditFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	tg.SetFailEditText(true)
-	_, err := app.DeleteFile(ctx, remote, DeleteOptions{Tombstone: true})
-	if err == nil {
-		t.Fatal("expected stale-manifest error")
+	// The comment edit fails, but the caption tombstone fallback makes the
+	// delete succeed and keeps deletion sticky across scans (ADR 0018).
+	if _, err := app.DeleteFile(ctx, remote, DeleteOptions{Tombstone: true}); err != nil {
+		t.Fatalf("tombstone delete with caption fallback: %v", err)
 	}
 	if got := fileStatus(t, app, remote); got != "deleted" {
 		t.Fatalf("status = %q, want deleted after media tombstone", got)
+	}
+	tgChID, _ := app.tgChannelID(ctx)
+	var mid int
+	if err := app.DB.Raw().QueryRow(`select message_id from files where canonical_path=? and status='deleted'`, remote).Scan(&mid); err != nil {
+		t.Fatal(err)
+	}
+	msg, _ := tg.GetMessage(ctx, tgChID, mid)
+	if !strings.Contains(msg.Caption, "td:v1 deleted=true") {
+		t.Fatalf("caption tombstone fallback missing: %q", msg.Caption)
 	}
 }
 

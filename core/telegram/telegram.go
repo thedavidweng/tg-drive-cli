@@ -207,8 +207,11 @@ type Capabilities struct {
 	DeleteOK         bool
 	InviteLinkOK     bool
 	EditOldCaptionOK bool
-	MaxUploadBytes   int64
-	CheckedAt        time.Time
+	// DiscussionOK reports that the channel has a linked discussion group,
+	// the carrier of machine manifest comments (ADR 0018).
+	DiscussionOK   bool
+	MaxUploadBytes int64
+	CheckedAt      time.Time
 }
 
 // Client is the aggregate Telegram client interface.
@@ -217,6 +220,7 @@ type Client interface {
 	ChannelClient
 	MediaClient
 	HistoryClient
+	DiscussionClient
 }
 
 // AuthClient handles authentication.
@@ -284,6 +288,47 @@ type HistoryClient interface {
 	GetMessage(ctx context.Context, channelID int64, messageID int) (Message, error)
 }
 
+// ThreadMessage is one message from a discussion-group history walk
+// (StreamThreadHistory). The group contains two kinds of relevant messages:
+// auto-forwarded channel post headers (RootMsgID > 0, PostID = original
+// channel post id) and comments (Message with ReplyTo pointing at the
+// thread root).
+type ThreadMessage struct {
+	Message
+	// RootMsgID is the forwarded header's message id in the discussion
+	// group; 0 for comments and unrelated chatter.
+	RootMsgID int
+	// PostID is the original channel post id a header was forwarded from;
+	// 0 for comments.
+	PostID int
+}
+
+// DiscussionClient manages the linked discussion group and its comment
+// threads — the carrier of machine manifest records (ADR 0018). Channel
+// operations are addressed by the DRIVE channel id; adapters resolve the
+// linked group and thread roots internally.
+type DiscussionClient interface {
+	// EnsureDiscussionGroup creates and links a discussion supergroup for
+	// the channel if none is linked, and returns the linked group.
+	// Idempotent.
+	EnsureDiscussionGroup(ctx context.Context, channelID int64) (*Channel, error)
+	// LinkedDiscussionGroup resolves the linked discussion group. ok is
+	// false when the channel has none.
+	LinkedDiscussionGroup(ctx context.Context, channelID int64) (*Channel, bool, error)
+	// SendThreadReply posts a comment on the post's comment thread and
+	// returns the comment's message id (valid in the discussion group).
+	SendThreadReply(ctx context.Context, channelID int64, postMsgID int, text string) (int, error)
+	// EditThreadMessage edits a comment previously created by
+	// SendThreadReply.
+	EditThreadMessage(ctx context.Context, channelID int64, msgID int, text string) error
+	// DeleteThreadMessage deletes a comment.
+	DeleteThreadMessage(ctx context.Context, channelID int64, msgID int) error
+	// StreamThreadHistory walks the discussion group newest-first, feeding
+	// forwarded post headers and comments to fn. HistoryMeta describes
+	// whether the read provably covered everything down to afterID.
+	StreamThreadHistory(ctx context.Context, channelID int64, afterID int, fn func(ThreadMessage) error) (HistoryMeta, error)
+}
+
 // Typed errors.
 type FloodWaitError struct {
 	Seconds int
@@ -339,5 +384,13 @@ type FileTooLargeError struct{}
 func (e *FileTooLargeError) Error() string { return "file too large" }
 
 type AuthRequiredError struct{}
+
+// DiscussionMissingError means the channel has no linked discussion group,
+// so machine manifest records cannot be written (ADR 0018).
+type DiscussionMissingError struct{}
+
+func (e *DiscussionMissingError) Error() string {
+	return "channel has no linked discussion group; run: td channels link-discussion"
+}
 
 func (e *AuthRequiredError) Error() string { return "auth required" }

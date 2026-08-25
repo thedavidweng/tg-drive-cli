@@ -21,11 +21,16 @@ type Client struct {
 	loggedIn  bool
 	channels  map[int64]*telegram.Channel
 	messages  map[int64][]telegram.Message
-	nextID    int
-	nextChID  int64
-	code      string
-	password  string
-	failCode  bool
+	// discussion maps a drive channel id to its linked discussion group
+	// channel id (ADR 0018). threadRoots maps a forwarded header message id
+	// inside a discussion group to the original channel post id.
+	discussion  map[int64]int64
+	threadRoots map[int64]int64
+	nextID      int
+	nextChID    int64
+	code        string
+	password    string
+	failCode    bool
 
 	nextGroupedID      int64
 	failUpload         bool
@@ -58,6 +63,8 @@ func New() *Client {
 	return &Client{
 		channels:      make(map[int64]*telegram.Channel),
 		messages:      make(map[int64][]telegram.Message),
+		discussion:    make(map[int64]int64),
+		threadRoots:   make(map[int64]int64),
 		nextID:        1,
 		nextChID:      1000,
 		nextGroupedID: 5000,
@@ -592,6 +599,7 @@ func (c *Client) Doctor(ctx context.Context, channelID int64) (*telegram.Capabil
 		DeleteOK:         true,
 		InviteLinkOK:     true,
 		EditOldCaptionOK: true,
+		DiscussionOK:     c.discussion[channelID] != 0,
 		MaxUploadBytes:   2147483648,
 		CheckedAt:        time.Now().UTC(),
 	}, nil

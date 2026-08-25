@@ -39,14 +39,27 @@ func writeNamedLocal(t *testing.T, name string) string {
 	return p
 }
 
-// albumReplies maps each td-album:v1 reply's target media message id to its
-// reply message id and text.
-func albumReplies(msgs []telegram.Message) map[int]telegram.Message {
+// albumInventoryComments collects every td-album:v1 record across the drive
+// channel and its discussion thread, keyed by the first member's message id
+// (ADR 0018: the inventory is a comment on the first member's post).
+func albumInventoryComments(t *testing.T, app *App, ctx context.Context) map[int]telegram.Message {
+	t.Helper()
 	out := map[int]telegram.Message{}
-	for _, m := range msgs {
-		if manifest.IsAlbumReply(m.Text) && m.ReplyTo != nil {
-			out[*m.ReplyTo] = m
+	for _, m := range machineRecords(t, app, ctx) {
+		if !manifest.IsAlbumReply(m.Text) {
+			continue
 		}
+		meta, err := manifest.ParseAlbumReply(m.Text)
+		if err != nil {
+			t.Fatal(err)
+		}
+		first := meta.Files[0].MessageID
+		for _, f := range meta.Files[1:] {
+			if f.MessageID < first {
+				first = f.MessageID
+			}
+		}
+		out[first] = m
 	}
 	return out
 }
@@ -92,8 +105,9 @@ func TestAlbumUploadNativeGroup(t *testing.T) {
 		}
 	}
 
-	if !strings.Contains(members[0].Caption, "td:v1") {
-		t.Fatalf("first member caption lost machine meta: %q", members[0].Caption)
+	// ADR 0018: album captions are human-only; the inventory is a comment.
+	if strings.Contains(members[0].Caption, "td:v1") {
+		t.Fatalf("first member caption carries machine meta: %q", members[0].Caption)
 	}
 	for _, m := range members[1:] {
 		if m.Caption != "" {
@@ -101,13 +115,13 @@ func TestAlbumUploadNativeGroup(t *testing.T) {
 		}
 	}
 
-	replies := albumReplies(msgs)
-	if len(replies) != 1 {
-		t.Fatalf("album replies = %d, want 1", len(replies))
+	inventories := albumInventoryComments(t, app, ctx)
+	if len(inventories) != 1 {
+		t.Fatalf("album inventory comments = %d, want 1", len(inventories))
 	}
-	firstReply, ok := replies[members[0].ID]
+	firstReply, ok := inventories[members[0].ID]
 	if !ok {
-		t.Fatalf("inventory reply does not point at the first member: %+v", replies)
+		t.Fatalf("inventory comment does not cover the first member: %+v", inventories)
 	}
 	meta, err := manifest.ParseAlbumReply(firstReply.Text)
 	if err != nil {
@@ -210,15 +224,19 @@ func TestAlbumUploadSplitsLargeSets(t *testing.T) {
 	if groups[0].GroupedID == groups[1].GroupedID {
 		t.Fatal("split groups must carry distinct grouped ids")
 	}
-	msgs := tg.Messages(tgChID)
-	if replies := albumReplies(msgs); len(replies) != 2 {
-		t.Fatalf("album replies = %d, want 2", len(replies))
+	if inventories := albumInventoryComments(t, app, ctx); len(inventories) != 2 {
+		t.Fatalf("album inventory comments = %d, want 2", len(inventories))
 	}
 
+	// ADR 0018: exactly one member carries the human caption; captions hold
+	// no machine text.
 	captioned := 0
-	for _, m := range msgs {
-		if m.GroupedID != 0 && strings.Contains(m.Caption, "td:v1") {
+	for _, m := range groupedMembers(tg.Messages(tgChID)) {
+		if m.Caption != "" {
 			captioned++
+		}
+		if strings.Contains(m.Caption, "td:v1") {
+			t.Fatalf("member caption carries machine meta: %q", m.Caption)
 		}
 	}
 	if captioned != 1 {
@@ -364,9 +382,8 @@ func TestAlbumUploadPendingAdoptionRetry(t *testing.T) {
 	if fileStatus(t, app, "/media/big.bin") != "active" || fileStatus(t, app, "/media/small.bin") != "active" {
 		t.Fatal("retry did not activate both members")
 	}
-	replies := albumReplies(tg.Messages(mustChannel(t, app)))
-	if len(replies) != 1 {
-		t.Fatalf("album replies after retry = %d, want 1", len(replies))
+	if inventories := albumInventoryComments(t, app, ctx); len(inventories) != 1 {
+		t.Fatalf("album inventory comments after retry = %d, want 1", len(inventories))
 	}
 }
 
@@ -433,8 +450,8 @@ func TestSingleMemberBatchUploadsAlone(t *testing.T) {
 			if m.GroupedID != 0 {
 				t.Fatal("lone upload must not be grouped")
 			}
-			if !strings.Contains(m.Caption, "td:v1") {
-				t.Fatalf("lone upload lost its caption: %q", m.Caption)
+			if strings.Contains(m.Caption, "td:v1") {
+				t.Fatalf("lone upload caption carries machine meta: %q", m.Caption)
 			}
 			return
 		}
@@ -475,12 +492,12 @@ func TestRecursiveFolderUploadGroupsByDirectory(t *testing.T) {
 	if len(albums) != 1 || len(albums[0].Paths) != 2 {
 		t.Fatalf("albums = %+v, want one two-member group", albums)
 	}
-	replies := albumReplies(tg.Messages(mustChannel(t, app)))
-	if len(replies) != 1 {
-		t.Fatalf("album replies = %d, want 1", len(replies))
+	inventories := albumInventoryComments(t, app, ctx)
+	if len(inventories) != 1 {
+		t.Fatalf("album inventory comments = %d, want 1", len(inventories))
 	}
 	var replyText string
-	for _, m := range replies {
+	for _, m := range inventories {
 		replyText = m.Text
 	}
 	meta, err := manifest.ParseAlbumReply(replyText)

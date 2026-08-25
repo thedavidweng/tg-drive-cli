@@ -25,10 +25,13 @@ td auth login [--resend]
 td auth status
 td auth logout
 td channels list [--only-drive]
+td channels link-discussion
 td init <local-root>
   [--create-channel [=<title>]]
   [--bind-channel [=<title>]]
   (bare --bind-channel lists and prompts)
+  # init always ensures a linked discussion group for the channel
+  # (created on demand); machine records live in its comment threads
 td status
 td doctor
   td doctor path-codec
@@ -53,16 +56,19 @@ td cp <local> [local...] <remote-path>
 
 Two argument forms:
 
-- `td cp <local> <remote-path>` — single file, one message per upload
-  (unchanged behavior).
+- `td cp <local> <remote-path>` — single file, one message per upload; the
+  caption is human-only and the machine record is a `td-manifest:v1`
+  comment on the message's discussion thread (ADR 0018)
 - `td cp <local...> <remote-dir>` — two or more sources publish as native
-  Telegram media groups (albums): one td:v1 caption on the first member,
-  empty sibling captions, one `td-album:v1` inventory reply per group. Sets
-  larger than 10 members split into consecutive groups of up to 10.
+  Telegram media groups (albums): one human-only caption on the first
+  member, empty sibling captions, one `td-album:v1` inventory comment on
+  the first member's discussion thread per group (ADR 0018). Sets larger
+  than 10 members split into consecutive groups of up to 10.
   `<remote-dir>` is `/`, a path ending in `/`, or an existing remote
   directory. `--replace` is not supported in this form (`ERR_USAGE`);
   `--skip-existing` and `--auto-rename` apply per file, and a lone survivor
-  after skips publishes as an ordinary single message.
+  after skips publishes as an ordinary single message with its own
+  inventory comment.
 
 `--recursive` uploads each source directory's direct children as one album
 (split at 10); nested directories recurse.
@@ -87,15 +93,21 @@ td import [message-id] [remote-path]
   [--unmanaged] [--into <dir>]
   [--hash]
   [--rewrite-captions]
-  [--confirm] [--dry-run] [--continue-on-error]
-  # --rewrite-captions restores album captions, removes per-file
-  # td-manifest replies, and upserts one td-album:v1 reply per group
+  # --rewrite-captions converts a legacy channel to the ADR 0018 comment
+  # model: strips machine lines from captions (one human caption per
+  # album), deletes per-file td-manifest replies, and posts one
+  # td-album:v1 inventory comment per group
   # --hash downloads each adopted file to compute and store its BLAKE3
   # content hash, so post-rebuild downloads verify content
 td repair [path]
 td repair --pending
 td repair --orphaned [--delete-orphaned --confirm]
 td repair --scan-errors
+td repair [--hash] [path]
+  # --hash downloads every active file under [path] that lacks a content
+  # hash, computes its BLAKE3 digest, and backfills it into the index and
+  # the machine record on Telegram (comment thread, legacy reply, or
+  # caption carrier). A zero/missing size is repaired from the download.
 td config get [key]
   [--show-secrets] [--confirm]
 td config set <key> <value>

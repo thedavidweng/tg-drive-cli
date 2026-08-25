@@ -89,6 +89,10 @@ All JSON command output uses an envelope.
 ```
 
 The `invite_link` field is omitted when the channel has no public/join link.
+`manifest_message_id` is the machine record's message id; since ADR 0018 it
+lives in the linked discussion group's comment thread (the row's
+`manifest_chat_tg_id` records the peer), so the id is not addressable in the
+drive channel itself.
 
 A retry that adopted a pending upload and sent only its unconfirmed parts adds
 `"resumed": true` (files above 10 MB; the identity — size and content hash —
@@ -126,8 +130,9 @@ group.
   default fail policy a planning conflict aborts the whole command before any
   Telegram write, so `errors` stays empty on success.
 - `albums` lists every media group in send order; each carries Telegram's
-  `grouped_id`, the `td-album:v1` inventory reply's message id, member message
-  ids, and member paths. Empty (`[]`) when nothing grouped.
+  `grouped_id`, the `td-album:v1` inventory message's id (a comment in the
+  linked discussion group per ADR 0018), member message ids, and member
+  paths. Empty (`[]`) when nothing grouped.
 - `--recursive` emits the same shape plus its historical keys.
 
 ## NDJSON event stream

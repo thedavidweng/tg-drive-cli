@@ -202,13 +202,14 @@ Flags:
 
 `--replace` requires `--confirm`.
 
-Two or more sources publish as native Telegram albums: one caption on the
-first member, one `td-album:v1` inventory reply per group of up to 10 members
-(larger sets split into consecutive groups). The destination must be `/`, end
-with `/`, or name an existing remote directory; `--replace` is not available
-in this form — use `--skip-existing` or `--auto-rename` instead.
-`--recursive` uploads each source directory's direct children as one album
-and recurses into nested directories.
+Two or more sources publish as native Telegram albums: one human caption on
+the first member, one `td-album:v1` inventory comment on the first member's
+discussion thread per group of up to 10 members (larger sets split into
+consecutive groups). The destination must be `/`, end with `/`, or name an
+existing remote directory; `--replace` is not available in this form — use
+`--skip-existing` or `--auto-rename` instead. `--recursive` uploads each
+source directory's direct children as one album and recurses into nested
+directories.
 
 `--as photo` sends a native photo message: Telegram recompresses the bytes,
 so downloads fetch the largest representation and strict size/hash
@@ -300,8 +301,7 @@ Flags:
       --continue-on-error   continue adopting after a per-message error
       --dry-run             print the adopt plan without editing Telegram
       --hash                download each adopted file to compute and store its BLAKE3 content hash
-      --into string         remote directory prefix for --unmanaged (default "/")
-      --rewrite-captions    restore one human caption per album, delete per-file replies, and write one td-album:v1 inventory
+      --rewrite-captions    convert to comment records: human-only captions, one td-manifest/td-album comment per file or group (ADR 0018)
       --unmanaged           adopt every unmanaged media/text message in the channel
 ```
 
@@ -340,16 +340,18 @@ Repair index inconsistencies.
 ```text
 Usage:
   td repair [path] [flags]
-
-Flags:
-      --confirm           confirm deleting orphaned Telegram messages
-      --delete-orphaned   delete orphaned Telegram messages instead of completing them
+      --hash              download files missing a content hash and backfill it into the index and machine records
       --orphaned          repair orphaned messages
       --pending           repair pending uploads
       --scan-errors       repair scan errors
 ```
 
-`--delete-orphaned` requires `--confirm`.
+`--hash` streams each active file under `[path]` (default: the whole
+channel) that has no stored BLAKE3 hash, computes the digest, and writes it
+back into the SQLite index and the machine record on Telegram (comment
+thread, legacy reply, or caption — whichever carrier the row uses). A zero
+or missing file size is repaired from the same download. Rows that already
+carry a hash are skipped, so reruns are no-ops.
 
 ## Core
 

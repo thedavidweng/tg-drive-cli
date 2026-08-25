@@ -22,10 +22,15 @@ type FileIndexRequest struct {
 	FileID        int64
 	MessageID     int
 	ManifestMsgID int
-	Meta          manifest.FileMeta
-	SlugMaps      []pathcodec.SlugMapping
-	Tags          []string
-	ReplaceFileID int64
-	SetUploadedAt bool
-	Now           string
+	// ManifestChatID is the Telegram channel id whose message space
+	// ManifestMsgID lives in: empty for the legacy in-channel reply
+	// carrier, the linked discussion group id for comment carriers
+	// (ADR 0018).
+	ManifestChatID string
+	Meta           manifest.FileMeta
+	SlugMaps       []pathcodec.SlugMapping
+	Tags           []string
+	ReplaceFileID  int64
+	SetUploadedAt  bool
+	Now            string
 }

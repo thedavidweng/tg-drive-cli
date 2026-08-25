@@ -438,10 +438,11 @@ func (a *App) MoveFile(ctx context.Context, from, to string) error {
 	}
 	var fileID int64
 	var messageID, manifestID sql.NullInt64
+	var manifestChat string
 	var displayName, contentHash, mimeType string
 	var size int64
-	err = a.DB.Raw().QueryRowContext(ctx, `select id, message_id, manifest_message_id, display_name, size, content_hash, mime from files where channel_id=? and canonical_path=? and status='active'`,
-		channelID, src).Scan(&fileID, &messageID, &manifestID, &displayName, &size, &contentHash, &mimeType)
+	err = a.DB.Raw().QueryRowContext(ctx, `select id, message_id, manifest_message_id, manifest_chat_tg_id, display_name, size, content_hash, mime from files where channel_id=? and canonical_path=? and status='active'`,
+		channelID, src).Scan(&fileID, &messageID, &manifestID, &manifestChat, &displayName, &size, &contentHash, &mimeType)
 	if err == sql.ErrNoRows {
 		var otherChannel int64
 		if scanErr := a.DB.Raw().QueryRowContext(ctx, `select channel_id from files where canonical_path=? and status='active' and channel_id != ? limit 1`,
@@ -490,26 +491,27 @@ func (a *App) MoveFile(ctx context.Context, from, to string) error {
 			manifestMsgID = int(manifestID.Int64)
 		}
 
-		if album, ok, err := a.loadAlbumManifest(ctx, tgChID, manifestMsgID); err != nil {
+		if album, ok, err := a.loadAlbumManifest(ctx, tgChID, manifestChat, manifestMsgID); err != nil {
 			return telegram.MapError(err)
 		} else if ok {
 			updated := albumReplacePath(album, int(messageID.Int64), dst)
-			if _, err := a.writeAlbumManifest(ctx, channelID, tgChID, manifestMsgID, albumFirstMediaID(updated), updated); err != nil {
+			if _, err := a.writeAlbumManifest(ctx, channelID, tgChID, manifestChat, manifestMsgID, albumFirstMediaID(updated), updated); err != nil {
 				return err
 			}
 			return a.reindexAlbumMember(ctx, channelID, fileID, int(messageID.Int64), manifestMsgID, dst, contentHash, mimeType, size)
 		}
 
 		if _, err := a.publisher().Publish(ctx, publisher.PublishRequest{
-			ChannelRowID:  channelID,
-			ChannelID:     tgChID,
-			FileID:        fileID,
-			MessageID:     int(messageID.Int64),
-			ManifestMsgID: manifestMsgID,
-			Meta:          meta,
-			ExistingSlugs: existingSlugs,
-			EditCaption:   true,
-			OldMeta:       &oldMeta,
+			ChannelRowID:   channelID,
+			ChannelID:      tgChID,
+			FileID:         fileID,
+			MessageID:      int(messageID.Int64),
+			ManifestMsgID:  manifestMsgID,
+			ManifestChatID: manifestChat,
+			Meta:           meta,
+			ExistingSlugs:  existingSlugs,
+			EditCaption:    true,
+			OldMeta:        &oldMeta,
 		}); err != nil {
 			return err
 		}
@@ -552,7 +554,8 @@ func (a *App) DeleteFile(ctx context.Context, remotePath string, opts DeleteOpti
 	}
 	var fileID int64
 	var messageID, manifestID sql.NullInt64
-	err = a.DB.Raw().QueryRowContext(ctx, `select id, message_id, manifest_message_id from files where channel_id=? and canonical_path=? and status='active'`, channelID, p).Scan(&fileID, &messageID, &manifestID)
+	var manifestChat string
+	err = a.DB.Raw().QueryRowContext(ctx, `select id, message_id, manifest_message_id, manifest_chat_tg_id from files where channel_id=? and canonical_path=? and status='active'`, channelID, p).Scan(&fileID, &messageID, &manifestID, &manifestChat)
 	if err == sql.ErrNoRows {
 		return nil, apperr.New(apperr.ErrRemoteNotFound, fmt.Sprintf("remote path %q not found", p))
 	}
@@ -564,7 +567,7 @@ func (a *App) DeleteFile(ctx context.Context, remotePath string, opts DeleteOpti
 	lockKey := sqlitestore.LockKey(channelID, p)
 	var out map[string]any
 	lockErr := a.withLocks(ctx, []string{lockKey}, func(ctx context.Context) error {
-		res, err := a.deleteFileLocked(ctx, channelID, tgChID, p, fileID, messageID, manifestID, opts)
+		res, err := a.deleteFileLocked(ctx, channelID, tgChID, p, fileID, messageID, manifestID, manifestChat, opts)
 		if err != nil {
 			return err
 		}
@@ -577,7 +580,7 @@ func (a *App) DeleteFile(ctx context.Context, remotePath string, opts DeleteOpti
 	return out, nil
 }
 
-func (a *App) deleteFileLocked(ctx context.Context, channelID, tgChID int64, p string, fileID int64, messageID, manifestID sql.NullInt64, opts DeleteOptions) (map[string]any, error) {
+func (a *App) deleteFileLocked(ctx context.Context, channelID, tgChID int64, p string, fileID int64, messageID, manifestID sql.NullInt64, manifestChat string, opts DeleteOptions) (map[string]any, error) {
 
 	mode := a.Cfg.Delete.Mode
 	if opts.Tombstone {
@@ -589,7 +592,7 @@ func (a *App) deleteFileLocked(ctx context.Context, channelID, tgChID int64, p s
 	if manifestID.Valid {
 		manID = int(manifestID.Int64)
 	}
-	if album, ok, err := a.loadAlbumManifest(ctx, tgChID, manID); err != nil && !isMessageGone(err) {
+	if album, ok, err := a.loadAlbumManifest(ctx, tgChID, manifestChat, manID); err != nil && !isMessageGone(err) {
 		return nil, telegram.MapError(err)
 	} else if ok {
 		if messageID.Valid {
@@ -599,9 +602,13 @@ func (a *App) deleteFileLocked(ctx context.Context, channelID, tgChID int64, p s
 		}
 		remaining := albumWithout(album, int(messageID.Int64))
 		if len(remaining.Files) == 0 {
-			manifestErr = a.TG.DeleteMessage(ctx, tgChID, manID)
+			if manifestChat != "" {
+				manifestErr = a.TG.DeleteThreadMessage(ctx, tgChID, manID)
+			} else {
+				manifestErr = a.TG.DeleteMessage(ctx, tgChID, manID)
+			}
 		} else {
-			_, manifestErr = a.writeAlbumManifest(ctx, channelID, tgChID, manID, albumFirstMediaID(remaining), remaining)
+			_, manifestErr = a.writeAlbumManifest(ctx, channelID, tgChID, manifestChat, manID, albumFirstMediaID(remaining), remaining)
 		}
 		if isMessageGone(manifestErr) {
 			manifestErr = nil
@@ -629,16 +636,34 @@ func (a *App) deleteFileLocked(ctx context.Context, channelID, tgChID int64, p s
 		}
 		return out, nil
 	}
-	if mode == "delete" {
+	switch {
+	case mode == "delete":
 		if messageID.Valid {
 			if err := a.TG.DeleteMessage(ctx, tgChID, int(messageID.Int64)); err != nil && !isMessageGone(err) {
 				return nil, telegram.MapError(err)
 			}
 		}
 		if manifestID.Valid {
-			manifestErr = a.TG.DeleteMessage(ctx, tgChID, int(manifestID.Int64))
+			if manifestChat != "" {
+				manifestErr = a.TG.DeleteThreadMessage(ctx, tgChID, int(manifestID.Int64))
+			} else {
+				manifestErr = a.TG.DeleteMessage(ctx, tgChID, int(manifestID.Int64))
+			}
 		}
-	} else {
+	case manifestID.Valid && manifestChat != "":
+		// ADR 0018: the comment carries the tombstone. If the comment edit
+		// fails, fall back to a tombstone caption — deletion must stay
+		// sticky even when the thread record cannot be redacted, and a
+		// caption tombstone outranks a stale live comment during scans.
+		manifestErr = a.TG.EditThreadMessage(ctx, tgChID, int(manifestID.Int64), manifest.RenderTombstoneManifest(p))
+		if manifestErr != nil && !isMessageGone(manifestErr) {
+			if messageID.Valid {
+				if capErr := a.TG.EditCaption(ctx, tgChID, int(messageID.Int64), manifest.RenderTombstoneCaption(fsmodel.BaseName(p), p)); capErr == nil || isMessageGone(capErr) {
+					manifestErr = nil
+				}
+			}
+		}
+	default:
 		if messageID.Valid {
 			if err := a.TG.EditCaption(ctx, tgChID, int(messageID.Int64), manifest.RenderTombstoneCaption(fsmodel.BaseName(p), p)); err != nil && !isMessageGone(err) {
 				return nil, telegram.MapError(err)

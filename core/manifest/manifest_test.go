@@ -41,6 +41,8 @@ func TestRenderAndParseCompact(t *testing.T) {
 	}
 }
 
+// Legacy carrier only (ADR 0018): deep paths overflow the caption budget,
+// so the machine record falls back to a td-manifest:v1 reply.
 func TestDeepPathManifestReply(t *testing.T) {
 	tags := make([]string, 50)
 	for i := range tags {
@@ -56,24 +58,48 @@ func TestDeepPathManifestReply(t *testing.T) {
 		MIME:          "image/jpeg",
 		Tags:          tags,
 	}
+	caption, reply, needsReply, err := RenderLegacyCaption(m, DefaultCaptionBudget, DefaultMargin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !needsReply {
+		t.Fatalf("expected manifest reply, caption units=%d", UTF16Units(caption))
+	}
+	if reply == "" {
+		t.Fatal("missing manifest reply")
+	}
+	if !FitsTelegramText(reply, DefaultTextBudget, DefaultMargin) {
+		t.Fatalf("reply exceeds text budget, units=%d", UTF16Units(reply))
+	}
+	if !strings.Contains(reply, tags[0]) {
+		t.Fatal("shallow tag missing from manifest reply")
+	}
+	if !strings.Contains(reply, "parent=") {
+		t.Fatal("manifest reply missing parent")
+	}
+}
+
+// ADR 0018: captions are human-only; machine text never rides on them.
+func TestRenderCaptionHumanOnly(t *testing.T) {
+	m := FileMeta{
+		DisplayName:   "clip.mp4",
+		ParentHuman:   "verify",
+		CanonicalPath: "/verify/clip.mp4",
+		Size:          10,
+		Hash:          "blake3:" + strings.Repeat("ab", 32),
+		MIME:          "video/mp4",
+		Tags:          []string{"#td_verify_abc"},
+	}
 	res, err := RenderCaption(m, DefaultCaptionBudget, DefaultMargin)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.NeedsManifestReply {
-		t.Fatalf("expected manifest reply, caption units=%d", UTF16Units(res.Caption))
+	if strings.Contains(res.Caption, "td:v1") || strings.Contains(res.Caption, "blake3") {
+		t.Fatalf("machine text leaked into caption: %q", res.Caption)
 	}
-	if res.ManifestReply == "" {
-		t.Fatal("missing manifest reply")
-	}
-	if !FitsTelegramText(res.ManifestReply, DefaultTextBudget, DefaultMargin) {
-		t.Fatalf("reply exceeds text budget, units=%d", UTF16Units(res.ManifestReply))
-	}
-	if !strings.Contains(res.ManifestReply, tags[0]) {
-		t.Fatal("shallow tag missing from manifest reply")
-	}
-	if !strings.Contains(res.ManifestReply, "parent=") {
-		t.Fatal("manifest reply missing parent")
+	want := "clip.mp4\nverify/\n\n#td_verify_abc"
+	if res.Caption != want {
+		t.Fatalf("caption = %q, want %q", res.Caption, want)
 	}
 }
 

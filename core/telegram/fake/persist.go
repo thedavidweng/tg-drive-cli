@@ -18,6 +18,9 @@ type persistedState struct {
 	NextID        int                          `json:"next_id"`
 	NextChID      int64                        `json:"next_ch_id"`
 	NextGroupedID int64                        `json:"next_grouped_id,omitempty"`
+	// ADR 0018 state: linked discussion groups and forwarded thread roots.
+	Discussion  map[int64]int64 `json:"discussion,omitempty"`
+	ThreadRoots map[int64]int64 `json:"thread_roots,omitempty"`
 }
 
 // NewPersistent creates a fake client whose state survives process restarts
@@ -76,6 +79,12 @@ func (c *Client) load() {
 	if st.NextGroupedID > 0 {
 		c.nextGroupedID = st.NextGroupedID
 	}
+	if st.Discussion != nil {
+		c.discussion = st.Discussion
+	}
+	if st.ThreadRoots != nil {
+		c.threadRoots = st.ThreadRoots
+	}
 }
 
 // save writes state best-effort. Callers must hold c.mu.
@@ -91,6 +100,8 @@ func (c *Client) save() {
 		NextID:        c.nextID,
 		NextChID:      c.nextChID,
 		NextGroupedID: c.nextGroupedID,
+		Discussion:    c.discussion,
+		ThreadRoots:   c.threadRoots,
 	}
 	data, err := json.Marshal(st)
 	if err != nil {

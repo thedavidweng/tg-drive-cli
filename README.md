@@ -100,22 +100,26 @@ You only log in once. Later commands reuse the saved session.
 
 ## How it works
 
-Each remote file is a Telegram media message plus reconstructable metadata:
+Each remote file is a Telegram media message with a human caption, plus its
+machine record in the message's comment thread:
 
 ```text
-display name
-parent path
-
-td:v1 p=<path> n=<name> s=<size> h=<hash> m=<mime>
-
-#td_Pictures_<hash> #td_Pictures_<hash>_2024_<hash>
+media message caption:          discussion thread comment:
+  display name                    td-manifest:v1
+  parent path/                    p=<path> n=<name> s=<size>
+                                  h=<hash> m=<mime> parent=<dir>
+  #td_Pictures_<hash>             tags=#td_Pictures_<hash> ...
+  #td_Pictures_<hash>_2024_<hash>
 ```
 
 - **Telegram messages are the source of truth.** SQLite is a cache.
-- Machine recovery uses `td:v1`, `td-manifest:v1`, or `td-album:v1` — never
-  hashtags alone.
-- Deep paths that exceed the media caption budget (1024 UTF-16 code units)
-  send a minimal caption and put the rest in a `td-manifest:v1` reply.
+- Machine records live as comments in a linked discussion group so the
+  channel timeline stays human-readable (ADR 0018). `td init` creates and
+  links one; `td channels link-discussion` adds one to an existing channel.
+- Machine recovery parses `td-manifest:v1` / `td-album:v1` comments first,
+  then legacy `td:v1` captions and in-channel replies — never hashtags alone.
+- Albums are one human post plus one `td-album:v1` inventory comment on the
+  first member's thread.
 - Directories are derived from file paths. They are not stored on Telegram.
 
 After database loss:

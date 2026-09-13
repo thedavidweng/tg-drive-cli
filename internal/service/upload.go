@@ -327,11 +327,12 @@ func (a *App) uploadFile(ctx context.Context, localPath, remotePath string, poli
 
 	var replaceFileID int64
 	var oldMsgID, oldManifestID sql.NullInt64
+	var oldManifestChat string
 	if policy == ConflictReplace {
 		switch err := a.DB.Raw().QueryRowContext(ctx, `
-			select id, message_id, manifest_message_id from files
+			select id, message_id, manifest_message_id, manifest_chat_tg_id from files
 			where channel_id=? and canonical_path=? and status='active'`,
-			channelID, dest).Scan(&replaceFileID, &oldMsgID, &oldManifestID); err {
+			channelID, dest).Scan(&replaceFileID, &oldMsgID, &oldManifestID, &oldManifestChat); err {
 		case sql.ErrNoRows:
 			replaceFileID = 0
 		case nil:
@@ -351,18 +352,19 @@ func (a *App) uploadFile(ctx context.Context, localPath, remotePath string, poli
 			hashEnabled = true
 		}
 		data, err = a.uploadLocked(ctx, uploadLockedArgs{
-			localPath:     localPath,
-			dest:          dest,
-			policy:        policy,
-			hashEnabled:   hashEnabled,
-			size:          info.Size,
-			channelID:     channelID,
-			tgChID:        tgChID,
-			tgIDStr:       tgIDStr,
-			replaceFileID: replaceFileID,
-			oldMsgID:      oldMsgID,
-			oldManifestID: oldManifestID,
-			pres:          pres,
+			localPath:       localPath,
+			dest:            dest,
+			policy:          policy,
+			hashEnabled:     hashEnabled,
+			size:            info.Size,
+			channelID:       channelID,
+			tgChID:          tgChID,
+			tgIDStr:         tgIDStr,
+			replaceFileID:   replaceFileID,
+			oldMsgID:        oldMsgID,
+			oldManifestID:   oldManifestID,
+			oldManifestChat: oldManifestChat,
+			pres:            pres,
 		})
 		return err
 	})
@@ -373,26 +375,33 @@ func (a *App) uploadFile(ctx context.Context, localPath, remotePath string, poli
 }
 
 type uploadLockedArgs struct {
-	localPath     string
-	dest          string
-	policy        ConflictPolicy
-	hashEnabled   bool
-	size          int64
-	channelID     int64
-	tgChID        int64
-	tgIDStr       string
-	replaceFileID int64
-	oldMsgID      sql.NullInt64
-	oldManifestID sql.NullInt64
-	pres          Presentation
+	localPath       string
+	dest            string
+	policy          ConflictPolicy
+	hashEnabled     bool
+	size            int64
+	channelID       int64
+	tgChID          int64
+	tgIDStr         string
+	replaceFileID   int64
+	oldMsgID        sql.NullInt64
+	oldManifestID   sql.NullInt64
+	oldManifestChat string
+	pres            Presentation
 }
 
 func (a *App) uploadLocked(ctx context.Context, args uploadLockedArgs) (map[string]any, error) {
 	dest, localPath, channelID, tgChID, tgIDStr := args.dest, args.localPath, args.channelID, args.tgChID, args.tgIDStr
 	now := time.Now().UTC().Format(time.RFC3339)
+	// Machine records live in the discussion group's comment threads
+	// (ADR 0018); fail before uploading any bytes when it is not linked.
+	manifestChat, err := a.discussionChatID(ctx, channelID)
+	if err != nil {
+		return nil, err
+	}
 	hashReader, err := a.files().Open(ctx, localPath)
 	if err != nil {
-		return nil, apperr.Wrap(apperr.ErrLocalNotFound, "hash file", err)
+		return nil, apperr.Wrap(apperr.ErrLocalNotFound, "open file", err)
 	}
 	contentHash, err := computeHash(hashReader, args.hashEnabled)
 	_ = hashReader.Close()
@@ -575,19 +584,19 @@ func (a *App) uploadLocked(ctx context.Context, args uploadLockedArgs) (map[stri
 		}
 		return nil, recErr
 	}
-
 	pubRes, pubErr := a.publisher().Publish(ctx, publisher.PublishRequest{
-		ChannelRowID:  channelID,
-		ChannelID:     tgChID,
-		FileID:        fileID,
-		MessageID:     up.MessageID,
-		Meta:          meta,
-		ExistingSlugs: existingSlugs,
-		SetUploadedAt: true,
-		ReplaceFileID: args.replaceFileID,
-		Rendered:      &capRes,
-		Tags:          tags,
-		SlugMaps:      slugMaps,
+		ChannelRowID:   channelID,
+		ChannelID:      tgChID,
+		FileID:         fileID,
+		MessageID:      up.MessageID,
+		Meta:           meta,
+		ExistingSlugs:  existingSlugs,
+		SetUploadedAt:  true,
+		ReplaceFileID:  args.replaceFileID,
+		ManifestChatID: manifestChat,
+		Rendered:       &capRes,
+		Tags:           tags,
+		SlugMaps:       slugMaps,
 	})
 	if pubErr != nil {
 		if a.abandonUploadedMedia(ctx, tgChID, fileID, up.MessageID, now) {
@@ -600,25 +609,28 @@ func (a *App) uploadLocked(ctx context.Context, args uploadLockedArgs) (map[stri
 	if pubRes.ManifestMsgID > 0 {
 		manifestMsgID = &pubRes.ManifestMsgID
 	}
-
-	// Clean up the replaced Telegram message only after the DB state
-	// committed; best effort — the old row is already superseded. In
-	// tombstone mode the old message must be redacted, never left claiming
-	// the path with its original content.
 	if args.replaceFileID > 0 {
 		if a.Cfg.Delete.Mode == "tombstone" {
 			if args.oldMsgID.Valid {
 				_ = a.TG.EditCaption(ctx, tgChID, int(args.oldMsgID.Int64), manifest.RenderTombstoneCaption(displayName, dest))
 			}
 			if args.oldManifestID.Valid {
-				_ = a.TG.EditText(ctx, tgChID, int(args.oldManifestID.Int64), manifest.RenderTombstoneManifest(dest))
+				if args.oldManifestChat != "" {
+					_ = a.TG.EditThreadMessage(ctx, tgChID, int(args.oldManifestID.Int64), manifest.RenderTombstoneManifest(dest))
+				} else {
+					_ = a.TG.EditText(ctx, tgChID, int(args.oldManifestID.Int64), manifest.RenderTombstoneManifest(dest))
+				}
 			}
 		} else {
 			if args.oldMsgID.Valid {
 				_ = a.TG.DeleteMessage(ctx, tgChID, int(args.oldMsgID.Int64))
 			}
 			if args.oldManifestID.Valid {
-				_ = a.TG.DeleteMessage(ctx, tgChID, int(args.oldManifestID.Int64))
+				if args.oldManifestChat != "" {
+					_ = a.TG.DeleteThreadMessage(ctx, tgChID, int(args.oldManifestID.Int64))
+				} else {
+					_ = a.TG.DeleteMessage(ctx, tgChID, int(args.oldManifestID.Int64))
+				}
 			}
 		}
 	}

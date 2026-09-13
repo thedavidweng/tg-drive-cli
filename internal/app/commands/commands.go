@@ -587,6 +587,28 @@ func NewChannelsCmd(rt Runtime) *cobra.Command {
 	}
 	list.Flags().BoolVar(&onlyDrive, "only-drive", false, "show only [TD] channels")
 	c.AddCommand(list)
+	link := &cobra.Command{
+		Use:   "link-discussion",
+		Short: "Create and link a discussion group for the bound channel (carries machine records, ADR 0018)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			r := rt.Renderer()
+			app, cleanup, err := rt.OpenApp(cmd)
+			if err != nil {
+				return r.Error(err)
+			}
+			defer cleanup()
+			res, err := app.LinkDiscussionGroup(context.Background())
+			if err != nil {
+				return r.Error(err)
+			}
+			if rt.JSON() {
+				return r.Success(res)
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "linked discussion group %q (id %d)\n", res["discussion_title"], res["discussion_channel_id"])
+			return nil
+		},
+	}
+	c.AddCommand(link)
 	return c
 }
 
@@ -857,9 +879,9 @@ func NewCpCmd(rt Runtime) *cobra.Command {
 	var width, height int
 	var streaming bool
 	c := &cobra.Command{
-		Use:   "cp <local> <remote-path>",
-		Short: "Upload local file or directory",
-		Args:  cobra.ExactArgs(2),
+		Use:   "cp <local> [local...] <remote-path>",
+		Short: "Upload local file, directory, or multi-file album",
+		Args:  cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r := rt.Renderer()
 			policy, err := conflictPolicy(replace, skip, autoRename)
@@ -871,9 +893,9 @@ func NewCpCmd(rt Runtime) *cobra.Command {
 				return r.Error(err)
 			}
 			if dryRun {
-				plan := map[string]any{"local": args[0], "remote": args[1], "policy": string(policy)}
+				plan := map[string]any{"local": args[:len(args)-1], "remote": args[len(args)-1], "policy": string(policy)}
 				if replace {
-					plan["would_replace"] = args[1]
+					plan["would_replace"] = args[len(args)-1]
 				}
 				if events {
 					return r.Event("cp.dry-run", plan)
@@ -898,6 +920,29 @@ func NewCpCmd(rt Runtime) *cobra.Command {
 				app.Progress = func(ctx context.Context, state telegram.UploadProgressState) error {
 					return r.Event("cp.progress", state)
 				}
+			}
+			if len(args) > 2 {
+				if recursive {
+					return r.Error(apperr.New(apperr.ErrUsage, "--recursive accepts exactly one source directory"))
+				}
+				if includeEmptyDirs {
+					return r.Error(apperr.New(apperr.ErrUsage, "--include-empty-dirs requires --recursive"))
+				}
+				data, err := app.UploadFilesAs(context.Background(), args[:len(args)-1], args[len(args)-1], policy, noHash, pres)
+				if err != nil {
+					return r.Error(err)
+				}
+				if events {
+					return r.Event("cp", data)
+				}
+				if !rt.JSON() {
+					_ = r.SuccessLine("uploaded %v files in %v album(s)", data["uploaded"], len(data["albums"].([]service.AlbumGroup)))
+					if link, ok := data["invite_link"].(string); ok && link != "" {
+						return r.SuccessLine("invite: %s", link)
+					}
+					return nil
+				}
+				return r.Success(data)
 			}
 			if recursive {
 				if presentationFlagsSet(cmd) {
@@ -1209,7 +1254,7 @@ func NewImportCmd(rt Runtime) *cobra.Command {
 }
 
 func NewRepairCmd(rt Runtime) *cobra.Command {
-	var pending, orphaned, scanErrors, deleteOrphans, confirm bool
+	var pending, orphaned, scanErrors, deleteOrphans, confirm, hash bool
 	c := &cobra.Command{
 		Use:   "repair [path]",
 		Short: "Repair index inconsistencies",
@@ -1222,6 +1267,9 @@ func NewRepairCmd(rt Runtime) *cobra.Command {
 			if deleteOrphans && !confirm {
 				return r.Error(apperr.New(apperr.ErrConfirmationRequired, "deleting orphaned Telegram messages requires --confirm"))
 			}
+			if hash && (pending || orphaned || scanErrors) {
+				return r.Error(apperr.New(apperr.ErrUsage, "--hash cannot be combined with --pending/--orphaned/--scan-errors"))
+			}
 			app, cleanup, err := rt.OpenApp(cmd)
 			if err != nil {
 				return r.Error(err)
@@ -1229,7 +1277,13 @@ func NewRepairCmd(rt Runtime) *cobra.Command {
 			defer cleanup()
 			ctx := context.Background()
 			var data map[string]any
+			pathArg := ""
+			if len(args) == 1 {
+				pathArg = args[0]
+			}
 			switch {
+			case hash:
+				data, err = app.RepairHash(ctx, pathArg)
 			case len(args) == 1:
 				data, err = app.RepairPath(ctx, args[0])
 			case pending:
@@ -1255,6 +1309,6 @@ func NewRepairCmd(rt Runtime) *cobra.Command {
 	c.Flags().BoolVar(&orphaned, "orphaned", false, "repair orphaned messages")
 	c.Flags().BoolVar(&scanErrors, "scan-errors", false, "repair scan errors")
 	c.Flags().BoolVar(&deleteOrphans, "delete-orphaned", false, "delete orphaned Telegram messages instead of completing them")
-	c.Flags().BoolVar(&confirm, "confirm", false, "confirm deleting orphaned Telegram messages")
+	c.Flags().BoolVar(&hash, "hash", false, "download files missing a content hash and backfill it into the index and machine records")
 	return c
 }

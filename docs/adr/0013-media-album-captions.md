@@ -3,6 +3,8 @@
 ## Status
 
 Accepted. Supersedes the local-index-only adopt policy in the first revision.
+The in-channel reply carrier is superseded by ADR 0018 (comment threads);
+the caption and inventory conventions carry over.
 
 ## Context
 
@@ -36,6 +38,6 @@ truth.
 - Wiping SQLite and running `td scan --full` restores adopted albums.
 - A group of N media adds at most one extra timeline message.
 - Native Telegram users still see a grouped post with a readable caption.
-- `td cp` uploads one message per file. Folder upload as `sendMultiMedia`
-  albums is tracked in issue #26 and would reuse this `td-album:v1`
-  inventory.
+- `td cp` reuses this inventory for its own album publishing
+  (ADR 0017): multi-file sets and folder uploads become `sendMultiMedia`
+  media groups with one caption and one `td-album:v1` reply per group.

@@ -46,6 +46,9 @@ create table if not exists channels (
   root_local_path text not null,
   root_remote_path text not null default '/',
   strategy text not null default 'single',
+  discussion_tg_channel_id text not null default '',
+  discussion_access_hash text not null default '',
+  discussion_title text not null default '',
   created_at text not null,
   updated_at text not null,
   unique(account_id, tg_channel_id)
@@ -71,6 +74,7 @@ create table if not exists files (
   node_id integer references nodes(id) on delete set null,
   message_id integer,
   manifest_message_id integer,
+  manifest_chat_tg_id text not null default '',
   canonical_path text not null,
   display_name text not null,
   original_local_path text,
@@ -115,6 +119,9 @@ create table if not exists scan_state (
   channel_id integer not null references channels(id),
   last_scanned_message_id integer,
   last_full_scan_at text,
+  checkpoint_message_id integer,
+  full_scan_started_at text,
+  discussion_last_scanned_message_id integer,
   updated_at text not null,
   unique(channel_id)
 );
@@ -135,7 +142,8 @@ create table if not exists scan_errors (
 
 create table if not exists upload_progress (
   key text primary key,
-  file_id integer not null,
+  file_id integer not null references files(id) on delete cascade,
+  telegram_file_id integer not null default 0,
   content_hash text,
   part_size integer not null,
   total_parts integer not null,
@@ -220,43 +228,19 @@ func (d *DB) init() error {
 // be left half-migrated.
 type migration struct {
 	version int
-	// stmts are executed in order. v1 is idempotent (create if not exists) so
-	// fresh and existing databases converge through the same steps.
+	// stmts are executed in order. The baseline is idempotent (create if not
+	// exists) so fresh databases converge through the same steps.
 	stmts []string
 }
 
+// Pre-release the schema is squashed instead of accumulated: schema changes
+// rewrite the baseline in place, and local databases that predate the squash
+// are discarded (delete the file; `td scan --full` rebuilds it from
+// Telegram, which is the recoverable source). Version numbering restarts at
+// each squash. Versioned migrations resume when the schema freezes for
+// release.
 var migrations = []migration{
 	{version: 1, stmts: []string{schemaSQL}},
-	{
-		// v1 stored Telegram's big-file id in upload_progress.file_id (the
-		// file row id only ever lived in the key), so the rebuild maps file_id
-		// from the key and moves the old value into telegram_file_id. States
-		// whose key names no file row are dropped.
-		version: 2,
-		stmts: []string{`
-			create table upload_progress_v2 (
-			  key text primary key,
-			  file_id integer not null references files(id) on delete cascade,
-			  telegram_file_id integer not null default 0,
-			  content_hash text,
-			  part_size integer not null,
-			  total_parts integer not null,
-			  total_bytes integer not null,
-			  confirmed_parts text not null,
-			  confirmed_bytes integer not null default 0,
-			  updated_at text not null
-			);
-			insert into upload_progress_v2(key,file_id,telegram_file_id,content_hash,part_size,total_parts,total_bytes,confirmed_parts,confirmed_bytes,updated_at)
-			select p.key, cast(substr(p.key, 6) as integer), p.file_id, p.content_hash, p.part_size, p.total_parts, p.total_bytes, p.confirmed_parts, p.confirmed_bytes, p.updated_at
-			from upload_progress p
-			where p.key like 'file:%'
-			  and exists(select 1 from files f where f.id = cast(substr(p.key, 6) as integer));
-			drop table upload_progress;
-			alter table upload_progress_v2 rename to upload_progress;
-			alter table scan_state add column checkpoint_message_id integer;
-			alter table scan_state add column full_scan_started_at text;
-		`},
-	},
 }
 
 // currentVersion reports the highest applied schema version, 0 for a fresh

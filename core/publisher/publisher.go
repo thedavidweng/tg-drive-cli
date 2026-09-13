@@ -52,10 +52,20 @@ type PublishRequest struct {
 	// IgnoreNotEditable tells the publisher to ignore MessageNotEditableError
 	// when editing the caption. Useful for repair operations.
 	IgnoreNotEditable bool
-	// ManifestMsgID is the existing manifest reply message id, or 0 if none.
+	// SkipManifestReply suppresses sending or editing a per-file manifest.
+	// Album members use it: their reconstructable record is the one
+	// td-album:v1 inventory of the group (ADR 0013), posted by the caller,
+	// whose message id arrives as ManifestMsgID.
+	SkipManifestReply bool
+	// ManifestChatID selects the manifest carrier: empty for the legacy
+	// in-channel reply, the linked discussion group's Telegram channel id
+	// for the comment carrier (ADR 0018).
+	ManifestChatID string
+	// ManifestMsgID is the existing manifest message id — a reply or a
+	// comment, per ManifestChatID — or 0 if none.
 	ManifestMsgID int
-	// OldMeta is the previous metadata, used to restore the manifest reply if
-	// a caption edit fails. Leave nil if no rollback is needed.
+	// OldMeta is the previous metadata, used to restore the manifest record
+	// if a caption edit fails. Leave nil if no rollback is needed.
 	OldMeta *manifest.FileMeta
 
 	// ReplaceFileID is an active file to mark as superseded.
@@ -92,6 +102,10 @@ type ReindexRequest struct {
 	ManifestMsgID *int
 	// Meta is the parsed metadata from a caption or manifest.
 	Meta manifest.ParsedMeta
+	// ManifestChatID is the carrier peer of ManifestMsgID: empty for the
+	// legacy in-channel reply, the discussion group id for comments
+	// (ADR 0018).
+	ManifestChatID string
 	// ExistingSlugs is the current parent|segment -> slug map.
 	ExistingSlugs map[string]string
 	// Now is the RFC3339 timestamp to use; empty uses time.Now().
@@ -111,8 +125,10 @@ func (p *Publisher) now(now string) string {
 	return time.Now().UTC().Format(time.RFC3339)
 }
 
-// Publish renders the caption and manifest, sends or edits the manifest reply,
-// optionally edits the media caption, and commits the file record.
+// Publish renders the caption and manifest, sends or edits the manifest
+// record (a comment thread reply for the ADR 0018 carrier, an in-channel
+// reply for legacy rows), optionally edits the media caption, and commits
+// the file record.
 func (p *Publisher) Publish(ctx context.Context, req PublishRequest) (*PublishResult, error) {
 	if req.ExistingSlugs == nil {
 		req.ExistingSlugs = map[string]string{}
@@ -123,6 +139,8 @@ func (p *Publisher) Publish(ctx context.Context, req PublishRequest) (*PublishRe
 	var tags []string
 	var slugMaps []pathcodec.SlugMapping
 	var capRes manifest.CaptionResult
+	var legacyReply string
+	var legacyNeedsReply bool
 	if req.Rendered != nil {
 		// The caller already rendered this caption once; reuse its outputs
 		// verbatim instead of re-rendering.
@@ -136,7 +154,16 @@ func (p *Publisher) Publish(ctx context.Context, req PublishRequest) (*PublishRe
 			return nil, err
 		}
 		req.Meta.Tags = tags
-		capRes, err = manifest.RenderCaption(req.Meta, p.cfg.SafeMediaCaptionUTF16Units, p.cfg.MarginUTF16Units)
+		if req.ManifestChatID == "" {
+			// Legacy rows keep their td:v1 caption line so the in-channel
+			// record stays parseable; the comment carrier never puts
+			// machine text on captions (ADR 0018).
+			capRes.Caption, legacyReply, legacyNeedsReply, err = manifest.RenderLegacyCaption(req.Meta, p.cfg.SafeMediaCaptionUTF16Units, p.cfg.MarginUTF16Units)
+		} else {
+			var cerr error
+			capRes, cerr = manifest.RenderCaption(req.Meta, p.cfg.SafeMediaCaptionUTF16Units, p.cfg.MarginUTF16Units)
+			err = cerr
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -146,18 +173,27 @@ func (p *Publisher) Publish(ctx context.Context, req PublishRequest) (*PublishRe
 	manifestChanged := false
 	newManifest := false
 
-	if capRes.NeedsManifestReply {
+	fullMeta := req.Meta
+	fullMeta.Tags = tags
+
+	switch {
+	case req.SkipManifestReply:
+		// The caller owns the group inventory; keep only the provided id.
+	case req.ManifestChatID != "":
+		// Comment carrier (ADR 0018): the full manifest record always goes
+		// to the post's comment thread.
+		text := manifest.RenderManifestReplyFitting(fullMeta, manifest.DefaultTextBudget, p.cfg.MarginUTF16Units)
 		if req.ManifestMsgID > 0 {
 			manifestMsgID = req.ManifestMsgID
 			manifestChanged = true
-			if err := p.tg.EditText(ctx, req.ChannelID, manifestMsgID, capRes.ManifestReply); err != nil {
+			if err := p.tg.EditThreadMessage(ctx, req.ChannelID, manifestMsgID, text); err != nil {
 				if err := p.rollbackManifest(ctx, req, manifestMsgID, manifestChanged, newManifest); err != nil {
 					return nil, err
 				}
 				return nil, telegram.MapError(err)
 			}
 		} else {
-			id, err := p.tg.SendTextReply(ctx, req.ChannelID, req.MessageID, capRes.ManifestReply)
+			id, err := p.tg.SendThreadReply(ctx, req.ChannelID, req.MessageID, text)
 			if err != nil {
 				return nil, telegram.MapError(err)
 			}
@@ -165,12 +201,29 @@ func (p *Publisher) Publish(ctx context.Context, req PublishRequest) (*PublishRe
 			manifestChanged = true
 			newManifest = true
 		}
-	} else if req.ManifestMsgID > 0 {
+	case legacyNeedsReply:
+		if req.ManifestMsgID > 0 {
+			manifestMsgID = req.ManifestMsgID
+			manifestChanged = true
+			if err := p.tg.EditText(ctx, req.ChannelID, manifestMsgID, legacyReply); err != nil {
+				if err := p.rollbackManifest(ctx, req, manifestMsgID, manifestChanged, newManifest); err != nil {
+					return nil, err
+				}
+				return nil, telegram.MapError(err)
+			}
+		} else {
+			id, err := p.tg.SendTextReply(ctx, req.ChannelID, req.MessageID, legacyReply)
+			if err != nil {
+				return nil, telegram.MapError(err)
+			}
+			manifestMsgID = id
+			manifestChanged = true
+			newManifest = true
+		}
+	case req.ManifestMsgID > 0:
 		// Caption is self-contained; keep the manifest consistent with the full tag set.
 		manifestMsgID = req.ManifestMsgID
 		manifestChanged = true
-		fullMeta := req.Meta
-		fullMeta.Tags = tags
 		if err := p.tg.EditText(ctx, req.ChannelID, manifestMsgID, manifest.RenderManifestReplyFitting(fullMeta, manifest.DefaultTextBudget, p.cfg.MarginUTF16Units)); err != nil {
 			if err := p.rollbackManifest(ctx, req, manifestMsgID, manifestChanged, newManifest); err != nil {
 				return nil, err
@@ -193,16 +246,17 @@ func (p *Publisher) Publish(ctx context.Context, req PublishRequest) (*PublishRe
 	}
 
 	fileID, err := p.fileIndex.Index(ctx, ports.FileIndexRequest{
-		ChannelRowID:  req.ChannelRowID,
-		FileID:        req.FileID,
-		MessageID:     req.MessageID,
-		ManifestMsgID: manifestMsgID,
-		Meta:          req.Meta,
-		SlugMaps:      slugMaps,
-		Tags:          tags,
-		ReplaceFileID: req.ReplaceFileID,
-		SetUploadedAt: req.SetUploadedAt,
-		Now:           now,
+		ChannelRowID:   req.ChannelRowID,
+		FileID:         req.FileID,
+		MessageID:      req.MessageID,
+		ManifestMsgID:  manifestMsgID,
+		ManifestChatID: req.ManifestChatID,
+		Meta:           req.Meta,
+		SlugMaps:       slugMaps,
+		Tags:           tags,
+		ReplaceFileID:  req.ReplaceFileID,
+		SetUploadedAt:  req.SetUploadedAt,
+		Now:            now,
 	})
 	if err != nil {
 		return nil, apperr.Wrap(apperr.ErrDB, "publish file record", err)
@@ -243,22 +297,22 @@ func (p *Publisher) Reindex(ctx context.Context, req ReindexRequest) (*ReindexRe
 	}
 
 	fileID, err := p.fileIndex.Index(ctx, ports.FileIndexRequest{
-		ChannelRowID:  req.ChannelRowID,
-		FileID:        req.FileID,
-		MessageID:     req.MessageID,
-		ManifestMsgID: manifestMsgID,
-		Meta:          meta,
-		SlugMaps:      slugMaps,
-		Tags:          tags,
-		SetUploadedAt: req.FileID == 0,
-		Now:           now,
+		ChannelRowID:   req.ChannelRowID,
+		FileID:         req.FileID,
+		MessageID:      req.MessageID,
+		ManifestMsgID:  manifestMsgID,
+		ManifestChatID: req.ManifestChatID,
+		Meta:           meta,
+		SlugMaps:       slugMaps,
+		Tags:           tags,
+		SetUploadedAt:  req.FileID == 0,
+		Now:            now,
 	})
 	if err != nil {
 		return nil, apperr.Wrap(apperr.ErrDB, "reindex file record", err)
 	}
 	return &ReindexResult{FileID: fileID, ManifestMsgID: manifestMsgID}, nil
 }
-
 func (p *Publisher) fillMeta(m *manifest.FileMeta) {
 	if m.DisplayName == "" {
 		m.DisplayName = fsmodel.BaseName(m.CanonicalPath)
@@ -283,6 +337,14 @@ func (p *Publisher) rollbackManifest(ctx context.Context, req PublishRequest, ma
 
 	if newManifest {
 		// We sent a new manifest; delete it so it does not dangle.
+		if req.ManifestChatID != "" {
+			if err := p.tg.DeleteThreadMessage(ctx, req.ChannelID, manifestMsgID); err != nil {
+				if !isNotFound(err) {
+					return telegram.MapError(err)
+				}
+			}
+			return nil
+		}
 		if err := p.tg.DeleteMessage(ctx, req.ChannelID, manifestMsgID); err != nil {
 			if !isNotFound(err) {
 				return telegram.MapError(err)
@@ -297,7 +359,16 @@ func (p *Publisher) rollbackManifest(ctx context.Context, req PublishRequest, ma
 	}
 	fullMeta := oldMeta
 	fullMeta.Tags = oldTags
-	if err := p.tg.EditText(ctx, req.ChannelID, req.ManifestMsgID, manifest.RenderManifestReplyFitting(fullMeta, manifest.DefaultTextBudget, p.cfg.MarginUTF16Units)); err != nil {
+	text := manifest.RenderManifestReplyFitting(fullMeta, manifest.DefaultTextBudget, p.cfg.MarginUTF16Units)
+	if req.ManifestChatID != "" {
+		if err := p.tg.EditThreadMessage(ctx, req.ChannelID, req.ManifestMsgID, text); err != nil {
+			if !isNotEditable(err) && !isNotFound(err) {
+				return telegram.MapError(err)
+			}
+		}
+		return nil
+	}
+	if err := p.tg.EditText(ctx, req.ChannelID, req.ManifestMsgID, text); err != nil {
 		if !isNotEditable(err) && !isNotFound(err) {
 			return telegram.MapError(err)
 		}

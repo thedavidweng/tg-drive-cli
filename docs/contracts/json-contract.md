@@ -89,10 +89,51 @@ All JSON command output uses an envelope.
 ```
 
 The `invite_link` field is omitted when the channel has no public/join link.
+`manifest_message_id` is the machine record's message id; since ADR 0018 it
+lives in the linked discussion group's comment thread (the row's
+`manifest_chat_tg_id` records the peer), so the id is not addressable in the
+drive channel itself.
 
 A retry that adopted a pending upload and sent only its unconfirmed parts adds
 `"resumed": true` (files above 10 MB; the identity — size and content hash —
 must match the interrupted attempt).
+
+## Upload result (multi-file album)
+
+`td cp <local...> <remote-dir>` and `td cp --recursive` report aggregate
+counters plus one entry per sent media group. A lone survivor after skips is
+an ordinary single upload: it counts toward `uploaded` but appears in no
+group.
+
+```json
+{
+  "ok": true,
+  "data": {
+    "uploaded": 12,
+    "skipped": 0,
+    "errors": [],
+    "albums": [
+      {
+        "grouped_id": 730001,
+        "reply_message_id": 8835,
+        "message_ids": [8821, 8822, 8823],
+        "paths": ["/albums/one.bin", "/albums/two.bin", "/albums/three.bin"]
+      }
+    ],
+    "channel_id": "-100123456789",
+    "invite_link": "https://t.me/+Abc123"
+  }
+}
+```
+
+- `uploaded` / `skipped` / `errors` mirror the recursive counters; with the
+  default fail policy a planning conflict aborts the whole command before any
+  Telegram write, so `errors` stays empty on success.
+- `albums` lists every media group in send order; each carries Telegram's
+  `grouped_id`, the `td-album:v1` inventory message's id (a comment in the
+  linked discussion group per ADR 0018), member message ids, and member
+  paths. Empty (`[]`) when nothing grouped.
+- `--recursive` emits the same shape plus its historical keys.
 
 ## NDJSON event stream
 

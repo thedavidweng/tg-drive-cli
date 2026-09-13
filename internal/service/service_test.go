@@ -54,6 +54,29 @@ func loginAndInit(t *testing.T, app *App, tg *fake.Client) {
 	}
 }
 
+// machineRecords returns every message that may carry a machine manifest
+// record: the drive channel's messages plus the linked discussion group's
+// (ADR 0018 comment carrier).
+func machineRecords(t *testing.T, app *App, ctx context.Context) []telegram.Message {
+	t.Helper()
+	rowID, _, err := app.channelID(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	discID, _, _, err := app.DB.DiscussionGroup(ctx, rowID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tgChID, _ := app.tgChannelID(ctx)
+	out := append([]telegram.Message(nil), app.TG.(*fake.Client).Messages(tgChID)...)
+	if discID != "" {
+		var gid int64
+		_, _ = fmt.Sscanf(discID, "%d", &gid)
+		out = append(out, app.TG.(*fake.Client).Messages(gid)...)
+	}
+	return out
+}
+
 func TestUploadAndList(t *testing.T) {
 	app, tg := testApp(t)
 	loginAndInit(t, app, tg)
@@ -339,12 +362,23 @@ func TestManifestReplyScanRebuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	tgChID, _ := app.tgChannelID(ctx)
+	// ADR 0018: the indexed media message carries a human-only caption and
+	// its machine record is a comment on the discussion thread.
+	var chat string
+	if err := app.DB.Raw().QueryRowContext(ctx,
+		`select manifest_chat_tg_id from files where channel_id=? and canonical_path=? and status='active'`,
+		channelID, remote).Scan(&chat); err != nil || chat == "" {
+		t.Fatalf("rebuilt row missing comment carrier: chat=%q err=%v", chat, err)
+	}
 	for _, m := range tg.Messages(tgChID) {
-		if m.Caption != "" && strings.Contains(m.Caption, "manifest=reply") && m.ID == messageID {
+		if m.ID == messageID {
+			if strings.Contains(m.Caption, "td:v1") {
+				t.Fatalf("caption carries machine text: %q", m.Caption)
+			}
 			return
 		}
 	}
-	t.Fatalf("indexed message_id %d is not manifest-reply media (msgs=%d)", messageID, len(tg.Messages(tgChID)))
+	t.Fatalf("indexed message_id %d not found on channel (msgs=%d)", messageID, len(tg.Messages(tgChID)))
 }
 
 func TestReplaceCreatesSupersededRow(t *testing.T) {

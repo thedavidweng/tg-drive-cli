@@ -21,12 +21,18 @@ type Client struct {
 	loggedIn  bool
 	channels  map[int64]*telegram.Channel
 	messages  map[int64][]telegram.Message
-	nextID    int
-	nextChID  int64
-	code      string
-	password  string
-	failCode  bool
+	// discussion maps a drive channel id to its linked discussion group
+	// channel id (ADR 0018). threadRoots maps a forwarded header message id
+	// inside a discussion group to the original channel post id.
+	discussion  map[int64]int64
+	threadRoots map[int64]int64
+	nextID      int
+	nextChID    int64
+	code        string
+	password    string
+	failCode    bool
 
+	nextGroupedID      int64
 	failUpload         bool
 	failReply          bool
 	failDelete         bool
@@ -55,11 +61,14 @@ type Client struct {
 // New creates a fake client.
 func New() *Client {
 	return &Client{
-		channels: make(map[int64]*telegram.Channel),
-		messages: make(map[int64][]telegram.Message),
-		nextID:   1,
-		nextChID: 1000,
-		code:     "12345",
+		channels:      make(map[int64]*telegram.Channel),
+		messages:      make(map[int64][]telegram.Message),
+		discussion:    make(map[int64]int64),
+		threadRoots:   make(map[int64]int64),
+		nextID:        1,
+		nextChID:      1000,
+		nextGroupedID: 5000,
+		code:          "12345",
 	}
 }
 
@@ -246,22 +255,9 @@ func (c *Client) UploadMedia(ctx context.Context, req telegram.UploadRequest) (*
 	if threshold <= 0 {
 		threshold = telegram.ResumableBigFileBytes
 	}
-	var data []byte
-	if req.ResumableKey != "" && req.ResumableStore != nil && req.Size > int64(threshold) {
-		var err error
-		data, err = c.uploadResumable(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		if req.Reader == nil {
-			return nil, fmt.Errorf("upload requires a reader or a resumable path")
-		}
-		var err error
-		data, err = io.ReadAll(req.Reader)
-		if err != nil {
-			return nil, err
-		}
+	data, err := c.uploadData(ctx, req, threshold)
+	if err != nil {
+		return nil, err
 	}
 	id := c.nextID
 	c.nextID++
@@ -280,6 +276,99 @@ func (c *Client) UploadMedia(ctx context.Context, req telegram.UploadRequest) (*
 	c.messages[req.ChannelID] = append(c.messages[req.ChannelID], msg)
 	c.save()
 	return &telegram.UploadResult{MessageID: id}, nil
+}
+
+// uploadData transfers one request's bytes through the resumable or plain
+// path. Callers hold c.mu.
+func (c *Client) uploadData(ctx context.Context, req telegram.UploadRequest, threshold int) ([]byte, error) {
+	if req.ResumableKey != "" && req.ResumableStore != nil && req.Size > int64(threshold) {
+		return c.uploadResumable(ctx, req)
+	}
+	if req.Reader == nil {
+		return nil, fmt.Errorf("upload requires a reader or a resumable path")
+	}
+	return io.ReadAll(req.Reader)
+}
+
+// UploadMediaGroup sends the requests as one native media group. The fake
+// models Telegram's observable behavior: one shared GroupedID, the caption
+// honored only on the first member, one result per request in order.
+func (c *Client) UploadMediaGroup(ctx context.Context, reqs []telegram.UploadRequest) ([]telegram.UploadResult, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.loggedIn {
+		return nil, &telegram.AuthRequiredError{}
+	}
+	if c.denyPerms {
+		return nil, &telegram.PermissionDeniedError{}
+	}
+	if c.failUpload {
+		return nil, fmt.Errorf("upload failed")
+	}
+	if len(reqs) == 0 || len(reqs) > telegram.MaxMediaGroupMembers {
+		return nil, fmt.Errorf("media group holds 1..%d members, got %d", telegram.MaxMediaGroupMembers, len(reqs))
+	}
+	kind := reqs[0].Kind
+	if kind == telegram.KindNone {
+		kind = telegram.KindDocument
+	}
+	channelID := reqs[0].ChannelID
+	for i, req := range reqs {
+		memberKind := req.Kind
+		if memberKind == telegram.KindNone {
+			memberKind = telegram.KindDocument
+		}
+		switch memberKind {
+		case telegram.KindDocument, telegram.KindPhoto, telegram.KindVideo:
+		default:
+			return nil, fmt.Errorf("unsupported media kind %q", req.Kind)
+		}
+		if req.ChannelID != channelID || memberKind != kind {
+			return nil, fmt.Errorf("member %d breaks group uniformity (channel %d vs %d, kind %q vs %q)", i, req.ChannelID, channelID, memberKind, kind)
+		}
+		if req.Size > 4*1024*1024*1024 {
+			return nil, &telegram.FileTooLargeError{}
+		}
+	}
+	threshold := c.resumableThreshold
+	if threshold <= 0 {
+		threshold = telegram.ResumableBigFileBytes
+	}
+	// Transfer every member's bytes before recording anything: sendMultiMedia
+	// is one RPC, so a member failure leaves no partial group behind.
+	datas := make([][]byte, len(reqs))
+	for i, req := range reqs {
+		data, err := c.uploadData(ctx, req, threshold)
+		if err != nil {
+			return nil, err
+		}
+		datas[i] = data
+	}
+	c.nextGroupedID++
+	gid := c.nextGroupedID
+	out := make([]telegram.UploadResult, 0, len(reqs))
+	for i, req := range reqs {
+		id := c.nextID
+		c.nextID++
+		msg := telegram.Message{
+			ID: id, GroupedID: gid, FileSize: req.Size, Kind: kind,
+			Data: datas[i], Video: req.Video, Thumb: req.Thumb,
+		}
+		if i == 0 {
+			msg.Caption = req.Caption
+		}
+		if kind == telegram.KindPhoto {
+			// Native photos carry no filename; Telegram reports them as JPEG.
+			msg.MIME = "image/jpeg"
+		} else {
+			msg.FileName = req.FileName
+			msg.MIME = req.MIME
+		}
+		c.messages[channelID] = append(c.messages[channelID], msg)
+		out = append(out, telegram.UploadResult{MessageID: id, GroupedID: gid})
+	}
+	c.save()
+	return out, nil
 }
 
 // uploadResumable simulates Telegram's saveBigFilePart protocol: parts are
@@ -510,6 +599,7 @@ func (c *Client) Doctor(ctx context.Context, channelID int64) (*telegram.Capabil
 		DeleteOK:         true,
 		InviteLinkOK:     true,
 		EditOldCaptionOK: true,
+		DiscussionOK:     c.discussion[channelID] != 0,
 		MaxUploadBytes:   2147483648,
 		CheckedAt:        time.Now().UTC(),
 	}, nil

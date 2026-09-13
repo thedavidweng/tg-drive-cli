@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -69,6 +70,7 @@ func (a *App) Scan(ctx context.Context, opts ScanOptions) (map[string]any, error
 		seenMedia:       map[int]bool{},
 		seen:            map[string]bool{},
 		manifestByMedia: map[int]manifestReply{},
+		commentByMedia:  map[int]manifestReply{},
 		albumGroups:     map[int64][]int{},
 		coveredGroups:   map[int64]bool{},
 		albumCorrupt:    map[int64]bool{},
@@ -169,6 +171,97 @@ func (a *App) Scan(ctx context.Context, opts ScanOptions) (map[string]any, error
 			fmt.Sprintf("history read stopped early (oldest message seen: %d, channel reports %d messages); "+
 				"the index was not modified — rerun the scan", streamMeta.OldestID, streamMeta.TotalMessages))
 	}
+	// Resolve corrupt inventories' groups from the media they replied to, so
+	// those groups do not also report a missing inventory.
+	for _, mediaID := range r.corruptReplies {
+		if media, ok := r.byID[mediaID]; ok && media.GroupedID != 0 {
+			r.albumCorrupt[media.GroupedID] = true
+		}
+	}
+	// Walk the linked discussion group (ADR 0018): forwarded headers map
+	// thread roots back to channel posts; comments carry the machine
+	// records. The walk has its own completeness proof — a truncated thread
+	// read aborts the scan exactly like a truncated channel read.
+	discTGID, _, _, err := a.DB.DiscussionGroup(ctx, channelID)
+	if err != nil {
+		return nil, err
+	}
+	discMaxID := 0
+	if discTGID != "" {
+		r.manifestChat = discTGID
+		var discAfter int
+		if !opts.Full {
+			_ = a.DB.Raw().QueryRowContext(ctx, `select coalesce(discussion_last_scanned_message_id,0) from scan_state where channel_id=?`, channelID).Scan(&discAfter)
+		}
+		rootPost := map[int]int{}
+		type pendingComment struct {
+			rootID, msgID int
+			text          string
+		}
+		var comments []pendingComment
+		threadMeta, threadErr := a.TG.StreamThreadHistory(ctx, tgChID, discAfter, func(tm telegram.ThreadMessage) error {
+			tm.Data = nil
+			if tm.ID > discMaxID {
+				discMaxID = tm.ID
+			}
+			if tm.RootMsgID != 0 {
+				rootPost[tm.RootMsgID] = tm.PostID
+				return nil
+			}
+			if tm.Text == "" {
+				return nil
+			}
+			root := 0
+			if tm.ReplyTo != nil {
+				root = *tm.ReplyTo
+			}
+			comments = append(comments, pendingComment{rootID: root, msgID: tm.ID, text: tm.Text})
+			return nil
+		})
+		if threadErr != nil {
+			var missing *telegram.DiscussionMissingError
+			if !errors.As(threadErr, &missing) {
+				return nil, telegram.MapError(threadErr)
+			}
+			// The group vanished between the DB read and the walk; treat the
+			// channel as legacy and continue without comment records.
+			r.manifestChat = ""
+		} else {
+			if !threadMeta.Complete {
+				return nil, apperr.New(apperr.ErrScanIncomplete,
+					fmt.Sprintf("discussion thread read stopped early (oldest message seen: %d, group reports %d messages); "+
+						"the index was not modified — rerun the scan", threadMeta.OldestID, threadMeta.TotalMessages))
+			}
+			// Oldest first, so the newest comment per post overwrites into
+			// commentByMedia (newest-comment-wins).
+			sort.Slice(comments, func(i, j int) bool { return comments[i].msgID < comments[j].msgID })
+			for _, c := range comments {
+				postID, ok := rootPost[c.rootID]
+				if !ok || postID == 0 {
+					// Human chatter or a root outside this pass's window.
+					continue
+				}
+				if manifest.IsAlbumReply(c.text) {
+					album, err := manifest.ParseAlbumReply(c.text)
+					if err != nil {
+						r.deferredErrors = append(r.deferredErrors, deferredScanError{
+							messageID: c.msgID,
+							code:      apperr.ErrAlbumInventoryInvalid,
+							message:   "album inventory comment unparseable: " + err.Error(),
+							excerpt:   truncate(c.text, 200),
+						})
+						continue
+					}
+					r.albumInventories = append(r.albumInventories, albumInventory{replyID: c.msgID, chat: discTGID, meta: album})
+					r.coveredGroups[album.GroupedID] = true
+					continue
+				}
+				if meta, err := manifest.ParseManifestReply(c.text); err == nil {
+					r.commentByMedia[postID] = manifestReply{meta: meta, msgID: c.msgID}
+				}
+			}
+		}
+	}
 	for _, de := range r.deferredErrors {
 		r.recordScanError(ctx, de.messageID, de.code, de.message, de.excerpt)
 	}
@@ -179,7 +272,6 @@ func (a *App) Scan(ctx context.Context, opts ScanOptions) (map[string]any, error
 			r.albumCorrupt[media.GroupedID] = true
 		}
 	}
-
 	// Collect index operations from the three metadata sources.
 	var ops []scanIndexOp
 	r.collectAlbumOps(ctx, inRoot, &ops)
@@ -334,17 +426,19 @@ func (a *App) Scan(ctx context.Context, opts ScanOptions) (map[string]any, error
 		// The scan finished (finalizer committed): clear the checkpoint so the
 		// next full scan starts fresh.
 		_, _ = a.DB.Raw().ExecContext(ctx, `
-			insert into scan_state(channel_id,last_scanned_message_id,last_full_scan_at,checkpoint_message_id,updated_at) values(?,?,?,?,?)
+			insert into scan_state(channel_id,last_scanned_message_id,last_full_scan_at,checkpoint_message_id,discussion_last_scanned_message_id,updated_at) values(?,?,?,?,?,?)
 			on conflict(channel_id) do update set last_scanned_message_id=excluded.last_scanned_message_id,
-				last_full_scan_at=excluded.last_full_scan_at, checkpoint_message_id=NULL, updated_at=excluded.updated_at`,
-			channelID, r.maxID, fullAt, nil, r.now)
+				last_full_scan_at=excluded.last_full_scan_at, checkpoint_message_id=NULL,
+				discussion_last_scanned_message_id=excluded.discussion_last_scanned_message_id, updated_at=excluded.updated_at`,
+			channelID, r.maxID, fullAt, nil, discMaxID, r.now)
 	} else {
 		// Incremental passes never touch the checkpoint of an interrupted
 		// full scan.
 		_, _ = a.DB.Raw().ExecContext(ctx, `
-			insert into scan_state(channel_id,last_scanned_message_id,updated_at) values(?,?,?)
-			on conflict(channel_id) do update set last_scanned_message_id=excluded.last_scanned_message_id, updated_at=excluded.updated_at`,
-			channelID, r.maxID, r.now)
+			insert into scan_state(channel_id,last_scanned_message_id,discussion_last_scanned_message_id,updated_at) values(?,?,?,?)
+			on conflict(channel_id) do update set last_scanned_message_id=excluded.last_scanned_message_id,
+				discussion_last_scanned_message_id=excluded.discussion_last_scanned_message_id, updated_at=excluded.updated_at`,
+			channelID, r.maxID, discMaxID, r.now)
 	}
 
 	if r.strictFailure != "" {
@@ -402,11 +496,18 @@ type scanRun struct {
 	opts      ScanOptions
 	now       string
 
-	byID             map[int]telegram.Message
-	seenMsgIDs       map[int]bool
-	seenMedia        map[int]bool
-	seen             map[string]bool
-	manifestByMedia  map[int]manifestReply
+	byID            map[int]telegram.Message
+	seenMsgIDs      map[int]bool
+	seenMedia       map[int]bool
+	seen            map[string]bool
+	manifestByMedia map[int]manifestReply
+	// commentByMedia holds td-manifest:v1 records posted as comment threads
+	// (ADR 0018), keyed by the media message id the comment sits on. The
+	// newest comment per post wins.
+	commentByMedia map[int]manifestReply
+	// manifestChat is the discussion group's Telegram channel id when the
+	// channel has one; comment-carrier ops record it on their rows.
+	manifestChat     string
 	albumGroups      map[int64][]int
 	coveredGroups    map[int64]bool
 	albumCorrupt     map[int64]bool
@@ -442,14 +543,19 @@ type deferredScanError struct {
 
 type albumInventory struct {
 	replyID int
-	meta    manifest.AlbumMeta
+	// chat is the carrier peer: empty for a legacy in-channel reply, the
+	// discussion group id for a comment inventory (ADR 0018).
+	chat string
+	meta manifest.AlbumMeta
 }
 
 // scanIndexOp is one file to write into the index.
 type scanIndexOp struct {
 	messageID     int
 	manifestMsgID int
-	meta          manifest.ParsedMeta
+	// manifestChat is the carrier peer of manifestMsgID (ADR 0018).
+	manifestChat string
+	meta         manifest.ParsedMeta
 }
 
 // pendingScanErrorIDs preloads which messages have unresolved scan errors so
@@ -553,8 +659,6 @@ func (r *scanRun) recordScanError(ctx context.Context, messageID int, code, mess
 		r.channelID, messageID, code, message, excerpt, r.now, r.now)
 }
 
-// tombstoneRow marks a media message's row deleted. A tombstone on the media
-// caption always wins over whatever a stale manifest reply still claims.
 func (r *scanRun) tombstoneRow(ctx context.Context, mediaID int, canonicalPath string) {
 	if !r.opts.IncludeDeleted || canonicalPath == "" {
 		return
@@ -593,7 +697,7 @@ func (r *scanRun) collectAlbumOps(ctx context.Context, inRoot func(string) bool,
 			}
 			r.seen[meta.CanonicalPath] = true
 			r.seenMedia[f.MessageID] = true
-			*ops = append(*ops, scanIndexOp{messageID: f.MessageID, manifestMsgID: inv.replyID, meta: meta})
+			*ops = append(*ops, scanIndexOp{messageID: f.MessageID, manifestMsgID: inv.replyID, manifestChat: inv.chat, meta: meta})
 		}
 	}
 }
@@ -605,6 +709,11 @@ func (r *scanRun) collectAlbumOps(ctx context.Context, inRoot func(string) bool,
 func (r *scanRun) collectManifestReplyOps(ctx context.Context, inRoot func(string) bool, ops *[]scanIndexOp) {
 	for mediaID, resolved := range r.manifestByMedia {
 		if r.seenMedia[mediaID] {
+			continue
+		}
+		if _, comment := r.commentByMedia[mediaID]; comment {
+			// A comment record outranks the in-channel reply (ADR 0018
+			// precedence); the comment pass owns this message.
 			continue
 		}
 		media, ok := r.byID[mediaID]
@@ -647,6 +756,33 @@ func (r *scanRun) collectCaptionOps(ctx context.Context, inRoot func(string) boo
 	for _, id := range ids {
 		msg := r.byID[id]
 		if r.seenMedia[msg.ID] || manifest.IsAlbumReply(msg.Text) || isPerFileManifestReply(msg) {
+			continue
+		}
+		// A caption tombstone is sticky: it outranks even a newer live
+		// comment record (the comment edit may have failed during delete).
+		if manifest.HasMachineMeta(msg.Caption) {
+			if cm, err := manifest.ParseCaption(msg.Caption); err == nil && cm.Deleted {
+				r.seenMedia[msg.ID] = true
+				r.tombstoneRow(ctx, msg.ID, cm.CanonicalPath)
+				continue
+			}
+		}
+		if rec, comment := r.commentByMedia[msg.ID]; comment {
+			// The comment thread carries the machine record (ADR 0018);
+			// captions of comment-carrier rows are human-only.
+			if rec.meta.Deleted {
+				r.seenMedia[msg.ID] = true
+				r.tombstoneRow(ctx, msg.ID, rec.meta.CanonicalPath)
+				continue
+			}
+			meta := rec.meta
+			fillMetaFromMedia(&meta, msg)
+			if meta.CanonicalPath == "" || !inRoot(meta.CanonicalPath) {
+				continue
+			}
+			r.seen[meta.CanonicalPath] = true
+			r.seenMedia[msg.ID] = true
+			*ops = append(*ops, scanIndexOp{messageID: msg.ID, manifestMsgID: rec.msgID, manifestChat: r.manifestChat, meta: meta})
 			continue
 		}
 		if msg.Caption == "" && msg.Text == "" {
@@ -869,15 +1005,16 @@ func (r *scanRun) buildIndexReq(ctx context.Context, op scanIndexOp, fileID int6
 	}
 	meta.Tags = tags
 	return &ports.FileIndexRequest{
-		ChannelRowID:  r.channelID,
-		FileID:        fileID,
-		MessageID:     op.messageID,
-		ManifestMsgID: op.manifestMsgID,
-		Meta:          meta,
-		SlugMaps:      slugMaps,
-		Tags:          tags,
-		SetUploadedAt: fileID == 0,
-		Now:           r.now,
+		ChannelRowID:   r.channelID,
+		FileID:         fileID,
+		MessageID:      op.messageID,
+		ManifestMsgID:  op.manifestMsgID,
+		ManifestChatID: op.manifestChat,
+		Meta:           meta,
+		SlugMaps:       slugMaps,
+		Tags:           tags,
+		SetUploadedAt:  fileID == 0,
+		Now:            r.now,
 	}, nil
 }
 

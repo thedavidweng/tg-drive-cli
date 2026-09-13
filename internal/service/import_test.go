@@ -91,14 +91,14 @@ func TestImportAdoptsVideoPhotoAndText(t *testing.T) {
 	if note.Text != "shopping list\nmilk" {
 		t.Fatalf("text should stay untouched: %+v", note)
 	}
-	var replyCount int
-	for _, m := range tg.Messages(tgChID) {
-		if m.ReplyTo != nil && strings.Contains(m.Text, "td-manifest:v1") {
-			replyCount++
+	var recordCount int
+	for _, m := range machineRecords(t, app, ctx) {
+		if strings.Contains(m.Text, "td-manifest:v1") {
+			recordCount++
 		}
 	}
-	if replyCount != 3 {
-		t.Fatalf("ungrouped files should each have one reconstructable reply, got %d", replyCount)
+	if recordCount != 3 {
+		t.Fatalf("ungrouped files should each have one reconstructable comment, got %d", recordCount)
 	}
 }
 
@@ -216,20 +216,20 @@ func TestImportLeavesAlbumCaptionAlone(t *testing.T) {
 			t.Fatalf("sibling %d caption = %q", id, got.Caption)
 		}
 	}
-	var albumReplies, fileReplies int
-	for _, m := range tg.Messages(tgChID) {
+	var albumComments, fileReplies int
+	for _, m := range machineRecords(t, app, ctx) {
 		if strings.Contains(m.Text, "td-album:v1") {
-			albumReplies++
+			albumComments++
 		}
 		if strings.HasPrefix(strings.TrimSpace(m.Text), "td-manifest:v1") {
 			fileReplies++
 		}
 	}
-	if albumReplies != 1 {
-		t.Fatalf("album replies = %d, want 1", albumReplies)
+	if albumComments != 1 {
+		t.Fatalf("album inventory comments = %d, want 1", albumComments)
 	}
 	if fileReplies != 0 {
-		t.Fatalf("per-file replies = %d, want 0", fileReplies)
+		t.Fatalf("per-file records = %d, want 0", fileReplies)
 	}
 }
 
@@ -278,20 +278,20 @@ func TestRewriteAlbumRestoresGroupCaptionAndDeletesReplies(t *testing.T) {
 			t.Fatalf("sibling %d still has caption %q", id, got.Caption)
 		}
 	}
-	var albumReplies, fileReplies int
-	for _, m := range tg.Messages(tgChID) {
+	var albumComments, fileReplies int
+	for _, m := range machineRecords(t, app, ctx) {
 		if strings.Contains(m.Text, "td-album:v1") {
-			albumReplies++
+			albumComments++
 		}
 		if strings.HasPrefix(strings.TrimSpace(m.Text), "td-manifest:v1") {
 			fileReplies++
 		}
 	}
 	if fileReplies != 0 {
-		t.Fatalf("per-file replies left: %d", fileReplies)
+		t.Fatalf("per-file records left: %d", fileReplies)
 	}
-	if albumReplies != 1 {
-		t.Fatalf("album replies = %d, want 1", albumReplies)
+	if albumComments != 1 {
+		t.Fatalf("album inventory comments = %d, want 1", albumComments)
 	}
 }
 
@@ -374,10 +374,10 @@ func TestMoveAndDeleteAlbumMemberKeepsGroup(t *testing.T) {
 	if _, err := app.DeleteFile(ctx, "/videos/a.mp4", DeleteOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	var albumReplies int
-	for _, m := range tg.Messages(tgChID) {
+	var albumComments int
+	for _, m := range machineRecords(t, app, ctx) {
 		if strings.Contains(m.Text, "td-album:v1") {
-			albumReplies++
+			albumComments++
 			got, err := manifest.ParseAlbumReply(m.Text)
 			if err != nil {
 				t.Fatal(err)
@@ -390,8 +390,8 @@ func TestMoveAndDeleteAlbumMemberKeepsGroup(t *testing.T) {
 			t.Fatal("deleted album member still on telegram")
 		}
 	}
-	if albumReplies != 1 {
-		t.Fatalf("album replies after delete = %d", albumReplies)
+	if albumComments != 1 {
+		t.Fatalf("album inventory comments after delete = %d", albumComments)
 	}
 	if got := fileStatus(t, app, "/clips/b.mp4"); got != "active" {
 		t.Fatalf("remaining member status=%q", got)

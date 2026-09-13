@@ -71,7 +71,9 @@ func (e LSEntry) MarshalJSON() ([]byte, error) {
 
 // ListDir lists children of a remote path.
 func (a *App) ListDir(ctx context.Context, remotePath string) ([]LSEntry, error) {
-	p, err := fsmodel.NormalizeCanonicalPath(remotePath)
+	// Trailing slashes are accepted directory intent; canonical paths drop
+	// them (fsmodel rejects them outright).
+	p, err := fsmodel.NormalizeCanonicalPath(strings.TrimRight(remotePath, "/"))
 	if err != nil {
 		return nil, err
 	}
@@ -436,10 +438,11 @@ func (a *App) MoveFile(ctx context.Context, from, to string) error {
 	}
 	var fileID int64
 	var messageID, manifestID sql.NullInt64
+	var manifestChat string
 	var displayName, contentHash, mimeType string
 	var size int64
-	err = a.DB.Raw().QueryRowContext(ctx, `select id, message_id, manifest_message_id, display_name, size, content_hash, mime from files where channel_id=? and canonical_path=? and status='active'`,
-		channelID, src).Scan(&fileID, &messageID, &manifestID, &displayName, &size, &contentHash, &mimeType)
+	err = a.DB.Raw().QueryRowContext(ctx, `select id, message_id, manifest_message_id, manifest_chat_tg_id, display_name, size, content_hash, mime from files where channel_id=? and canonical_path=? and status='active'`,
+		channelID, src).Scan(&fileID, &messageID, &manifestID, &manifestChat, &displayName, &size, &contentHash, &mimeType)
 	if err == sql.ErrNoRows {
 		var otherChannel int64
 		if scanErr := a.DB.Raw().QueryRowContext(ctx, `select channel_id from files where canonical_path=? and status='active' and channel_id != ? limit 1`,
@@ -488,26 +491,27 @@ func (a *App) MoveFile(ctx context.Context, from, to string) error {
 			manifestMsgID = int(manifestID.Int64)
 		}
 
-		if album, ok, err := a.loadAlbumManifest(ctx, tgChID, manifestMsgID); err != nil {
+		if album, ok, err := a.loadAlbumManifest(ctx, tgChID, manifestChat, manifestMsgID); err != nil {
 			return telegram.MapError(err)
 		} else if ok {
 			updated := albumReplacePath(album, int(messageID.Int64), dst)
-			if _, err := a.writeAlbumManifest(ctx, channelID, tgChID, manifestMsgID, albumFirstMediaID(updated), updated); err != nil {
+			if _, err := a.writeAlbumManifest(ctx, channelID, tgChID, manifestChat, manifestMsgID, albumFirstMediaID(updated), updated); err != nil {
 				return err
 			}
 			return a.reindexAlbumMember(ctx, channelID, fileID, int(messageID.Int64), manifestMsgID, dst, contentHash, mimeType, size)
 		}
 
 		if _, err := a.publisher().Publish(ctx, publisher.PublishRequest{
-			ChannelRowID:  channelID,
-			ChannelID:     tgChID,
-			FileID:        fileID,
-			MessageID:     int(messageID.Int64),
-			ManifestMsgID: manifestMsgID,
-			Meta:          meta,
-			ExistingSlugs: existingSlugs,
-			EditCaption:   true,
-			OldMeta:       &oldMeta,
+			ChannelRowID:   channelID,
+			ChannelID:      tgChID,
+			FileID:         fileID,
+			MessageID:      int(messageID.Int64),
+			ManifestMsgID:  manifestMsgID,
+			ManifestChatID: manifestChat,
+			Meta:           meta,
+			ExistingSlugs:  existingSlugs,
+			EditCaption:    true,
+			OldMeta:        &oldMeta,
 		}); err != nil {
 			return err
 		}
@@ -550,7 +554,8 @@ func (a *App) DeleteFile(ctx context.Context, remotePath string, opts DeleteOpti
 	}
 	var fileID int64
 	var messageID, manifestID sql.NullInt64
-	err = a.DB.Raw().QueryRowContext(ctx, `select id, message_id, manifest_message_id from files where channel_id=? and canonical_path=? and status='active'`, channelID, p).Scan(&fileID, &messageID, &manifestID)
+	var manifestChat string
+	err = a.DB.Raw().QueryRowContext(ctx, `select id, message_id, manifest_message_id, manifest_chat_tg_id from files where channel_id=? and canonical_path=? and status='active'`, channelID, p).Scan(&fileID, &messageID, &manifestID, &manifestChat)
 	if err == sql.ErrNoRows {
 		return nil, apperr.New(apperr.ErrRemoteNotFound, fmt.Sprintf("remote path %q not found", p))
 	}
@@ -562,7 +567,7 @@ func (a *App) DeleteFile(ctx context.Context, remotePath string, opts DeleteOpti
 	lockKey := sqlitestore.LockKey(channelID, p)
 	var out map[string]any
 	lockErr := a.withLocks(ctx, []string{lockKey}, func(ctx context.Context) error {
-		res, err := a.deleteFileLocked(ctx, channelID, tgChID, p, fileID, messageID, manifestID, opts)
+		res, err := a.deleteFileLocked(ctx, channelID, tgChID, p, fileID, messageID, manifestID, manifestChat, opts)
 		if err != nil {
 			return err
 		}
@@ -575,7 +580,7 @@ func (a *App) DeleteFile(ctx context.Context, remotePath string, opts DeleteOpti
 	return out, nil
 }
 
-func (a *App) deleteFileLocked(ctx context.Context, channelID, tgChID int64, p string, fileID int64, messageID, manifestID sql.NullInt64, opts DeleteOptions) (map[string]any, error) {
+func (a *App) deleteFileLocked(ctx context.Context, channelID, tgChID int64, p string, fileID int64, messageID, manifestID sql.NullInt64, manifestChat string, opts DeleteOptions) (map[string]any, error) {
 
 	mode := a.Cfg.Delete.Mode
 	if opts.Tombstone {
@@ -587,7 +592,7 @@ func (a *App) deleteFileLocked(ctx context.Context, channelID, tgChID int64, p s
 	if manifestID.Valid {
 		manID = int(manifestID.Int64)
 	}
-	if album, ok, err := a.loadAlbumManifest(ctx, tgChID, manID); err != nil && !isMessageGone(err) {
+	if album, ok, err := a.loadAlbumManifest(ctx, tgChID, manifestChat, manID); err != nil && !isMessageGone(err) {
 		return nil, telegram.MapError(err)
 	} else if ok {
 		if messageID.Valid {
@@ -597,9 +602,13 @@ func (a *App) deleteFileLocked(ctx context.Context, channelID, tgChID int64, p s
 		}
 		remaining := albumWithout(album, int(messageID.Int64))
 		if len(remaining.Files) == 0 {
-			manifestErr = a.TG.DeleteMessage(ctx, tgChID, manID)
+			if manifestChat != "" {
+				manifestErr = a.TG.DeleteThreadMessage(ctx, tgChID, manID)
+			} else {
+				manifestErr = a.TG.DeleteMessage(ctx, tgChID, manID)
+			}
 		} else {
-			_, manifestErr = a.writeAlbumManifest(ctx, channelID, tgChID, manID, albumFirstMediaID(remaining), remaining)
+			_, manifestErr = a.writeAlbumManifest(ctx, channelID, tgChID, manifestChat, manID, albumFirstMediaID(remaining), remaining)
 		}
 		if isMessageGone(manifestErr) {
 			manifestErr = nil
@@ -627,16 +636,34 @@ func (a *App) deleteFileLocked(ctx context.Context, channelID, tgChID int64, p s
 		}
 		return out, nil
 	}
-	if mode == "delete" {
+	switch {
+	case mode == "delete":
 		if messageID.Valid {
 			if err := a.TG.DeleteMessage(ctx, tgChID, int(messageID.Int64)); err != nil && !isMessageGone(err) {
 				return nil, telegram.MapError(err)
 			}
 		}
 		if manifestID.Valid {
-			manifestErr = a.TG.DeleteMessage(ctx, tgChID, int(manifestID.Int64))
+			if manifestChat != "" {
+				manifestErr = a.TG.DeleteThreadMessage(ctx, tgChID, int(manifestID.Int64))
+			} else {
+				manifestErr = a.TG.DeleteMessage(ctx, tgChID, int(manifestID.Int64))
+			}
 		}
-	} else {
+	case manifestID.Valid && manifestChat != "":
+		// ADR 0018: the comment carries the tombstone. If the comment edit
+		// fails, fall back to a tombstone caption — deletion must stay
+		// sticky even when the thread record cannot be redacted, and a
+		// caption tombstone outranks a stale live comment during scans.
+		manifestErr = a.TG.EditThreadMessage(ctx, tgChID, int(manifestID.Int64), manifest.RenderTombstoneManifest(p))
+		if manifestErr != nil && !isMessageGone(manifestErr) {
+			if messageID.Valid {
+				if capErr := a.TG.EditCaption(ctx, tgChID, int(messageID.Int64), manifest.RenderTombstoneCaption(fsmodel.BaseName(p), p)); capErr == nil || isMessageGone(capErr) {
+					manifestErr = nil
+				}
+			}
+		}
+	default:
 		if messageID.Valid {
 			if err := a.TG.EditCaption(ctx, tgChID, int(messageID.Int64), manifest.RenderTombstoneCaption(fsmodel.BaseName(p), p)); err != nil && !isMessageGone(err) {
 				return nil, telegram.MapError(err)
@@ -675,12 +702,15 @@ func (a *App) deleteFileLocked(ctx context.Context, channelID, tgChID int64, p s
 	return out, nil
 }
 
-// UploadRecursive uploads a directory recursively.
+// UploadRecursive uploads a directory recursively. Files are published as
+// native media groups: each source directory's direct children form one
+// album, split into consecutive groups of MaxMediaGroupMembers (issue #26).
 func (a *App) UploadRecursive(ctx context.Context, localDir, remoteDir string, policy ConflictPolicy, continueOnError, noHash, includeEmptyDirs bool) (map[string]any, error) {
 	if includeEmptyDirs {
 		return nil, apperr.New(apperr.ErrEmptyDirsUnsupported, "empty directories cannot be persisted to Telegram in V1")
 	}
-	remoteDir, err := fsmodel.NormalizeCanonicalPath(remoteDir)
+	// Trailing slashes are directory intent; the canonical form drops them.
+	remoteDir, err := fsmodel.NormalizeCanonicalPath(strings.TrimRight(remoteDir, "/"))
 	if err != nil {
 		return nil, err
 	}
@@ -706,16 +736,51 @@ func (a *App) UploadRecursive(ctx context.Context, localDir, remoteDir string, p
 		return nil, apperr.Wrap(apperr.ErrLocalNotFound, "walk local directory", err)
 	}
 	sort.Strings(files)
+
+	channelID, tgIDStr, err := a.channelID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tgChID, err := a.tgChannelID(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	uploaded, skipped, failed := 0, 0, 0
 	var errs []string
+	albums := []AlbumGroup{}
+	// Each source directory's children become one album batch.
+	groups := map[string][]albumSource{}
+	order := []string{}
 	for _, f := range files {
+		dir := filepath.Dir(f)
+		if _, ok := groups[dir]; !ok {
+			order = append(order, dir)
+		}
 		rel, _ := filepath.Rel(localDir, f)
 		dest := remoteDir
 		if dest != "/" {
 			dest += "/"
 		}
 		dest += filepath.ToSlash(rel)
-		data, err := a.UploadFile(ctx, f, dest, policy, noHash)
+		groups[dir] = append(groups[dir], albumSource{localPath: f, dest: dest})
+	}
+	sort.Strings(order)
+	for _, dir := range order {
+		batch, failures, err := a.planAlbumBatch(ctx, groups[dir], policy, noHash, Presentation{}, continueOnError)
+		failed += len(failures)
+		errs = append(errs, failures...)
+		if err != nil && !continueOnError {
+			return nil, err
+		}
+		if err != nil {
+			continue
+		}
+		skipped += batch.skipped
+		if len(batch.members) == 0 {
+			continue
+		}
+		data, err := a.runAlbumBatch(ctx, batch, channelID, tgChID, tgIDStr)
 		if err != nil {
 			failed++
 			errs = append(errs, err.Error())
@@ -724,18 +789,16 @@ func (a *App) UploadRecursive(ctx context.Context, localDir, remoteDir string, p
 			}
 			continue
 		}
-		if data["skipped"] == true {
-			skipped++
-			continue
+		uploaded += data["uploaded"].(int)
+		if gs, ok := data["albums"].([]AlbumGroup); ok {
+			albums = append(albums, gs...)
 		}
-		uploaded++
 	}
-	data := map[string]any{"uploaded": uploaded, "skipped": skipped, "failed": failed, "errors": errs}
-	if tgChID, err := a.tgChannelID(ctx); err == nil {
-		if link, err := a.TG.GetInviteLink(ctx, tgChID); err == nil && link != "" {
-			data["invite_link"] = link
-			data["channel_id"] = fmt.Sprintf("%d", tgChID)
-		}
+
+	data := map[string]any{"uploaded": uploaded, "skipped": skipped, "failed": failed, "errors": errs, "albums": albums}
+	if link, err := a.TG.GetInviteLink(ctx, tgChID); err == nil && link != "" {
+		data["invite_link"] = link
+		data["channel_id"] = fmt.Sprintf("%d", tgChID)
 	}
 	return data, nil
 }

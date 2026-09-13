@@ -23,15 +23,14 @@ CLI needs a handful of concurrent statements and WAL allows one writer.
 transaction together with its version row, so a database can never be left
 half-migrated.
 
-- Version 1: base schema below.
-- Version 2: rebuilds `upload_progress` with a foreign key
-  (`file_id references files(id) on delete cascade`, plus a separate
-  `telegram_file_id` column for Telegram's client-chosen big-file id), drops
-  state rows that no longer reference a file row, and adds
-  `scan_state.checkpoint_message_id` / `scan_state.full_scan_started_at`.
-
-Existing databases upgrade in place on open. Fresh databases apply all
-versions in order.
+**Pre-release squash policy.** The product has not shipped; the schema is
+iterated internally and the migration list is squashed instead of
+accumulated. The baseline (version 1) always carries the full current shape
+idempotently (`create ... if not exists`). Local databases that predate a
+squash are discarded, not upgraded: delete the database file and run
+`td scan --full` — Telegram is the recoverable source, so the rebuild is
+lossless for managed content. Version numbering restarts at each squash;
+versioned migrations resume when the schema freezes for release.
 
 ## Schema
 
@@ -61,6 +60,9 @@ create table channels (
   root_local_path text not null,
   root_remote_path text not null default '/',
   strategy text not null default 'single',
+  discussion_tg_channel_id text not null default '',
+  discussion_access_hash text not null default '',
+  discussion_title text not null default '',
   created_at text not null,
   updated_at text not null,
   unique(account_id, tg_channel_id)
@@ -88,8 +90,7 @@ create table files (
   manifest_message_id integer,
   canonical_path text not null,
   display_name text not null,
-  original_local_path text,
-  size integer,
+  manifest_chat_tg_id text not null default '',
   content_hash text,
   mime text,
   caption_version integer not null default 1,
@@ -149,7 +150,7 @@ create table scan_state (
   channel_id integer not null references channels(id),
   last_scanned_message_id integer,
   last_full_scan_at text,
-  checkpoint_message_id integer,
+  discussion_last_scanned_message_id integer,
   full_scan_started_at text,
   updated_at text not null,
   unique(channel_id)
@@ -208,20 +209,35 @@ strand a path for the remaining TTL.
 
 When a file leaves `active`, clear `files.node_id` in the same transaction. Then remove derived directory nodes that have no active descendants. Directory GC runs as a single transaction.
 
-## Reconciliation precedence
+## Machine record carrier
+
+Machine records (`td-manifest:v1` per ungrouped file, `td-album:v1` per
+album) live in the comment thread of the file's post inside the channel's
+linked discussion group (ADR 0018). Media captions carry human text only.
+Telegram creates comment threads only for posts sent **after** the
+discussion group was linked; on the first record write for an older post the
+adapter bootstraps a thread by forwarding the post into the group (the
+manual forward carries `fwd_from.channel_post` like the auto-forward). If
+forwarding is impossible (protected content), the record falls back to the
+legacy in-channel reply carrier. Rows record the
+carrier peer in `files.manifest_chat_tg_id`: empty means the legacy
+in-channel reply carrier, which remains first-class and is parsed forever.
+Every machine-record write (upload, mv, rm, import, repair) requires a
+linked discussion group; reads and scans work on legacy channels.
+`td channels link-discussion` creates and links one; `td doctor` reports it.
 
 Telegram is the source of truth, and contradictory Telegram state resolves in
 a fixed order during `td scan --full`:
 
-1. A media caption that carries machine metadata (including a tombstone
-   `td:v1 deleted=true`) always wins over the manifest reply, whatever the
-   reply still claims. A tombstoned file therefore stays deleted even when its
-   manifest reply could not be redacted.
-2. The manifest reply (`td-manifest:v1`) wins only when the media caption
-   carries no machine metadata of its own.
-3. A missing or corrupt `td-album:v1` inventory is a scan error
-   (`ERR_ALBUM_INVENTORY_INVALID`), parity with per-file manifests: the whole
-   album can never silently vanish from the index.
+1. A caption tombstone (`td:v1 deleted=true`) is sticky and wins over every
+   other record of its message — including a newer live comment. The
+   tombstone delete falls back to a caption tombstone when the comment edit
+   fails, so deletion cannot be undone by the stale thread record.
+2. Otherwise a comment record wins over caption metadata, which wins over
+   the legacy in-channel reply, whatever the older carrier still claims.
+3. A missing or corrupt `td-album:v1` inventory — comment or legacy reply —
+   is a scan error (`ERR_ALBUM_INVENTORY_INVALID`), parity with per-file
+   manifests: the whole album can never silently vanish from the index.
 4. Duplicate claims on one path resolve newest-message-wins; the older
    duplicate is recorded as a scan error (also within one commit chunk).
 
@@ -229,19 +245,18 @@ Slug assignment during scans is deterministic (message-id order — the same
 chronological order uploads are assigned in), so a rebuilt index reproduces
 the original tag chains and previously shared hashtag links keep working.
 
-The full-scan finalizer (marking unseen rows `missing`) only runs when the
-history read provably reached the channel's oldest message — cross-checked
-against the total count Telegram reports. A suspicious early termination
-aborts the scan with `ERR_SCAN_INCOMPLETE` and leaves the index untouched.
+Full scans walk the drive channel and the discussion group. Each peer has
+its own completeness proof and cursor (`scan_state.last_scanned_message_id`,
+`scan_state.discussion_last_scanned_message_id`); a suspicious early
+termination on either peer aborts the scan with `ERR_SCAN_INCOMPLETE` and
+leaves the index untouched.
 
 ## Full-scan checkpoints
 
-A full scan records its progress in `scan_state.checkpoint_message_id` and
-`scan_state.full_scan_started_at`. Chunks of scanned files commit in batched
-transactions; the checkpoint advances only after its chunk commits. A
-restarted full scan resumes: rows the interrupted run committed are
-identified by `updated_at >= full_scan_started_at` and are neither redone nor
-marked missing. The checkpoint is cleared when the scan completes.
+A restarted full scan resumes from its checkpoint: rows the interrupted run
+committed are identified by `updated_at >= full_scan_started_at` and are
+neither redone nor marked missing. The checkpoint is cleared when the scan
+completes.
 
 ## Upload-state lifecycle
 
@@ -250,8 +265,9 @@ For files above 10 MB the resumable path persists part state in
 
 - `file_id` is the foreign key to the pending file row (parsed from the key);
   deleting the file row cascades the state away.
-- `telegram_file_id` is Telegram's client-chosen big-file id — it must survive
-  process crashes, because resumed parts have to be sent under the same id.
+- `telegram_file_id` is Telegram's client-chosen big-file id — it must
+  survive process crashes, because resumed parts have to be sent under the
+  same id.
 - A retry that finds a pending row at the destination with matching identity
   (size, content hash) adopts the row — reusing its id and therefore its
   state key — and sends only unconfirmed parts. Mismatched identity blocks

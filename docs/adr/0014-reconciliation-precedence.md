@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted.
+Accepted. Refined by ADR 0018: comment records rank above caption metadata,
+which ranks above the legacy in-channel reply; caption tombstones stay
+sticky over everything.
 
 ## Context
 

@@ -40,17 +40,26 @@ uploaded file:
   bytes are untouched.
 - Callers needing byte-exact round-trips use the document form (default).
 
-## Album conventions consumed by callers
+## Album conventions
 
-Album/media-group publishing itself is issue #26's scope, but callers
-integrating against td should plan for these conventions:
+`td cp` publishes multi-file sets (`td cp f1 f2 … dir/`) and folder uploads
+(`--recursive`) as native media groups: one human td:v1 caption on the very
+first member, empty sibling captions, and one `td-album:v1` inventory reply
+per group. Sets larger than 10 files split into consecutive groups of up to
+10 members each; each split group gets its own inventory reply, the caption
+stays on the overall first member only.
 
-- Documents and photos cannot mix within one Telegram media group. Bridges
-  ordering scene videos vs gallery images keep them in separate groups.
-- A media group holds at most 10 members. Albums larger than 10 files are
-  split into consecutive groups of up to 10 members each, with one human
-  caption (on the first item) and one `td-album:v1` inventory reply per
-  group.
+Callers integrating against td should plan for these platform rules:
+
+- Documents and photos cannot mix within one Telegram media group. One td
+  invocation applies a single presentation kind, so its own groups are
+  homogeneous; bridges ordering scene videos vs gallery images keep them in
+  separate invocations (or separate groups via single-file cp).
+- A lone survivor — a one-file directory, or every sibling skipped by
+  `--skip-existing` — publishes as an ordinary single message with its own
+  caption, because Telegram media groups need at least two members.
+- `td mv` / `td rm` of an album member shrink or rewrite that group's one
+  inventory reply; scan/import rebuild albums from it after a wipe.
 
 ## NFC normalization caveat
 

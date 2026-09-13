@@ -302,6 +302,9 @@ func (c *Client) Doctor(ctx context.Context, channelID int64) (*tgtelegram.Capab
 			caps.DeleteOK = ch.AdminRights.DeleteMessages
 			caps.EditOldCaptionOK = ch.AdminRights.EditMessages
 		}
+		if _, ok, err := c.discussionGroup(ctx, api, channelID); err == nil && ok {
+			caps.DiscussionOK = true
+		}
 		if _, err := c.exportInvite(ctx, api, ch); err == nil {
 			caps.InviteLinkOK = true
 		}

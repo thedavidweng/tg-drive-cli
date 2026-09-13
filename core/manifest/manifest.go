@@ -124,16 +124,58 @@ func RenderManifestReplyFitting(m FileMeta, budget, margin int) string {
 	}
 }
 
-// CaptionResult holds rendered caption and whether manifest reply is needed.
+// CaptionResult holds the rendered caption and the tags that fit.
 type CaptionResult struct {
-	Caption            string
-	NeedsManifestReply bool
-	ManifestReply      string
-	IncludedTags       []string
+	Caption      string
+	IncludedTags []string
 }
 
-// RenderCaption builds media caption with hashtag chain within budget.
+// RenderCaption builds the human media caption: display name, parent
+// directory line, and the hashtag chain within the caption budget. Machine
+// metadata never rides on captions; it lives in comment threads (ADR 0018).
 func RenderCaption(m FileMeta, budget, margin int) (CaptionResult, error) {
+	if budget <= 0 {
+		budget = DefaultCaptionBudget
+	}
+	if margin <= 0 {
+		margin = DefaultMargin
+	}
+	limit := budget - margin
+
+	lines := []string{m.DisplayName}
+	if m.ParentHuman != "" {
+		lines = append(lines, m.ParentHuman+"/")
+	} else {
+		lines = append(lines, "")
+	}
+
+	lines = append(lines, "")
+	// UTF-16 length is additive over concatenation, so the running count
+	// tracks each appended tag instead of re-encoding the whole caption.
+	cur := UTF16Units(strings.Join(lines, "\n"))
+	var included []string
+	for _, tag := range m.Tags {
+		add := UTF16Units("\n" + tag)
+		if cur+add > limit {
+			break
+		}
+		lines = append(lines, tag)
+		included = append(included, tag)
+		cur += add
+	}
+	caption := strings.TrimRight(strings.Join(lines, "\n"), "\n")
+	if !FitsTelegramCaption(caption, budget, margin) {
+		return CaptionResult{}, apperr.New(apperr.ErrCaptionTooLong, "caption exceeds minimum budget")
+	}
+	return CaptionResult{Caption: caption, IncludedTags: included}, nil
+}
+
+// RenderLegacyCaption renders the pre-ADR-0018 caption: human text plus the
+// td:v1 compact machine line, falling back to a minimal caption plus a full
+// td-manifest:v1 reply text when the record does not fit. It exists only so
+// rows published with the legacy in-channel carriers can be edited (mv,
+// repair) without losing their machine record; new uploads never use it.
+func RenderLegacyCaption(m FileMeta, budget, margin int) (caption, manifestReply string, needsReply bool, err error) {
 	if budget <= 0 {
 		budget = DefaultCaptionBudget
 	}
@@ -164,35 +206,28 @@ func RenderCaption(m FileMeta, budget, margin int) (CaptionResult, error) {
 		included = append(included, tag)
 		cur += add
 	}
-	caption := strings.TrimRight(strings.Join(lines, "\n"), "\n")
+	caption = strings.TrimRight(strings.Join(lines, "\n"), "\n")
 	allTagsIncluded := len(included) == len(m.Tags)
 	if FitsTelegramCaption(caption, budget, margin) && allTagsIncluded {
-		return CaptionResult{Caption: caption, IncludedTags: included}, nil
+		return caption, "", false, nil
 	}
 
 	// Manifest reply fallback
 	minLines := []string{m.DisplayName, m.ParentHuman + "/", "", "td:v1 manifest=reply", ""}
 	minCur := UTF16Units(strings.Join(minLines, "\n"))
-	var minTags []string
 	for _, tag := range m.Tags {
 		add := UTF16Units("\n" + tag)
 		if minCur+add > limit {
 			break
 		}
 		minLines = append(minLines, tag)
-		minTags = append(minTags, tag)
 		minCur += add
 	}
 	minCaption := strings.TrimRight(strings.Join(minLines, "\n"), "\n")
 	if !FitsTelegramCaption(minCaption, budget, margin) {
-		return CaptionResult{}, apperr.New(apperr.ErrCaptionTooLong, "caption exceeds minimum budget")
+		return "", "", false, apperr.New(apperr.ErrCaptionTooLong, "caption exceeds minimum budget")
 	}
-	return CaptionResult{
-		Caption:            minCaption,
-		NeedsManifestReply: true,
-		ManifestReply:      RenderManifestReplyFitting(m, DefaultTextBudget, margin),
-		IncludedTags:       minTags,
-	}, nil
+	return minCaption, RenderManifestReplyFitting(m, DefaultTextBudget, margin), true, nil
 }
 
 var compactRe = regexp.MustCompile(`td:v1\s+(.+)`)

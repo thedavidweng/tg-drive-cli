@@ -129,11 +129,27 @@ func (a *App) InitRoot(ctx context.Context, localRoot, channelTitle string, crea
 	if err != nil {
 		return nil, apperr.Wrap(apperr.ErrDB, "insert channel", err)
 	}
+	// Machine records live in the linked discussion group's comment threads
+	// (ADR 0018): ensure one exists and record it on the channel row. An
+	// already-linked channel keeps its group.
+	var channelRowID int64
+	if err := a.DB.Raw().QueryRowContext(ctx, `select id from channels where account_id=? and tg_channel_id=?`,
+		accountID, fmt.Sprintf("%d", ch.ID)).Scan(&channelRowID); err != nil {
+		return nil, apperr.Wrap(apperr.ErrDB, "lookup channel row", err)
+	}
+	group, err := a.TG.EnsureDiscussionGroup(ctx, ch.ID)
+	if err != nil {
+		return nil, telegram.MapError(err)
+	}
+	if err := a.DB.SetDiscussionGroup(ctx, channelRowID, fmt.Sprintf("%d", group.ID), fmt.Sprintf("%d", group.AccessHash), group.Title); err != nil {
+		return nil, err
+	}
 	a.initScan(ctx)
 	return map[string]any{
-		"channel_id":    ch.ID,
-		"channel_title": ch.Title,
-		"local_root":    localRoot,
+		"channel_id":            ch.ID,
+		"channel_title":         ch.Title,
+		"local_root":            localRoot,
+		"discussion_channel_id": group.ID,
 	}, nil
 }
 
@@ -287,7 +303,12 @@ func (a *App) Doctor(ctx context.Context) (map[string]any, error) {
 			checks["delete"] = boolCheck(caps.DeleteOK)
 			checks["invite_link"] = boolCheck(caps.InviteLinkOK)
 			checks["edit_old_caption"] = boolCheck(caps.EditOldCaptionOK)
+			checks["discussion"] = boolCheck(caps.DiscussionOK)
+			if !caps.DiscussionOK {
+				hints["discussion"] = "no linked discussion group; machine records need it (ADR 0018); run: td channels link-discussion"
+			}
 			out["max_upload_bytes"] = caps.MaxUploadBytes
+			out["discussion_ok"] = caps.DiscussionOK
 			switch {
 			case caps.MaxUploadBytes >= a.Cfg.Limits.PremiumUploadBytes:
 				checks["file_size_limit"] = "pass"
@@ -306,6 +327,31 @@ func (a *App) Doctor(ctx context.Context) (map[string]any, error) {
 		out["hints"] = hints
 	}
 	return out, nil
+}
+
+// LinkDiscussionGroup ensures the bound channel has a linked discussion
+// group (creating one when needed) and records it on the channel row
+// (ADR 0018).
+func (a *App) LinkDiscussionGroup(ctx context.Context) (map[string]any, error) {
+	channelRowID, _, err := a.channelID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tgChID, err := a.tgChannelID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	group, err := a.TG.EnsureDiscussionGroup(ctx, tgChID)
+	if err != nil {
+		return nil, telegram.MapError(err)
+	}
+	if err := a.DB.SetDiscussionGroup(ctx, channelRowID, fmt.Sprintf("%d", group.ID), fmt.Sprintf("%d", group.AccessHash), group.Title); err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"discussion_channel_id": group.ID,
+		"discussion_title":      group.Title,
+	}, nil
 }
 
 func boolCheck(ok bool) string {

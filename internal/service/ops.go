@@ -491,11 +491,12 @@ func (a *App) MoveFile(ctx context.Context, from, to string) error {
 			manifestMsgID = int(manifestID.Int64)
 		}
 
-		if album, ok, err := a.loadAlbumManifest(ctx, tgChID, manifestChat, manifestMsgID); err != nil {
+		carrier := a.manifestCarrier(manifestChat)
+		if album, ok, err := a.loadAlbumManifest(ctx, tgChID, carrier, manifestMsgID); err != nil {
 			return telegram.MapError(err)
 		} else if ok {
 			updated := albumReplacePath(album, int(messageID.Int64), dst)
-			if _, err := a.writeAlbumManifest(ctx, channelID, tgChID, manifestChat, manifestMsgID, albumFirstMediaID(updated), updated); err != nil {
+			if _, err := a.writeAlbumManifest(ctx, channelID, tgChID, carrier, manifestMsgID, albumFirstMediaID(updated), updated); err != nil {
 				return err
 			}
 			return a.reindexAlbumMember(ctx, channelID, fileID, int(messageID.Int64), manifestMsgID, dst, contentHash, mimeType, size)
@@ -587,12 +588,13 @@ func (a *App) deleteFileLocked(ctx context.Context, channelID, tgChID int64, p s
 		mode = "tombstone"
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
+	carrier := a.manifestCarrier(manifestChat)
 	var manifestErr error
 	manID := 0
 	if manifestID.Valid {
 		manID = int(manifestID.Int64)
 	}
-	if album, ok, err := a.loadAlbumManifest(ctx, tgChID, manifestChat, manID); err != nil && !isMessageGone(err) {
+	if album, ok, err := a.loadAlbumManifest(ctx, tgChID, carrier, manID); err != nil && !isMessageGone(err) {
 		return nil, telegram.MapError(err)
 	} else if ok {
 		if messageID.Valid {
@@ -602,13 +604,9 @@ func (a *App) deleteFileLocked(ctx context.Context, channelID, tgChID int64, p s
 		}
 		remaining := albumWithout(album, int(messageID.Int64))
 		if len(remaining.Files) == 0 {
-			if manifestChat != "" {
-				manifestErr = a.TG.DeleteThreadMessage(ctx, tgChID, manID)
-			} else {
-				manifestErr = a.TG.DeleteMessage(ctx, tgChID, manID)
-			}
+			manifestErr = carrier.Delete(ctx, tgChID, manID)
 		} else {
-			_, manifestErr = a.writeAlbumManifest(ctx, channelID, tgChID, manifestChat, manID, albumFirstMediaID(remaining), remaining)
+			_, manifestErr = a.writeAlbumManifest(ctx, channelID, tgChID, carrier, manID, albumFirstMediaID(remaining), remaining)
 		}
 		if isMessageGone(manifestErr) {
 			manifestErr = nil
@@ -644,18 +642,14 @@ func (a *App) deleteFileLocked(ctx context.Context, channelID, tgChID int64, p s
 			}
 		}
 		if manifestID.Valid {
-			if manifestChat != "" {
-				manifestErr = a.TG.DeleteThreadMessage(ctx, tgChID, int(manifestID.Int64))
-			} else {
-				manifestErr = a.TG.DeleteMessage(ctx, tgChID, int(manifestID.Int64))
-			}
+			manifestErr = carrier.Delete(ctx, tgChID, int(manifestID.Int64))
 		}
-	case manifestID.Valid && manifestChat != "":
+	case manifestID.Valid && carrier.Comment():
 		// ADR 0018: the comment carries the tombstone. If the comment edit
 		// fails, fall back to a tombstone caption — deletion must stay
 		// sticky even when the thread record cannot be redacted, and a
 		// caption tombstone outranks a stale live comment during scans.
-		manifestErr = a.TG.EditThreadMessage(ctx, tgChID, int(manifestID.Int64), manifest.RenderTombstoneManifest(p))
+		manifestErr = carrier.Edit(ctx, tgChID, int(manifestID.Int64), manifest.RenderTombstoneManifest(p))
 		if manifestErr != nil && !isMessageGone(manifestErr) {
 			if messageID.Valid {
 				if capErr := a.TG.EditCaption(ctx, tgChID, int(messageID.Int64), manifest.RenderTombstoneCaption(fsmodel.BaseName(p), p)); capErr == nil || isMessageGone(capErr) {
@@ -670,7 +664,7 @@ func (a *App) deleteFileLocked(ctx context.Context, channelID, tgChID int64, p s
 			}
 		}
 		if manifestID.Valid {
-			manifestErr = a.TG.EditText(ctx, tgChID, int(manifestID.Int64), manifest.RenderTombstoneManifest(p))
+			manifestErr = carrier.Edit(ctx, tgChID, int(manifestID.Int64), manifest.RenderTombstoneManifest(p))
 		}
 	}
 	if isMessageGone(manifestErr) {

@@ -33,12 +33,7 @@ func (c *Client) StreamHistory(ctx context.Context, channelID int64, afterID int
 	return c.streamHistory(ctx, channelID, afterID, 0, fn)
 }
 
-// streamHistory paginates messages.getHistory from newest to oldest. A short
-// page is never trusted as the end of history by itself: pagination only
-// reports Complete when it saw an empty page (the true end), crossed the
-// afterID boundary, or collected the channel's reported total. A Telegram
-// pagination quirk that returns a short page mid-history therefore surfaces as
-// Complete=false instead of silently truncating the read.
+// streamHistory paginates messages.getHistory from newest to oldest.
 func (c *Client) streamHistory(ctx context.Context, channelID int64, afterID, limit int, fn func(tgtelegram.Message) error) (tgtelegram.HistoryMeta, error) {
 	var meta tgtelegram.HistoryMeta
 	err := c.run(ctx, func(ctx context.Context, api *tg.Client, _ *telegram.Client) error {
@@ -46,78 +41,94 @@ func (c *Client) streamHistory(ctx context.Context, channelID int64, afterID, li
 		if err != nil {
 			return err
 		}
-		offsetID := 0
-		collected := 0
-		prevMinID := 0
-		for limit <= 0 || collected < limit {
-			batch := historyPageSize
-			if limit > 0 && limit-collected < batch {
-				batch = limit - collected
-			}
-			msgs, err := api.MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
-				Peer:     peer,
-				Limit:    batch,
-				OffsetID: offsetID,
-			})
-			if err != nil {
-				return mapRPCError(err)
-			}
-			// Pagination must be driven by the RAW page (including service
-			// messages the media filter drops), or scans stop early.
-			rawIDs := extractRawIDs(msgs)
-			if len(rawIDs) == 0 {
-				meta.Complete = true
-				return nil
-			}
-			minID := rawIDs[0]
-			for _, id := range rawIDs {
-				if id < minID {
-					minID = id
-				}
-			}
-			if total := historyTotalCount(msgs); total > meta.TotalMessages {
-				// Only a total that never decreased counts as proof:
-				// mid-scan deletions above the read position shrink Count
-				// while collected only grows, which would fake completion.
-				meta.TotalMessages = total
-			}
-			for _, msg := range extractMessages(msgs) {
-				if msg.ID <= afterID {
-					continue
-				}
-				if err := fn(messageFromTG(msg)); err != nil {
-					return err
-				}
-			}
-			collected += len(rawIDs)
-			if meta.OldestID == 0 || minID < meta.OldestID {
-				meta.OldestID = minID
-			}
-			if meta.TotalMessages > 0 && afterID == 0 && collected >= meta.TotalMessages {
-				meta.Complete = true
-				return nil
-			}
-			if minID <= afterID+1 {
-				meta.Complete = true
-				return nil
-			}
-			if minID == prevMinID {
-				// The server returned the same page twice; without progress
-				// we cannot prove the read covered the history below.
-				meta.Complete = false
-				return nil
-			}
-			prevMinID = minID
-			offsetID = minID
-		}
-		// The loop exited because the caller's limit was reached, not because
-		// completion was proven.
-		meta.Complete = false
-		return nil
+		meta, err = c.paginateHistory(ctx, api, peer, afterID, limit, func(msg *tg.Message) error {
+			return fn(messageFromTG(msg))
+		})
+		return err
 	})
 	if err != nil {
 		return tgtelegram.HistoryMeta{}, err
 	}
+	return meta, nil
+}
+
+// paginateHistory walks messages.getHistory for one peer from newest to
+// oldest, feeding every raw message newer than afterID to emit. limit <= 0
+// walks to the end of history. A short page is never trusted as the end of
+// history by itself: pagination only reports Complete when it saw an empty
+// page (the true end), crossed the afterID boundary, or collected the peer's
+// reported total. A Telegram pagination quirk that returns a short page
+// mid-history therefore surfaces as Complete=false instead of silently
+// truncating the read.
+func (c *Client) paginateHistory(ctx context.Context, api *tg.Client, peer tg.InputPeerClass, afterID, limit int, emit func(*tg.Message) error) (tgtelegram.HistoryMeta, error) {
+	var meta tgtelegram.HistoryMeta
+	offsetID := 0
+	collected := 0
+	prevMinID := 0
+	for limit <= 0 || collected < limit {
+		batch := historyPageSize
+		if limit > 0 && limit-collected < batch {
+			batch = limit - collected
+		}
+		msgs, err := api.MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
+			Peer:     peer,
+			Limit:    batch,
+			OffsetID: offsetID,
+		})
+		if err != nil {
+			return tgtelegram.HistoryMeta{}, mapRPCError(err)
+		}
+		// Pagination must be driven by the RAW page (including service
+		// messages the media filter drops), or scans stop early.
+		rawIDs := extractRawIDs(msgs)
+		if len(rawIDs) == 0 {
+			meta.Complete = true
+			return meta, nil
+		}
+		minID := rawIDs[0]
+		for _, id := range rawIDs {
+			if id < minID {
+				minID = id
+			}
+		}
+		if total := historyTotalCount(msgs); total > meta.TotalMessages {
+			// Only a total that never decreased counts as proof:
+			// mid-scan deletions above the read position shrink Count
+			// while collected only grows, which would fake completion.
+			meta.TotalMessages = total
+		}
+		for _, msg := range extractMessages(msgs) {
+			if msg.ID <= afterID {
+				continue
+			}
+			if err := emit(msg); err != nil {
+				return tgtelegram.HistoryMeta{}, err
+			}
+		}
+		collected += len(rawIDs)
+		if meta.OldestID == 0 || minID < meta.OldestID {
+			meta.OldestID = minID
+		}
+		if meta.TotalMessages > 0 && afterID == 0 && collected >= meta.TotalMessages {
+			meta.Complete = true
+			return meta, nil
+		}
+		if minID <= afterID+1 {
+			meta.Complete = true
+			return meta, nil
+		}
+		if minID == prevMinID {
+			// The server returned the same page twice; without progress
+			// we cannot prove the read covered the history below.
+			meta.Complete = false
+			return meta, nil
+		}
+		prevMinID = minID
+		offsetID = minID
+	}
+	// The loop exited because the caller's limit was reached, not because
+	// completion was proven.
+	meta.Complete = false
 	return meta, nil
 }
 

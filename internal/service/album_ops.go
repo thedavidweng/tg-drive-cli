@@ -130,10 +130,12 @@ func (a *App) ensureTelegramManifests(ctx context.Context, channelID, tgChID int
 		}
 		// The inventory rewrite locks every member path (sorted by the lock
 		// helper) so it cannot race a concurrent move or delete of a member.
+		comment := a.manifestCarrier(manifestChat)
+		legacy := a.manifestCarrier("")
 		var sendErr error
 		legacyOnly := false
 		lockErr := a.withLocks(ctx, lockKeysForPaths(channelID, memberPaths...), func(ctx context.Context) error {
-			id, err := a.TG.SendThreadReply(ctx, tgChID, members[0].ID, body)
+			id, err := comment.Send(ctx, tgChID, members[0].ID, body)
 			if err != nil {
 				var nf *telegram.MessageNotFoundError
 				if !errors.As(err, &nf) {
@@ -149,14 +151,14 @@ func (a *App) ensureTelegramManifests(ctx context.Context, channelID, tgChID int
 					if existing.Text == body {
 						return nil
 					}
-					if err := a.TG.EditText(ctx, tgChID, existing.ID, body); err != nil {
+					if err := legacy.Edit(ctx, tgChID, existing.ID, body); err != nil {
 						sendErr = err
 						return nil
 					}
 					_, _ = a.DB.Raw().ExecContext(ctx, `update files set manifest_message_id=?, manifest_chat_tg_id='', updated_at=? where channel_id=? and message_id in (`+intJoin(msgIDs(members))+`)`, existing.ID, now, channelID)
 					return nil
 				}
-				rid, rerr := a.TG.SendTextReply(ctx, tgChID, members[0].ID, body)
+				rid, rerr := legacy.Send(ctx, tgChID, members[0].ID, body)
 				if rerr != nil {
 					sendErr = rerr
 					return nil
@@ -167,12 +169,12 @@ func (a *App) ensureTelegramManifests(ctx context.Context, channelID, tgChID int
 			if has {
 				// Convert: the legacy in-channel reply is superseded by the
 				// comment thread and deleted.
-				if err := a.TG.DeleteMessage(ctx, tgChID, existing.ID); err != nil && !isMessageGone(err) {
+				if err := legacy.Delete(ctx, tgChID, existing.ID); err != nil && !isMessageGone(err) {
 					sendErr = err
 					return nil
 				}
 			}
-			_, _ = a.DB.Raw().ExecContext(ctx, `update files set manifest_message_id=?, manifest_chat_tg_id=?, updated_at=? where channel_id=? and message_id in (`+intJoin(msgIDs(members))+`)`, id, manifestChat, now, channelID)
+			_, _ = a.DB.Raw().ExecContext(ctx, `update files set manifest_message_id=?, manifest_chat_tg_id=?, updated_at=? where channel_id=? and message_id in (`+intJoin(msgIDs(members))+`)`, id, comment.ChatID(), now, channelID)
 			return nil
 		})
 		if lockErr != nil {
@@ -225,10 +227,12 @@ func (a *App) ensureTelegramManifests(ctx context.Context, channelID, tgChID int
 			Hash:          r.hash,
 			MIME:          r.mime,
 		}, manifest.DefaultTextBudget, a.Cfg.Caption.MarginUTF16Units)
+		comment := a.manifestCarrier(manifestChat)
+		legacy := a.manifestCarrier("")
 		var sendErr error
 		legacyOnly := false
 		lockErr := a.withLocks(ctx, lockKeysForPaths(channelID, r.path), func(ctx context.Context) error {
-			id, err := a.TG.SendThreadReply(ctx, tgChID, msg.ID, reply)
+			id, err := comment.Send(ctx, tgChID, msg.ID, reply)
 			if err != nil {
 				var nf *telegram.MessageNotFoundError
 				if !errors.As(err, &nf) {
@@ -237,7 +241,7 @@ func (a *App) ensureTelegramManifests(ctx context.Context, channelID, tgChID int
 				}
 				// Pre-link post: no comment thread; keep the legacy reply.
 				legacyOnly = true
-				rid, rerr := a.TG.SendTextReply(ctx, tgChID, msg.ID, reply)
+				rid, rerr := legacy.Send(ctx, tgChID, msg.ID, reply)
 				if rerr != nil {
 					sendErr = rerr
 					return nil
@@ -245,7 +249,7 @@ func (a *App) ensureTelegramManifests(ctx context.Context, channelID, tgChID int
 				_, _ = a.DB.Raw().ExecContext(ctx, `update files set manifest_message_id=?, manifest_chat_tg_id='', updated_at=? where id=?`, rid, now, r.fileID)
 				return nil
 			}
-			_, _ = a.DB.Raw().ExecContext(ctx, `update files set manifest_message_id=?, manifest_chat_tg_id=?, updated_at=? where id=?`, id, manifestChat, now, r.fileID)
+			_, _ = a.DB.Raw().ExecContext(ctx, `update files set manifest_message_id=?, manifest_chat_tg_id=?, updated_at=? where id=?`, id, comment.ChatID(), now, r.fileID)
 			return nil
 		})
 		if lockErr != nil {
@@ -266,19 +270,6 @@ func (a *App) ensureTelegramManifests(ctx context.Context, channelID, tgChID int
 			item.Reason = "post predates the linked discussion group (no comment thread); legacy reply kept"
 			out.Skipped++
 			out.Items = append(out.Items, item)
-			continue
-		}
-		if lockErr != nil {
-			return lockErr
-		}
-		if sendErr != nil {
-			item.Action = "fail"
-			item.Reason = sendErr.Error()
-			out.Failed++
-			out.Items = append(out.Items, item)
-			if !opts.ContinueErr {
-				return telegram.MapError(sendErr)
-			}
 			continue
 		}
 		out.Imported++
@@ -316,18 +307,14 @@ func isPerFileManifestReply(msg telegram.Message) bool {
 	return strings.HasPrefix(strings.TrimSpace(msg.Text), "td-manifest:v1")
 }
 
-// loadAlbumManifest reads the album inventory through its carrier: the
-// discussion group thread for comment manifests, the drive channel for
-// legacy replies (ADR 0018).
-func (a *App) loadAlbumManifest(ctx context.Context, tgChID int64, manifestChat string, manifestID int) (manifest.AlbumMeta, bool, error) {
+// loadAlbumManifest reads the album inventory through the given carrier: a
+// comment for the comment carrier, the drive channel for the legacy carrier
+// (ADR 0018).
+func (a *App) loadAlbumManifest(ctx context.Context, tgChID int64, carrier telegram.ManifestCarrier, manifestID int) (manifest.AlbumMeta, bool, error) {
 	if manifestID <= 0 {
 		return manifest.AlbumMeta{}, false, nil
 	}
-	peer := tgChID
-	if manifestChat != "" {
-		peer = chatIDInt(manifestChat)
-	}
-	msg, err := a.TG.GetMessage(ctx, peer, manifestID)
+	msg, err := carrier.Get(ctx, tgChID, manifestID)
 	if err != nil {
 		return manifest.AlbumMeta{}, false, err
 	}
@@ -343,36 +330,20 @@ func (a *App) loadAlbumManifest(ctx context.Context, tgChID int64, manifestChat 
 
 // writeAlbumManifest edits or posts the one td-album:v1 inventory of a
 // group through the given carrier and records it on every member row.
-func (a *App) writeAlbumManifest(ctx context.Context, channelID, tgChID int64, manifestChat string, manifestID int, firstMediaID int, meta manifest.AlbumMeta) (int, error) {
+func (a *App) writeAlbumManifest(ctx context.Context, channelID, tgChID int64, carrier telegram.ManifestCarrier, manifestID int, firstMediaID int, meta manifest.AlbumMeta) (int, error) {
 	body, err := manifest.RenderAlbumReplyFitting(meta, manifest.DefaultTextBudget, a.Cfg.Caption.MarginUTF16Units)
 	if err != nil {
 		return 0, err
 	}
-	var id int
-	if manifestID > 0 {
-		if manifestChat != "" {
-			if err := a.TG.EditThreadMessage(ctx, tgChID, manifestID, body); err != nil {
-				return 0, telegram.MapError(err)
-			}
-		} else {
-			if err := a.TG.EditText(ctx, tgChID, manifestID, body); err != nil {
-				return 0, telegram.MapError(err)
-			}
+	id := manifestID
+	if id > 0 {
+		if err := carrier.Edit(ctx, tgChID, id, body); err != nil {
+			return 0, telegram.MapError(err)
 		}
-		id = manifestID
 	} else {
-		if manifestChat != "" {
-			cid, err := a.TG.SendThreadReply(ctx, tgChID, firstMediaID, body)
-			if err != nil {
-				return 0, telegram.MapError(err)
-			}
-			id = cid
-		} else {
-			cid, err := a.TG.SendTextReply(ctx, tgChID, firstMediaID, body)
-			if err != nil {
-				return 0, telegram.MapError(err)
-			}
-			id = cid
+		id, err = carrier.Send(ctx, tgChID, firstMediaID, body)
+		if err != nil {
+			return 0, telegram.MapError(err)
 		}
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -380,15 +351,8 @@ func (a *App) writeAlbumManifest(ctx context.Context, channelID, tgChID int64, m
 	for i, f := range meta.Files {
 		ids[i] = f.MessageID
 	}
-	_, _ = a.DB.Raw().ExecContext(ctx, `update files set manifest_message_id=?, manifest_chat_tg_id=?, updated_at=? where channel_id=? and message_id in (`+intJoin(ids)+`)`, id, manifestChat, now, channelID)
+	_, _ = a.DB.Raw().ExecContext(ctx, `update files set manifest_message_id=?, manifest_chat_tg_id=?, updated_at=? where channel_id=? and message_id in (`+intJoin(ids)+`)`, id, carrier.ChatID(), now, channelID)
 	return id, nil
-}
-
-// chatIDInt parses a Telegram channel id string; 0 when unparsable.
-func chatIDInt(s string) int64 {
-	var id int64
-	_, _ = fmt.Sscanf(s, "%d", &id)
-	return id
 }
 
 func (a *App) reindexAlbumMember(ctx context.Context, channelID int64, fileID int64, messageID, manifestID int, dest, hash, mime string, size int64) error {

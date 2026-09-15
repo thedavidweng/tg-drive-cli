@@ -9,6 +9,7 @@ import (
 	"io"
 	"mime"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,7 +20,6 @@ import (
 	"github.com/thedavidweng/tg-drive-cli/core/fsmodel"
 	"github.com/thedavidweng/tg-drive-cli/core/manifest"
 	"github.com/thedavidweng/tg-drive-cli/core/model"
-	"github.com/thedavidweng/tg-drive-cli/core/pathcodec"
 	"github.com/thedavidweng/tg-drive-cli/core/ports"
 	"github.com/thedavidweng/tg-drive-cli/core/publisher"
 	"github.com/thedavidweng/tg-drive-cli/core/telegram"
@@ -128,8 +128,10 @@ func (a *App) tgChannelID(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	var id int64
-	_, _ = fmt.Sscanf(tgID, "%d", &id)
+	id, err := strconv.ParseInt(tgID, 10, 64)
+	if err != nil {
+		return 0, apperr.New(apperr.ErrDB, "stored channel id is not numeric: "+tgID)
+	}
 	return id, nil
 }
 
@@ -268,60 +270,24 @@ func (a *App) uploadFile(ctx context.Context, localPath, remotePath string, poli
 	// Classify the destination's current occupant. A pending row is a failed
 	// or crashed upload, not a live file: it is adoptable on retry (or
 	// superseded by --replace) instead of wedging the path.
-	var activeExists, pendingAdoptable bool
-	err = a.DB.Raw().QueryRowContext(ctx, `
-		select exists(select 1 from files where channel_id=? and canonical_path=? and status='active'),
-		       exists(select 1 from files where channel_id=? and canonical_path=? and status='pending' and message_id is null)`,
-		channelID, dest, channelID, dest).Scan(&activeExists, &pendingAdoptable)
+	activeExists, pendingAdoptable, err := a.destOccupancy(ctx, channelID, dest)
 	if err != nil {
-		return nil, apperr.Wrap(apperr.ErrDB, "lookup destination state", err)
+		return nil, err
 	}
-	if activeExists && policy != ConflictReplace {
-		switch policy {
-		case ConflictSkip:
-			return map[string]any{"path": dest, "skipped": true}, nil
-		case ConflictRename:
-			base := fsmodel.BaseName(dest)
-			prefix := fsmodel.ParentPath(dest)
-			if prefix != "/" {
-				prefix += "/"
-			}
-			for i := 1; i < 1000; i++ {
-				candidate, err := fsmodel.NormalizeCanonicalPath(prefix + fsmodel.ConflictRenameCandidate(base, i))
-				if err != nil {
-					return nil, err
-				}
-				exists := false
-				for _, p := range active {
-					if p.Canonical == candidate {
-						exists = true
-						break
-					}
-				}
-				if !exists {
-					dest = candidate
-					break
-				}
-			}
-		default:
-			return nil, apperr.New(apperr.ErrPathExists,
-				fmt.Sprintf("remote file %q already exists (use --replace, --skip-existing, or --auto-rename)", dest))
-		}
+	resolvedDest, keep, err := applyUploadPolicy(dest, policy, activeExists, true, active,
+		"use --replace, --skip-existing, or --auto-rename")
+	if err != nil {
+		return nil, err
 	}
+	if !keep {
+		return map[string]any{"path": dest, "skipped": true}, nil
+	}
+	dest = resolvedDest
 
 	// File/dir invariants always apply; the destination itself is excluded
 	// when this upload replaces or adopts whatever sits there.
-	checkSet := active
-	if policy == ConflictReplace || pendingAdoptable {
-		checkSet = make([]fsmodel.ActivePath, 0, len(active))
-		for _, ap := range active {
-			if !ap.IsDir && ap.Canonical == dest {
-				continue
-			}
-			checkSet = append(checkSet, ap)
-		}
-	}
-	if err := fsmodel.CheckUploadConflict(dest, checkSet); err != nil {
+	supersede := policy == ConflictReplace || pendingAdoptable
+	if err := fsmodel.CheckUploadConflict(dest, uploadCheckSet(active, dest, supersede)); err != nil {
 		return nil, err
 	}
 
@@ -344,18 +310,11 @@ func (a *App) uploadFile(ctx context.Context, localPath, remotePath string, poli
 	var data map[string]any
 	lockErr := a.withLocks(ctx, []string{sqlitestore.LockKey(channelID, dest)}, func(ctx context.Context) error {
 		var err error
-		// Hashing is required, not optional, on the resumable path: resume
-		// identity (and therefore byte-exactness) can never rest on an empty
-		// hash. --no-hash is honored only for small files.
-		hashEnabled := a.Cfg.Hash.Enabled && !noHash
-		if info.Size > telegram.ResumableBigFileBytes {
-			hashEnabled = true
-		}
 		data, err = a.uploadLocked(ctx, uploadLockedArgs{
 			localPath:       localPath,
 			dest:            dest,
 			policy:          policy,
-			hashEnabled:     hashEnabled,
+			noHash:          noHash,
 			size:            info.Size,
 			channelID:       channelID,
 			tgChID:          tgChID,
@@ -378,7 +337,7 @@ type uploadLockedArgs struct {
 	localPath       string
 	dest            string
 	policy          ConflictPolicy
-	hashEnabled     bool
+	noHash          bool
 	size            int64
 	channelID       int64
 	tgChID          int64
@@ -399,14 +358,9 @@ func (a *App) uploadLocked(ctx context.Context, args uploadLockedArgs) (map[stri
 	if err != nil {
 		return nil, err
 	}
-	hashReader, err := a.files().Open(ctx, localPath)
+	contentHash, err := a.hashUpload(ctx, localPath, args.noHash, args.size)
 	if err != nil {
-		return nil, apperr.Wrap(apperr.ErrLocalNotFound, "open file", err)
-	}
-	contentHash, err := computeHash(hashReader, args.hashEnabled)
-	_ = hashReader.Close()
-	if err != nil {
-		return nil, apperr.Wrap(apperr.ErrLocalNotFound, "hash file", err)
+		return nil, err
 	}
 	size := args.size
 	bigFile := size > telegram.ResumableBigFileBytes
@@ -414,28 +368,12 @@ func (a *App) uploadLocked(ctx context.Context, args uploadLockedArgs) (map[stri
 	// Resolve the pending row under the lock, now that the content identity
 	// is known: adopt on match (plain retry resumes the interrupted parts),
 	// supersede under --replace, block otherwise.
-	type pendingRow struct {
-		id    int64
-		size  sql.NullInt64
-		hash  sql.NullString
-		msgID sql.NullInt64
-	}
-	var pending pendingRow
-	var pendingExists bool
-	err = a.DB.Raw().QueryRowContext(ctx, `
-		select id, size, content_hash, message_id from files
-		where channel_id=? and canonical_path=? and status='pending'`,
-		channelID, dest).Scan(&pending.id, &pending.size, &pending.hash, &pending.msgID)
-	switch err {
-	case sql.ErrNoRows:
-	case nil:
-		pendingExists = true
-	default:
-		return nil, apperr.Wrap(apperr.ErrDB, "lookup pending destination", err)
+	pending, err := a.lookupPending(ctx, channelID, dest)
+	if err != nil {
+		return nil, err
 	}
 	adoptFileID := int64(0)
-	resumed := false
-	if pendingExists {
+	if pending.rowID > 0 {
 		switch {
 		case args.policy == ConflictReplace:
 			// Supersede the pending row and its stale upload state; roll back
@@ -443,28 +381,23 @@ func (a *App) uploadLocked(ctx context.Context, args uploadLockedArgs) (map[stri
 			if pending.msgID.Valid {
 				_ = a.TG.DeleteMessage(ctx, tgChID, int(pending.msgID.Int64))
 			}
-			if err := a.DB.DeleteUploadStateByFile(ctx, pending.id); err != nil {
+			if err := a.DB.DeleteUploadStateByFile(ctx, pending.rowID); err != nil {
 				return nil, apperr.Wrap(apperr.ErrDB, "clear superseded upload state", err)
 			}
-			if _, err := a.DB.Raw().ExecContext(ctx, `delete from files where id=?`, pending.id); err != nil {
+			if _, err := a.DB.Raw().ExecContext(ctx, `delete from files where id=?`, pending.rowID); err != nil {
 				return nil, apperr.Wrap(apperr.ErrDB, "supersede pending row", err)
 			}
 		case pending.msgID.Valid:
 			// Crash window: the media exists on Telegram but was never
 			// published. Re-uploading here would duplicate it.
+			return nil, errUnpublishedUpload(dest, pending.msgID.Int64)
+		case !pending.matches(size, contentHash):
 			return nil, apperr.New(apperr.ErrPathExists,
-				fmt.Sprintf("an unpublished upload of %q is waiting at message %d; run: td repair --orphaned", dest, pending.msgID.Int64))
+				fmt.Sprintf("an interrupted upload of different content occupies %q (use --replace to supersede it)", dest))
 		default:
-			sizeMatch := pending.size.Valid && pending.size.Int64 == size
-			hashMatch := !pending.hash.Valid || pending.hash.String == "" || pending.hash.String == contentHash
-			if sizeMatch && hashMatch {
-				// Adopt the pending row: reusing its id reuses its resumable
-				// state key, so only unconfirmed parts are re-sent.
-				adoptFileID = pending.id
-			} else {
-				return nil, apperr.New(apperr.ErrPathExists,
-					fmt.Sprintf("an interrupted upload of different content occupies %q (use --replace to supersede it)", dest))
-			}
+			// Adopt the pending row: reusing its id reuses its resumable
+			// state key, so only unconfirmed parts are re-sent.
+			adoptFileID = pending.rowID
 		}
 	}
 
@@ -474,53 +407,15 @@ func (a *App) uploadLocked(ctx context.Context, args uploadLockedArgs) (map[stri
 	}
 	// Render the caption exactly once and thread it into the publish step, so
 	// the caption on Telegram and the tags in the index cannot diverge.
-	displayName := fsmodel.BaseName(dest)
-	meta := manifest.FileMeta{
-		CanonicalPath: dest,
-		DisplayName:   displayName,
-		ParentHuman:   fsmodel.HumanParent(dest),
-		Size:          size,
-		Hash:          contentHash,
-		MIME:          detectMIME(localPath),
-		Created:       now,
-	}
-	tags, slugMaps, err := pathcodec.GenerateChain(dest, existingSlugs)
+	meta, capRes, tags, slugMaps, err := a.renderUploadMeta(dest, localPath, size, contentHash, now, existingSlugs)
 	if err != nil {
 		return nil, err
 	}
-	meta.Tags = tags
-	capRes, err := manifest.RenderCaption(meta, a.Cfg.Caption.SafeMediaCaptionUTF16Units, a.Cfg.Caption.MarginUTF16Units)
-	if err != nil {
-		return nil, err
-	}
+	displayName := meta.DisplayName
 
-	var fileID int64
-	if adoptFileID > 0 {
-		fileID = adoptFileID
-		if _, err := a.DB.Raw().ExecContext(ctx, `
-			update files set display_name=?, original_local_path=?, size=?, content_hash=?, mime=?, message_id=null, updated_at=? where id=?`,
-			displayName, localPath, size, contentHash, meta.MIME, now, fileID); err != nil {
-			return nil, apperr.Wrap(apperr.ErrDB, "adopt pending row", err)
-		}
-		if st, lerr := a.DB.LoadUploadState(ctx, fmt.Sprintf("file:%d", fileID)); lerr == nil && st != nil && st.ConfirmedBytes > 0 {
-			resumed = true
-		}
-	} else {
-		// Always insert a fresh pending row. Under --replace the old active row
-		// stays untouched until the new upload fully succeeds, so a failed
-		// upload can never lose the existing index entry.
-		err = a.DB.WithTx(ctx, func(tx *sql.Tx) error {
-			res, err := tx.ExecContext(ctx, `insert into files(channel_id,canonical_path,display_name,original_local_path,size,content_hash,mime,status,updated_at) values(?,?,?,?,?,?,?,'pending',?)`,
-				channelID, dest, displayName, localPath, size, contentHash, meta.MIME, now)
-			if err != nil {
-				return err
-			}
-			fileID, _ = res.LastInsertId()
-			return nil
-		})
-		if err != nil {
-			return nil, apperr.Wrap(apperr.ErrDB, "insert pending", err)
-		}
+	fileID, resumed, err := a.stagePendingRow(ctx, channelID, dest, localPath, size, contentHash, meta.MIME, now, adoptFileID)
+	if err != nil {
+		return nil, err
 	}
 
 	threads := a.Cfg.Upload.Threads
@@ -610,27 +505,20 @@ func (a *App) uploadLocked(ctx context.Context, args uploadLockedArgs) (map[stri
 		manifestMsgID = &pubRes.ManifestMsgID
 	}
 	if args.replaceFileID > 0 {
+		oldCarrier := a.manifestCarrier(args.oldManifestChat)
 		if a.Cfg.Delete.Mode == "tombstone" {
 			if args.oldMsgID.Valid {
 				_ = a.TG.EditCaption(ctx, tgChID, int(args.oldMsgID.Int64), manifest.RenderTombstoneCaption(displayName, dest))
 			}
 			if args.oldManifestID.Valid {
-				if args.oldManifestChat != "" {
-					_ = a.TG.EditThreadMessage(ctx, tgChID, int(args.oldManifestID.Int64), manifest.RenderTombstoneManifest(dest))
-				} else {
-					_ = a.TG.EditText(ctx, tgChID, int(args.oldManifestID.Int64), manifest.RenderTombstoneManifest(dest))
-				}
+				_ = oldCarrier.Edit(ctx, tgChID, int(args.oldManifestID.Int64), manifest.RenderTombstoneManifest(dest))
 			}
 		} else {
 			if args.oldMsgID.Valid {
 				_ = a.TG.DeleteMessage(ctx, tgChID, int(args.oldMsgID.Int64))
 			}
 			if args.oldManifestID.Valid {
-				if args.oldManifestChat != "" {
-					_ = a.TG.DeleteThreadMessage(ctx, tgChID, int(args.oldManifestID.Int64))
-				} else {
-					_ = a.TG.DeleteMessage(ctx, tgChID, int(args.oldManifestID.Int64))
-				}
+				_ = oldCarrier.Delete(ctx, tgChID, int(args.oldManifestID.Int64))
 			}
 		}
 	}

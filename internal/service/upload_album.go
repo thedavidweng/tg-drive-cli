@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -226,148 +225,55 @@ func (a *App) planAlbumMember(ctx context.Context, channelRowID int64, src album
 	}
 
 	// Classify the destination occupant exactly like the single-file path.
-	var activeExists, pendingAdoptable bool
-	err = a.DB.Raw().QueryRowContext(ctx, `
-		select exists(select 1 from files where channel_id=? and canonical_path=? and status='active'),
-		       exists(select 1 from files where channel_id=? and canonical_path=? and status='pending' and message_id is null)`,
-		channelRowID, src.dest, channelRowID, src.dest).Scan(&activeExists, &pendingAdoptable)
-	if err != nil {
-		return nil, apperr.Wrap(apperr.ErrDB, "lookup destination state", err)
-	}
-	dest := src.dest
-	if activeExists {
-		switch policy {
-		case ConflictSkip:
-			return nil, nil
-		case ConflictRename:
-			base := fsmodel.BaseName(dest)
-			prefix := fsmodel.ParentPath(dest)
-			if prefix != "/" {
-				prefix += "/"
-			}
-			renamed := false
-			for i := 1; i < 1000; i++ {
-				candidate, err := fsmodel.NormalizeCanonicalPath(prefix + fsmodel.ConflictRenameCandidate(base, i))
-				if err != nil {
-					return nil, err
-				}
-				taken := false
-				for _, ap := range active {
-					if ap.Canonical == candidate {
-						taken = true
-						break
-					}
-				}
-				if !taken {
-					dest = candidate
-					renamed = true
-					break
-				}
-			}
-			if !renamed {
-				return nil, apperr.New(apperr.ErrPathExists, fmt.Sprintf("no free auto-rename candidate for %q", dest))
-			}
-			src.dest = dest
-		default:
-			return nil, apperr.New(apperr.ErrPathExists,
-				fmt.Sprintf("remote file %q already exists (use --skip-existing or --auto-rename)", dest))
-		}
-	}
-	checkSet := make([]fsmodel.ActivePath, 0, len(active)+1)
-	for _, ap := range active {
-		if !ap.IsDir && ap.Canonical == dest && (activeExists || pendingAdoptable) {
-			continue
-		}
-		checkSet = append(checkSet, ap)
-	}
-	if err := fsmodel.CheckUploadConflict(dest, checkSet); err != nil {
-		return nil, err
-	}
-
-	// Hashing mirrors the single-file rule: required for resumable big files,
-	// optional otherwise.
-	hashEnabled := a.Cfg.Hash.Enabled && !noHash
-	if info.Size > telegram.ResumableBigFileBytes {
-		hashEnabled = true
-	}
-	hashReader, err := a.files().Open(ctx, src.localPath)
-	if err != nil {
-		return nil, apperr.Wrap(apperr.ErrLocalNotFound, "hash file", err)
-	}
-	contentHash, err := computeHash(hashReader, hashEnabled)
-	_ = hashReader.Close()
-	if err != nil {
-		return nil, apperr.Wrap(apperr.ErrLocalNotFound, "hash file", err)
-	}
-
-	displayName := fsmodel.BaseName(dest)
-	meta := manifest.FileMeta{
-		CanonicalPath: dest,
-		DisplayName:   displayName,
-		ParentHuman:   fsmodel.HumanParent(dest),
-		Size:          info.Size,
-		Hash:          contentHash,
-		MIME:          detectMIME(src.localPath),
-		Created:       now,
-	}
-	tags, slugMaps, err := pathcodec.GenerateChain(dest, existingSlugs)
+	activeExists, pendingAdoptable, err := a.destOccupancy(ctx, channelRowID, src.dest)
 	if err != nil {
 		return nil, err
 	}
-	meta.Tags = tags
-	capRes, err := manifest.RenderCaption(meta, a.Cfg.Caption.SafeMediaCaptionUTF16Units, a.Cfg.Caption.MarginUTF16Units)
+	dest, keep, err := applyUploadPolicy(src.dest, policy, activeExists, false, active,
+		"use --skip-existing or --auto-rename")
+	if err != nil {
+		return nil, err
+	}
+	if !keep {
+		return nil, nil
+	}
+	// The destination file row is excluded when this member adopts a pending
+	// row there; a renamed destination never collides with the occupant.
+	if err := fsmodel.CheckUploadConflict(dest, uploadCheckSet(active, dest, pendingAdoptable)); err != nil {
+		return nil, err
+	}
+
+	contentHash, err := a.hashUpload(ctx, src.localPath, noHash, info.Size)
+	if err != nil {
+		return nil, err
+	}
+
+	meta, capRes, tags, slugMaps, err := a.renderUploadMeta(dest, src.localPath, info.Size, contentHash, now, existingSlugs)
 	if err != nil {
 		return nil, err
 	}
 
 	// Pending-row reconciliation, mirroring uploadLocked: adopt matching
 	// interrupted uploads, refuse blocked ones.
-	adoptFileID := int64(0)
-	var pendingMsgID sql.NullInt64
-	var pendingSize sql.NullInt64
-	var pendingHash sql.NullString
-	switch err := a.DB.Raw().QueryRowContext(ctx, `
-		select id, message_id, size, content_hash from files
-		where channel_id=? and canonical_path=? and status='pending'`,
-		channelRowID, dest).Scan(&adoptFileID, &pendingMsgID, &pendingSize, &pendingHash); err {
-	case sql.ErrNoRows:
-		adoptFileID = 0
-	case nil:
-	default:
-		return nil, apperr.Wrap(apperr.ErrDB, "lookup pending destination", err)
+	pending, err := a.lookupPending(ctx, channelRowID, dest)
+	if err != nil {
+		return nil, err
 	}
-	if adoptFileID > 0 {
-		if pendingMsgID.Valid {
-			return nil, apperr.New(apperr.ErrPathExists,
-				fmt.Sprintf("an unpublished upload of %q is waiting at message %d; run: td repair --orphaned", dest, pendingMsgID.Int64))
+	adoptFileID := int64(0)
+	if pending.rowID > 0 {
+		if pending.msgID.Valid {
+			return nil, errUnpublishedUpload(dest, pending.msgID.Int64)
 		}
-		sizeMatch := pendingSize.Valid && pendingSize.Int64 == info.Size
-		hashMatch := !pendingHash.Valid || pendingHash.String == "" || pendingHash.String == contentHash
-		if !sizeMatch || !hashMatch {
+		if !pending.matches(info.Size, contentHash) {
 			return nil, apperr.New(apperr.ErrPathExists,
 				fmt.Sprintf("an interrupted upload of different content occupies %q; replace it with single-path td cp --replace or remove it first", dest))
 		}
+		adoptFileID = pending.rowID
 	}
 
-	var fileID int64
-	resumed := false
-	if adoptFileID > 0 {
-		fileID = adoptFileID
-		if _, err := a.DB.Raw().ExecContext(ctx, `
-			update files set display_name=?, original_local_path=?, size=?, content_hash=?, mime=?, message_id=null, updated_at=? where id=?`,
-			displayName, src.localPath, info.Size, contentHash, meta.MIME, now, fileID); err != nil {
-			return nil, apperr.Wrap(apperr.ErrDB, "adopt pending row", err)
-		}
-		if st, lerr := a.DB.LoadUploadState(ctx, fmt.Sprintf("file:%d", fileID)); lerr == nil && st != nil && st.ConfirmedBytes > 0 {
-			resumed = true
-		}
-	} else {
-		res, err := a.DB.Raw().ExecContext(ctx, `insert into files(channel_id,canonical_path,display_name,original_local_path,size,content_hash,mime,status,updated_at) values(?,?,?,?,?,?,?,'pending',?)`,
-			channelRowID, dest, displayName, src.localPath, info.Size, contentHash, meta.MIME, now)
-		if err != nil {
-			return nil, apperr.Wrap(apperr.ErrDB, "insert pending", err)
-		}
-		fileID, _ = res.LastInsertId()
+	fileID, resumed, err := a.stagePendingRow(ctx, channelRowID, dest, src.localPath, info.Size, contentHash, meta.MIME, now, adoptFileID)
+	if err != nil {
+		return nil, err
 	}
 
 	return &albumMember{
@@ -611,7 +517,7 @@ func (a *App) sendAlbumChunk(ctx context.Context, chunk []*albumMember, channelI
 	now := time.Now().UTC().Format(time.RFC3339)
 	for i, res := range results {
 		if recErr := a.recordPendingMessage(ctx, chunk[i].fileID, res.MessageID, now); recErr != nil {
-			a.abandonAlbumChunk(ctx, tgChID, chunk, results, 0, now)
+			a.abandonAlbumChunk(ctx, tgChID, a.manifestCarrier(manifestChat), chunk, results, 0, now)
 			return nil, apperr.New(apperr.ErrOrphanedUpload,
 				"album reached Telegram but could not be recorded; run td repair --orphaned")
 		}
@@ -627,9 +533,9 @@ func (a *App) sendAlbumChunk(ctx context.Context, chunk []*albumMember, channelI
 			MIME:          chunk[i].mime,
 		}))
 	}
-	replyID, err := a.writeAlbumManifest(ctx, channelID, tgChID, manifestChat, 0, results[0].MessageID, meta)
+	replyID, err := a.writeAlbumManifest(ctx, channelID, tgChID, a.manifestCarrier(manifestChat), 0, results[0].MessageID, meta)
 	if err != nil {
-		a.abandonAlbumChunk(ctx, tgChID, chunk, results, 0, now)
+		a.abandonAlbumChunk(ctx, tgChID, a.manifestCarrier(manifestChat), chunk, results, 0, now)
 		return nil, err
 	}
 
@@ -652,7 +558,7 @@ func (a *App) sendAlbumChunk(ctx context.Context, chunk []*albumMember, channelI
 			SlugMaps:          m.slugMaps,
 		})
 		if pubErr != nil {
-			a.abandonAlbumChunk(ctx, tgChID, chunk, results, replyID, now)
+			a.abandonAlbumChunk(ctx, tgChID, a.manifestCarrier(manifestChat), chunk, results, replyID, now)
 			if a.isAbandonWindow(pubErr) {
 				return nil, apperr.New(apperr.ErrOrphanedUpload,
 					"album reached Telegram but could not be completed or rolled back; run td repair --orphaned")
@@ -690,23 +596,16 @@ func (a *App) cleanupUnsentChunk(ctx context.Context, chunk []*albumMember) {
 	}
 }
 
-// abandonAlbumChunk rolls back a chunk that reached Telegram but could not be
-// published: messages (and the inventory reply) are deleted when possible and
-// pending rows cleaned up; rows that cannot be proven deleted stay orphaned
-// with their message ids so RepairPending/RepairOrphaned reconcile them.
-func (a *App) abandonAlbumChunk(ctx context.Context, tgChID int64, chunk []*albumMember, results []telegram.UploadResult, replyID int, now string) {
+// abandonAlbumChunk rolls back a chunk that reached Telegram but could not
+// be published: the inventory comment (through its carrier) and the media
+// messages are deleted when possible and pending rows cleaned up; rows that
+// cannot be proven deleted stay orphaned with their message ids so
+// RepairPending/RepairOrphaned reconcile them.
+func (a *App) abandonAlbumChunk(ctx context.Context, tgChID int64, carrier telegram.ManifestCarrier, chunk []*albumMember, results []telegram.UploadResult, replyID int, now string) {
 	if replyID > 0 {
-		_ = a.TG.DeleteMessage(ctx, tgChID, replyID)
+		_ = carrier.Delete(ctx, tgChID, replyID)
 	}
 	for i, res := range results {
-		m := chunk[i]
-		delErr := a.TG.DeleteMessage(ctx, tgChID, res.MessageID)
-		if delErr == nil || isMessageGone(delErr) {
-			_, _ = a.DB.Raw().ExecContext(ctx, `delete from files where id=?`, m.fileID)
-			continue
-		}
-		_, _ = a.DB.Raw().ExecContext(ctx,
-			`update files set status='orphaned', message_id=?, updated_at=? where id=?`,
-			res.MessageID, now, m.fileID)
+		a.abandonUploadedMedia(ctx, tgChID, chunk[i].fileID, res.MessageID, now)
 	}
 }

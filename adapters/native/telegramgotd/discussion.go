@@ -2,8 +2,6 @@ package telegramgotd
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"strconv"
@@ -142,38 +140,27 @@ func (c *Client) LinkedDiscussionGroup(ctx context.Context, channelID int64) (*t
 }
 
 // threadRoot resolves the discussion-group message id of the auto-forwarded
-// header for a channel post — the root of the post's comment thread. It also
-// returns the discussion group peer taken from the same response.
-func (c *Client) threadRoot(ctx context.Context, api *tg.Client, drive *tg.InputPeerChannel, postMsgID int) (int, tg.InputPeerClass, error) {
+// header for a channel post — the root of the post's comment thread.
+func (c *Client) threadRoot(ctx context.Context, api *tg.Client, drive *tg.InputPeerChannel, postMsgID int) (int, error) {
 	res, err := api.MessagesGetDiscussionMessage(ctx, &tg.MessagesGetDiscussionMessageRequest{
 		Peer: drive, MsgID: postMsgID,
 	})
 	if err != nil {
-		return 0, nil, mapRPCError(err)
+		return 0, mapRPCError(err)
 	}
 	if len(res.Messages) == 0 {
-		return 0, nil, &tgtelegram.MessageNotFoundError{}
+		return 0, &tgtelegram.MessageNotFoundError{}
 	}
 	// Reverse chronological: the LAST message is the forwarded header.
 	msg, ok := res.Messages[len(res.Messages)-1].(*tg.Message)
 	if !ok {
-		return 0, nil, &tgtelegram.MessageNotFoundError{}
+		return 0, &tgtelegram.MessageNotFoundError{}
 	}
 	hdr, ok := msg.GetFwdFrom()
 	if !ok || hdr.ChannelPost == 0 {
-		return 0, nil, &tgtelegram.MessageNotFoundError{}
+		return 0, &tgtelegram.MessageNotFoundError{}
 	}
-	peerChannel, _ := msg.PeerID.(*tg.PeerChannel)
-	for _, chat := range res.Chats {
-		ch, ok := chat.(*tg.Channel)
-		if !ok || !ch.Megagroup {
-			continue
-		}
-		if peerChannel != nil && peerChannel.ChannelID == ch.ID {
-			return msg.ID, channelPeer(ch.ID, ch.AccessHash), nil
-		}
-	}
-	return msg.ID, nil, nil
+	return msg.ID, nil
 }
 
 func (c *Client) SendThreadReply(ctx context.Context, channelID int64, postMsgID int, text string) (int, error) {
@@ -191,7 +178,7 @@ func (c *Client) SendThreadReply(ctx context.Context, channelID int64, postMsgID
 			return &tgtelegram.DiscussionMissingError{}
 		}
 		groupPeer := channelPeer(p.id, p.accessHash)
-		rootID, _, err := c.threadRoot(ctx, api, drive, postMsgID)
+		rootID, err := c.threadRoot(ctx, api, drive, postMsgID)
 		if err != nil {
 			var nf *tgtelegram.MessageNotFoundError
 			if !errors.As(err, &nf) {
@@ -204,7 +191,7 @@ func (c *Client) SendThreadReply(ctx context.Context, channelID int64, postMsgID
 			// else (scan mapping included) already understands.
 			fwd, ferr := api.MessagesForwardMessages(ctx, &tg.MessagesForwardMessagesRequest{
 				FromPeer: drive, ToPeer: groupPeer,
-				ID: []int{postMsgID}, RandomID: []int64{randomID()},
+				ID: []int{postMsgID}, RandomID: []int64{randInt64()},
 			})
 			if ferr != nil {
 				return mapRPCError(ferr)
@@ -215,7 +202,7 @@ func (c *Client) SendThreadReply(ctx context.Context, channelID int64, postMsgID
 			}
 		}
 		upd, err := api.MessagesSendMessage(ctx, &tg.MessagesSendMessageRequest{
-			Peer: groupPeer, Message: text, RandomID: randomID(),
+			Peer: groupPeer, Message: text, RandomID: randInt64(),
 			ReplyTo: &tg.InputReplyToMessage{ReplyToMsgID: rootID, TopMsgID: rootID},
 		})
 		if err != nil {
@@ -270,60 +257,12 @@ func (c *Client) StreamThreadHistory(ctx context.Context, channelID int64, after
 		if !ok {
 			return &tgtelegram.DiscussionMissingError{}
 		}
-		peer := channelPeer(p.id, p.accessHash)
-		offsetID := 0
-		collected := 0
-		prevMinID := 0
-		for {
-			msgs, err := api.MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
-				Peer: peer, Limit: historyPageSize, OffsetID: offsetID,
-			})
-			if err != nil {
-				return mapRPCError(err)
-			}
-			// Completeness proof mirrors streamHistory: pagination is driven
-			// by the RAW page including service messages.
-			rawIDs := extractRawIDs(msgs)
-			if len(rawIDs) == 0 {
-				meta.Complete = true
-				return nil
-			}
-			minID := rawIDs[0]
-			for _, id := range rawIDs {
-				if id < minID {
-					minID = id
-				}
-			}
-			if total := historyTotalCount(msgs); total > meta.TotalMessages {
-				meta.TotalMessages = total
-			}
-			for _, msg := range extractMessages(msgs) {
-				if msg.ID <= afterID {
-					continue
-				}
-				if err := fn(c.threadMessageFromTG(msg)); err != nil {
-					return err
-				}
-			}
-			collected += len(rawIDs)
-			if meta.OldestID == 0 || minID < meta.OldestID {
-				meta.OldestID = minID
-			}
-			if meta.TotalMessages > 0 && afterID == 0 && collected >= meta.TotalMessages {
-				meta.Complete = true
-				return nil
-			}
-			if minID <= afterID+1 {
-				meta.Complete = true
-				return nil
-			}
-			if minID == prevMinID {
-				meta.Complete = false
-				return nil
-			}
-			prevMinID = minID
-			offsetID = minID
-		}
+		// Same pagination and completeness proof as the drive channel
+		// walk; only the peer and the message mapper differ.
+		meta, err = c.paginateHistory(ctx, api, channelPeer(p.id, p.accessHash), afterID, 0, func(msg *tg.Message) error {
+			return fn(c.threadMessageFromTG(msg))
+		})
+		return err
 	})
 	return meta, err
 }
@@ -361,10 +300,4 @@ func firstNewChannelMessageID(upd tg.UpdatesClass) (int, error) {
 		}
 	}
 	return 0, fmt.Errorf("no new channel message in updates")
-}
-
-func randomID() int64 {
-	var b [8]byte
-	_, _ = rand.Read(b[:])
-	return int64(binary.LittleEndian.Uint64(b[:]) & 0x7fffffffffffffff)
 }

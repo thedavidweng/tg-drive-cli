@@ -4,6 +4,7 @@ import (
 	"context"
 
 	apperr "github.com/thedavidweng/tg-drive-cli/core/errors"
+	"github.com/thedavidweng/tg-drive-cli/core/telegram"
 )
 
 // discussionChatID returns the linked discussion group's Telegram channel id
@@ -19,4 +20,11 @@ func (a *App) discussionChatID(ctx context.Context, channelRowID int64) (string,
 			"uploads need a linked discussion group for machine records; run: td channels link-discussion")
 	}
 	return tgID, nil
+}
+
+// manifestCarrier builds the machine-record carrier bound to this app's
+// Telegram client. chatID is the files.manifest_chat_tg_id value (or
+// discussionChatID's result); "" selects the legacy in-channel carrier.
+func (a *App) manifestCarrier(chatID string) telegram.ManifestCarrier {
+	return telegram.NewManifestCarrier(a.TG, chatID)
 }

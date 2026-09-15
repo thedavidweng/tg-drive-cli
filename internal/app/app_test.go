@@ -71,11 +71,7 @@ func TestDoctorJSONEnvelope(t *testing.T) {
 }
 
 func TestRepairDeleteOrphanedRequiresConfirm(t *testing.T) {
-	bin := filepath.Join(t.TempDir(), "td")
-	build := exec.Command("go", "build", "-o", bin, filepath.Join("..", "..", "cmd", "td"))
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
-	}
+	bin := buildBinary(t)
 	cmd := exec.Command(bin, "--json", "repair", "--orphaned", "--delete-orphaned")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -93,5 +89,24 @@ func TestRepairDeleteOrphanedRequiresConfirm(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "ERR_CONFIRMATION_REQUIRED") {
 		t.Fatalf("stdout = %s", stdout.String())
+	}
+}
+
+// TestRepairDeleteOrphanedConfirm runs the destructive repair end to end:
+// --confirm must clear the confirmation gate and reach the repair itself.
+func TestRepairDeleteOrphanedConfirm(t *testing.T) {
+	dir := t.TempDir()
+	bin, cfgPath, dbPath, statePath, root := e2eSetup(t, dir)
+
+	e2eLogin(t, bin, cfgPath, dbPath, statePath)
+	runE2EJSON(t, bin, cfgPath, dbPath, statePath, "init", root, "--create-channel=Drive")
+
+	data := runE2EJSON(t, bin, cfgPath, dbPath, statePath,
+		"repair", "--orphaned", "--delete-orphaned", "--confirm")
+	if repaired, _ := data["repaired"].(float64); repaired != 0 {
+		t.Fatalf("repaired = %v, want 0 on a clean channel", data)
+	}
+	if deleted, _ := data["deleted"].(float64); deleted != 0 {
+		t.Fatalf("deleted = %v, want 0 on a clean channel", data)
 	}
 }

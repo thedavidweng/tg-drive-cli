@@ -176,43 +176,31 @@ func (p *Publisher) Publish(ctx context.Context, req PublishRequest) (*PublishRe
 	fullMeta := req.Meta
 	fullMeta.Tags = tags
 
+	carrier := telegram.NewManifestCarrier(p.tg, req.ManifestChatID)
 	switch {
 	case req.SkipManifestReply:
 		// The caller owns the group inventory; keep only the provided id.
-	case req.ManifestChatID != "":
+	case carrier.Comment(), legacyNeedsReply:
 		// Comment carrier (ADR 0018): the full manifest record always goes
-		// to the post's comment thread.
-		text := manifest.RenderManifestReplyFitting(fullMeta, manifest.DefaultTextBudget, p.cfg.MarginUTF16Units)
-		if req.ManifestMsgID > 0 {
-			manifestMsgID = req.ManifestMsgID
-			manifestChanged = true
-			if err := p.tg.EditThreadMessage(ctx, req.ChannelID, manifestMsgID, text); err != nil {
-				if err := p.rollbackManifest(ctx, req, manifestMsgID, manifestChanged, newManifest); err != nil {
-					return nil, err
-				}
-				return nil, telegram.MapError(err)
-			}
-		} else {
-			id, err := p.tg.SendThreadReply(ctx, req.ChannelID, req.MessageID, text)
-			if err != nil {
-				return nil, telegram.MapError(err)
-			}
-			manifestMsgID = id
-			manifestChanged = true
-			newManifest = true
+		// to the post's comment thread. Legacy rows keep their td:v1
+		// caption line so the in-channel record stays parseable. The two
+		// carriers differ only in the record text; routing is the
+		// carrier's job.
+		text := legacyReply
+		if carrier.Comment() {
+			text = manifest.RenderManifestReplyFitting(fullMeta, manifest.DefaultTextBudget, p.cfg.MarginUTF16Units)
 		}
-	case legacyNeedsReply:
 		if req.ManifestMsgID > 0 {
 			manifestMsgID = req.ManifestMsgID
 			manifestChanged = true
-			if err := p.tg.EditText(ctx, req.ChannelID, manifestMsgID, legacyReply); err != nil {
+			if err := carrier.Edit(ctx, req.ChannelID, manifestMsgID, text); err != nil {
 				if err := p.rollbackManifest(ctx, req, manifestMsgID, manifestChanged, newManifest); err != nil {
 					return nil, err
 				}
 				return nil, telegram.MapError(err)
 			}
 		} else {
-			id, err := p.tg.SendTextReply(ctx, req.ChannelID, req.MessageID, legacyReply)
+			id, err := carrier.Send(ctx, req.ChannelID, req.MessageID, text)
 			if err != nil {
 				return nil, telegram.MapError(err)
 			}
@@ -224,7 +212,7 @@ func (p *Publisher) Publish(ctx context.Context, req PublishRequest) (*PublishRe
 		// Caption is self-contained; keep the manifest consistent with the full tag set.
 		manifestMsgID = req.ManifestMsgID
 		manifestChanged = true
-		if err := p.tg.EditText(ctx, req.ChannelID, manifestMsgID, manifest.RenderManifestReplyFitting(fullMeta, manifest.DefaultTextBudget, p.cfg.MarginUTF16Units)); err != nil {
+		if err := carrier.Edit(ctx, req.ChannelID, manifestMsgID, manifest.RenderManifestReplyFitting(fullMeta, manifest.DefaultTextBudget, p.cfg.MarginUTF16Units)); err != nil {
 			if err := p.rollbackManifest(ctx, req, manifestMsgID, manifestChanged, newManifest); err != nil {
 				return nil, err
 			}
@@ -335,17 +323,10 @@ func (p *Publisher) rollbackManifest(ctx context.Context, req PublishRequest, ma
 	oldMeta.Tags = oldTags
 	p.fillMeta(&oldMeta)
 
+	carrier := telegram.NewManifestCarrier(p.tg, req.ManifestChatID)
 	if newManifest {
 		// We sent a new manifest; delete it so it does not dangle.
-		if req.ManifestChatID != "" {
-			if err := p.tg.DeleteThreadMessage(ctx, req.ChannelID, manifestMsgID); err != nil {
-				if !isNotFound(err) {
-					return telegram.MapError(err)
-				}
-			}
-			return nil
-		}
-		if err := p.tg.DeleteMessage(ctx, req.ChannelID, manifestMsgID); err != nil {
+		if err := carrier.Delete(ctx, req.ChannelID, manifestMsgID); err != nil {
 			if !isNotFound(err) {
 				return telegram.MapError(err)
 			}
@@ -360,15 +341,7 @@ func (p *Publisher) rollbackManifest(ctx context.Context, req PublishRequest, ma
 	fullMeta := oldMeta
 	fullMeta.Tags = oldTags
 	text := manifest.RenderManifestReplyFitting(fullMeta, manifest.DefaultTextBudget, p.cfg.MarginUTF16Units)
-	if req.ManifestChatID != "" {
-		if err := p.tg.EditThreadMessage(ctx, req.ChannelID, req.ManifestMsgID, text); err != nil {
-			if !isNotEditable(err) && !isNotFound(err) {
-				return telegram.MapError(err)
-			}
-		}
-		return nil
-	}
-	if err := p.tg.EditText(ctx, req.ChannelID, req.ManifestMsgID, text); err != nil {
+	if err := carrier.Edit(ctx, req.ChannelID, req.ManifestMsgID, text); err != nil {
 		if !isNotEditable(err) && !isNotFound(err) {
 			return telegram.MapError(err)
 		}

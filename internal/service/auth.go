@@ -66,11 +66,6 @@ func (a *App) AuthLogout(ctx context.Context) error {
 	return a.TG.Logout(ctx)
 }
 
-// ListChannels returns channels visible to the logged-in user.
-func (a *App) ListChannels(ctx context.Context, onlyDrive bool) ([]telegram.Channel, error) {
-	return a.TG.ListChannels(ctx, telegram.ListChannelsOptions{OnlyDrive: onlyDrive})
-}
-
 // InitRoot initializes a local root and optionally creates/binds a channel.
 func (a *App) InitRoot(ctx context.Context, localRoot, channelTitle string, create, bind string) (map[string]any, error) {
 	user, ok, err := a.TG.Status(ctx)
@@ -121,21 +116,17 @@ func (a *App) InitRoot(ctx context.Context, localRoot, channelTitle string, crea
 		}
 		accountID, _ = res.LastInsertId()
 	}
-	_, err = a.DB.Raw().ExecContext(ctx, `
+	// RETURNING covers both upsert branches (fresh insert and conflict
+	// update) with the row id, so no re-select is needed.
+	var channelRowID int64
+	err = a.DB.Raw().QueryRowContext(ctx, `
 		insert into channels(account_id,tg_channel_id,access_hash,title,root_local_path,root_remote_path,strategy,created_at,updated_at)
 		values(?,?,?,?,?,?,'single',?,?)
-		on conflict(account_id, tg_channel_id) do update set title=excluded.title, access_hash=excluded.access_hash, root_local_path=excluded.root_local_path, updated_at=excluded.updated_at`,
-		accountID, fmt.Sprintf("%d", ch.ID), fmt.Sprintf("%d", ch.AccessHash), ch.Title, localRoot, "/", now, now)
+		on conflict(account_id, tg_channel_id) do update set title=excluded.title, access_hash=excluded.access_hash, root_local_path=excluded.root_local_path, updated_at=excluded.updated_at
+		returning id`,
+		accountID, fmt.Sprintf("%d", ch.ID), fmt.Sprintf("%d", ch.AccessHash), ch.Title, localRoot, "/", now, now).Scan(&channelRowID)
 	if err != nil {
 		return nil, apperr.Wrap(apperr.ErrDB, "insert channel", err)
-	}
-	// Machine records live in the linked discussion group's comment threads
-	// (ADR 0018): ensure one exists and record it on the channel row. An
-	// already-linked channel keeps its group.
-	var channelRowID int64
-	if err := a.DB.Raw().QueryRowContext(ctx, `select id from channels where account_id=? and tg_channel_id=?`,
-		accountID, fmt.Sprintf("%d", ch.ID)).Scan(&channelRowID); err != nil {
-		return nil, apperr.Wrap(apperr.ErrDB, "lookup channel row", err)
 	}
 	group, err := a.TG.EnsureDiscussionGroup(ctx, ch.ID)
 	if err != nil {
@@ -327,31 +318,6 @@ func (a *App) Doctor(ctx context.Context) (map[string]any, error) {
 		out["hints"] = hints
 	}
 	return out, nil
-}
-
-// LinkDiscussionGroup ensures the bound channel has a linked discussion
-// group (creating one when needed) and records it on the channel row
-// (ADR 0018).
-func (a *App) LinkDiscussionGroup(ctx context.Context) (map[string]any, error) {
-	channelRowID, _, err := a.channelID(ctx)
-	if err != nil {
-		return nil, err
-	}
-	tgChID, err := a.tgChannelID(ctx)
-	if err != nil {
-		return nil, err
-	}
-	group, err := a.TG.EnsureDiscussionGroup(ctx, tgChID)
-	if err != nil {
-		return nil, telegram.MapError(err)
-	}
-	if err := a.DB.SetDiscussionGroup(ctx, channelRowID, fmt.Sprintf("%d", group.ID), fmt.Sprintf("%d", group.AccessHash), group.Title); err != nil {
-		return nil, err
-	}
-	return map[string]any{
-		"discussion_channel_id": group.ID,
-		"discussion_title":      group.Title,
-	}, nil
 }
 
 func boolCheck(ok bool) string {

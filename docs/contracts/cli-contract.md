@@ -89,7 +89,7 @@ td rm <remote-path>
   [--tombstone] [--allow-stale-manifest]
   [--confirm] [--dry-run]
 td share [remote-path]
-td import [message-id] [remote-path]
+td adopt [message-id] [remote-path]
   [--unmanaged] [--into <dir>]
   [--hash]
   [--rewrite-captions]
@@ -99,6 +99,13 @@ td import [message-id] [remote-path]
   # td-album:v1 inventory comment per group
   # --hash downloads each adopted file to compute and store its BLAKE3
   # content hash, so post-rebuild downloads verify content
+td import <source>
+  # reserved for external-chat ingest (ADR 0019): brings content in from
+  # another Telegram chat by re-uploading fresh bytes; the first source
+  # (`saved`) ships with #41. Old in-place claim forms (bare `td import`,
+  # `td import <id> <path>`, `td import --unmanaged`,
+  # `td import --rewrite-captions`) fail with ERR_USAGE naming the split;
+  # old import-only flags on the new form report ERR_FLAG_CONFLICT.
 td repair [path]
 td repair --pending
 td repair --orphaned [--delete-orphaned --confirm]
@@ -113,7 +120,7 @@ td config get [key]
 td config set <key> <value>
 ```
 
-`--confirm` is required for `td rm`, `td mv`, `td cp --replace`, `td import` (unless `--dry-run`), and `td repair --delete-orphaned`.
+`--confirm` is required for `td rm`, `td mv`, `td cp --replace`, `td adopt` (unless `--dry-run`), and `td repair --delete-orphaned`.
 
 JSON envelopes include `meta` as specified in `docs/contracts/json-contract.md`. The short envelopes below omit `meta` for brevity.
 

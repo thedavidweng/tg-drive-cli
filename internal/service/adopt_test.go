@@ -9,7 +9,7 @@ import (
 	"github.com/thedavidweng/tg-drive-cli/core/telegram"
 )
 
-func TestImportDryRunDoesNotEdit(t *testing.T) {
+func TestAdoptDryRunDoesNotEdit(t *testing.T) {
 	app, tg := testApp(t)
 	loginAndInit(t, app, tg)
 	ctx := context.Background()
@@ -18,18 +18,18 @@ func TestImportDryRunDoesNotEdit(t *testing.T) {
 		ID: 50, Kind: telegram.KindDocument, MIME: "video/mp4",
 		FileName: "The Bet.mp4", FileSize: 1000, Data: []byte("video"),
 	})
-	res, err := app.Import(ctx, ImportOptions{Unmanaged: true, DryRun: true, NoHash: true})
+	res, err := app.Adopt(ctx, AdoptOptions{Unmanaged: true, DryRun: true, NoHash: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	var adopted int
 	for _, it := range res.Items {
-		if it.Action == "import" {
+		if it.Action == "adopt" {
 			adopted++
 		}
 	}
 	if adopted != 1 {
-		t.Fatalf("imported=%d items=%v", adopted, res.Items)
+		t.Fatalf("adopted=%d items=%v", adopted, res.Items)
 	}
 	if res.Items[0].Path != "/videos/The Bet.mp4" {
 		t.Fatalf("path = %q", res.Items[0].Path)
@@ -43,7 +43,7 @@ func TestImportDryRunDoesNotEdit(t *testing.T) {
 	}
 }
 
-func TestImportAdoptsVideoPhotoAndText(t *testing.T) {
+func TestAdoptAdoptsVideoPhotoAndText(t *testing.T) {
 	app, tg := testApp(t)
 	loginAndInit(t, app, tg)
 	ctx := context.Background()
@@ -59,13 +59,13 @@ func TestImportAdoptsVideoPhotoAndText(t *testing.T) {
 	tg.AddMessage(tgChID, telegram.Message{
 		ID: 72, Kind: telegram.KindText, MIME: "text/plain", Text: "shopping list\nmilk",
 	})
-	res, err := app.Import(ctx, ImportOptions{Unmanaged: true, NoHash: true})
+	res, err := app.Adopt(ctx, AdoptOptions{Unmanaged: true, NoHash: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	var adopted int
 	for _, it := range res.Items {
-		if it.Action == "import" {
+		if it.Action == "adopt" {
 			adopted++
 		}
 	}
@@ -112,18 +112,18 @@ func TestRewriteCaptionsRestoresHumanText(t *testing.T) {
 		FileName: "clip.mp4", FileSize: 4, Data: []byte("abcd"),
 		Caption: "https://example.com\n#tag",
 	})
-	if _, err := app.Import(ctx, ImportOptions{MessageID: 80, Dest: "/videos/clip.mp4", NoHash: true}); err != nil {
+	if _, err := app.Adopt(ctx, AdoptOptions{MessageID: 80, Dest: "/videos/clip.mp4", NoHash: true}); err != nil {
 		t.Fatal(err)
 	}
 	// Simulate the old bug: machine metadata overwritten onto the media.
 	if err := tg.EditCaption(ctx, tgChID, 80, "https://example.com\n#tag\n\nclip.mp4\nvideos/\n\ntd:v1 p=x n=y\n#td_videos_xx"); err != nil {
 		t.Fatal(err)
 	}
-	res, err := app.Import(ctx, ImportOptions{RewriteCaptions: true})
+	res, err := app.Adopt(ctx, AdoptOptions{RewriteCaptions: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Imported < 1 {
+	if res.Adopted < 1 {
 		t.Fatalf("res = %+v", res)
 	}
 	got, err := tg.GetMessage(ctx, tgChID, 80)
@@ -138,7 +138,7 @@ func TestRewriteCaptionsRestoresHumanText(t *testing.T) {
 	}
 }
 
-func TestImportSkipsManagedAndManifestReply(t *testing.T) {
+func TestAdoptSkipsManagedAndManifestReply(t *testing.T) {
 	app, tg := testApp(t)
 	loginAndInit(t, app, tg)
 	ctx := context.Background()
@@ -146,11 +146,11 @@ func TestImportSkipsManagedAndManifestReply(t *testing.T) {
 	if _, err := app.UploadFile(ctx, local, "/already.txt", ConflictFail, false); err != nil {
 		t.Fatal(err)
 	}
-	res, err := app.Import(ctx, ImportOptions{Unmanaged: true, DryRun: true, NoHash: true})
+	res, err := app.Adopt(ctx, AdoptOptions{Unmanaged: true, DryRun: true, NoHash: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Imported != 0 {
+	if res.Adopted != 0 {
 		t.Fatalf("should skip managed uploads, got %+v", res)
 	}
 }
@@ -176,14 +176,14 @@ func TestAlbumCaptionPrefersHashtagsOverFilenames(t *testing.T) {
 	}
 }
 
-func TestProposeImportPathSanitizes(t *testing.T) {
-	p := proposeImportPath(telegram.Message{ID: 1, Kind: telegram.KindDocument, MIME: "video/mp4", FileName: "a/b.mp4"}, "/")
+func TestProposeAdoptPathSanitizes(t *testing.T) {
+	p := proposeAdoptPath(telegram.Message{ID: 1, Kind: telegram.KindDocument, MIME: "video/mp4", FileName: "a/b.mp4"}, "/")
 	if p != "/videos/a_b.mp4" {
 		t.Fatalf("path = %q", p)
 	}
 }
 
-func TestImportLeavesAlbumCaptionAlone(t *testing.T) {
+func TestAdoptLeavesAlbumCaptionAlone(t *testing.T) {
 	app, tg := testApp(t)
 	loginAndInit(t, app, tg)
 	ctx := context.Background()
@@ -203,7 +203,7 @@ func TestImportLeavesAlbumCaptionAlone(t *testing.T) {
 		FileName: "c.mp4", FileSize: 4, Data: []byte("cccc"),
 		GroupedID: 7,
 	})
-	if _, err := app.Import(ctx, ImportOptions{Unmanaged: true, NoHash: true}); err != nil {
+	if _, err := app.Adopt(ctx, AdoptOptions{Unmanaged: true, NoHash: true}); err != nil {
 		t.Fatal(err)
 	}
 	first, _ := tg.GetMessage(ctx, tgChID, 200)
@@ -253,7 +253,7 @@ func TestRewriteAlbumRestoresGroupCaptionAndDeletesReplies(t *testing.T) {
 		FileName: "c.mp4", FileSize: 4, Data: []byte("cccc"),
 		Caption: "c.mp4", GroupedID: 9,
 	})
-	if _, err := app.Import(ctx, ImportOptions{Unmanaged: true, NoHash: true}); err != nil {
+	if _, err := app.Adopt(ctx, AdoptOptions{Unmanaged: true, NoHash: true}); err != nil {
 		t.Fatal(err)
 	}
 	rt := 300
@@ -261,7 +261,7 @@ func TestRewriteAlbumRestoresGroupCaptionAndDeletesReplies(t *testing.T) {
 	rt2 := 301
 	tg.AddMessage(tgChID, telegram.Message{ID: 401, Text: "td-manifest:v1 p=y", ReplyTo: &rt2})
 
-	res, err := app.Import(ctx, ImportOptions{RewriteCaptions: true})
+	res, err := app.Adopt(ctx, AdoptOptions{RewriteCaptions: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +310,7 @@ func TestScanRebuildsAlbumFromReply(t *testing.T) {
 		FileName: "b.mp4", FileSize: 4, Data: []byte("bbbb"),
 		GroupedID: 12,
 	})
-	if _, err := app.Import(ctx, ImportOptions{Unmanaged: true, NoHash: true}); err != nil {
+	if _, err := app.Adopt(ctx, AdoptOptions{Unmanaged: true, NoHash: true}); err != nil {
 		t.Fatal(err)
 	}
 	channelID, _, _ := app.channelID(ctx)
@@ -354,7 +354,7 @@ func TestMoveAndDeleteAlbumMemberKeepsGroup(t *testing.T) {
 		FileName: "b.mp4", FileSize: 4, Data: []byte("bbbb"),
 		GroupedID: 15,
 	})
-	if _, err := app.Import(ctx, ImportOptions{Unmanaged: true, NoHash: true}); err != nil {
+	if _, err := app.Adopt(ctx, AdoptOptions{Unmanaged: true, NoHash: true}); err != nil {
 		t.Fatal(err)
 	}
 	if err := app.MoveFile(ctx, "/videos/b.mp4", "/clips/b.mp4"); err != nil {
@@ -408,7 +408,7 @@ func TestScanKeepsAdoptedFilesWithoutMetadata(t *testing.T) {
 		FileName: "clip.mp4", FileSize: 4, Data: []byte("data"),
 		Caption: "#tag only",
 	})
-	if _, err := app.Import(ctx, ImportOptions{Unmanaged: true, NoHash: true}); err != nil {
+	if _, err := app.Adopt(ctx, AdoptOptions{Unmanaged: true, NoHash: true}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := app.Scan(ctx, ScanOptions{Full: true}); err != nil {

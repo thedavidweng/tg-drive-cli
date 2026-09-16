@@ -19,7 +19,7 @@ download, and filter folders by hashtag.
 - Upload and download files, including recursive trees
 - Exact `ls` / `tree` over a local cache
 - File-level move, rename, delete, or tombstone
-- Import existing channel messages without re-uploading
+- Adopt existing channel messages without re-uploading
 - Recover the index from Telegram after database loss
 - Native hashtag navigation in Telegram clients
 - Stable `--json` output for scripts
@@ -137,7 +137,7 @@ td scan --full
 | `td cp` / `td get` | Upload / download |
 | `td ls` / `td tree` | Browse the cache |
 | `td mv` / `td rm` | Rename or delete |
-| `td import` | Adopt existing Telegram messages |
+| `td adopt` | Adopt existing Telegram messages |
 | `td share` | Invite link and subtree hashtag |
 | `td scan` / `td repair` | Rebuild or fix the index |
 | `td doctor` / `td status` | Health and capability checks |
@@ -149,7 +149,7 @@ td cp --replace --confirm ~/new.jpg /2024/beach.jpg
 td get --recursive /Pictures ./restore
 td mv --confirm /2024/beach.jpg /Archive
 td rm --confirm /2024/beach.jpg
-td import --unmanaged --dry-run --channel "Pictures [TD]"
+td adopt --unmanaged --dry-run --channel "Pictures [TD]"
 td scan --full
 td doctor
 ```
@@ -157,7 +157,7 @@ td doctor
 Global flags: `--json`, `--quiet`, `--verbose`, `--config`, `--db`,
 `--session`, `--channel`, `--wait`, `--no-wait`.
 
-Destructive remote writes (`rm`, `mv`, `cp --replace`, `import`,
+Destructive remote writes (`rm`, `mv`, `cp --replace`, `adopt`,
 `repair --delete-orphaned`) require `--confirm`.
 
 See `td --help` and `td <command> --help` for the full flag list. Frozen
@@ -252,8 +252,8 @@ Task-oriented how-tos
 
 - [Recover the index](docs/guides/recover-the-index.md) — rebuild after
   database loss, repair pending/orphaned uploads
-- [Import an existing channel](docs/guides/import-an-existing-channel.md) —
-  adopt messages without re-uploading
+- [Adopt an existing channel](docs/guides/adopt-an-existing-channel.md) —
+  claim messages without re-uploading
 - [Organize files](docs/guides/organize-files.md) — move, rename, delete,
   tombstone safely
 - [Share folders](docs/guides/share-and-navigate.md) — invite links and

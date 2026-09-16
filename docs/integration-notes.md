@@ -9,7 +9,7 @@ itself is decided in ADR 0016.
 
 | Form | Produced by | Native clients show | Bytes on Telegram |
 |---|---|---|---|
-| Native photo | `td cp --as photo`, or a photo sent by hand (adopted via `td import`) | full-size inline preview, swipeable gallery | recompressed by Telegram |
+| Native photo | `td cp --as photo`, or a photo sent by hand (adopted via `td adopt`) | full-size inline preview, swipeable gallery | recompressed by Telegram |
 | Attributed video | `td cp --as video --duration <s> --width <px> --height <px> [--streaming] [--thumb <file.jpg>]` | playable, streamable video card with an instant preview when a thumb is attached | untouched (still a document) |
 | Document | `td cp` default, or `--as document` | file card | untouched |
 

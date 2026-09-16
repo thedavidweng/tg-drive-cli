@@ -11,18 +11,21 @@ import (
 	"github.com/thedavidweng/tg-drive-cli/internal/service"
 )
 
-// Import (channel adoption) and repair commands.
+// Adopt (in-place claim, ADR 0019) and repair commands. The `import` name is
+// reserved for external-chat ingest: `td import <source>` (ADR 0019, #41).
 
-func NewImportCmd(rt Runtime) *cobra.Command {
+// NewAdoptCmd claims existing drive-channel messages into the index without
+// moving bytes.
+func NewAdoptCmd(rt Runtime) *cobra.Command {
 	var unmanaged, hash, confirm, dryRun, continueOnError, rewriteCaptions bool
 	var into string
 	c := &cobra.Command{
-		Use:   "import [message-id] [remote-path]",
+		Use:   "adopt [message-id] [remote-path]",
 		Short: "Adopt existing Telegram messages into the virtual file tree",
 		Args:  cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r := rt.Renderer()
-			opts := service.ImportOptions{
+			opts := service.AdoptOptions{
 				Unmanaged:       unmanaged,
 				NoHash:          !hash,
 				DryRun:          dryRun,
@@ -41,7 +44,7 @@ func NewImportCmd(rt Runtime) *cobra.Command {
 				opts.Dest = args[1]
 			}
 			if opts.MessageID == 0 && !unmanaged && !rewriteCaptions {
-				return r.Error(apperr.New(apperr.ErrUsage, "import requires a message-id, --unmanaged, or --rewrite-captions"))
+				return r.Error(apperr.New(apperr.ErrUsage, "adopt requires a message-id, --unmanaged, or --rewrite-captions"))
 			}
 			if !dryRun && !confirm {
 				return r.Error(apperr.New(apperr.ErrConfirmationRequired, "adopting existing messages requires --confirm (or --dry-run)"))
@@ -51,7 +54,7 @@ func NewImportCmd(rt Runtime) *cobra.Command {
 				return r.Error(err)
 			}
 			defer cleanup()
-			data, err := app.Import(context.Background(), opts)
+			data, err := app.Adopt(context.Background(), opts)
 			if err != nil {
 				return r.Error(err)
 			}
@@ -60,16 +63,16 @@ func NewImportCmd(rt Runtime) *cobra.Command {
 			}
 			out := cmd.OutOrStdout()
 			if rewriteCaptions {
-				_, _ = fmt.Fprintf(out, "import %s: %d captions restored, %d replies deleted, %d skipped, %d failed\n",
+				_, _ = fmt.Fprintf(out, "adopt %s: %d captions restored, %d replies deleted, %d skipped, %d failed\n",
 					map[bool]string{true: "dry-run", false: "done"}[data.DryRun],
-					data.Imported, data.Deleted, data.Skipped, data.Failed)
+					data.Adopted, data.Deleted, data.Skipped, data.Failed)
 			} else {
-				_, _ = fmt.Fprintf(out, "import %s: %d adopted, %d skipped, %d failed\n",
+				_, _ = fmt.Fprintf(out, "adopt %s: %d adopted, %d skipped, %d failed\n",
 					map[bool]string{true: "dry-run", false: "done"}[data.DryRun],
-					data.Imported, data.Skipped, data.Failed)
+					data.Adopted, data.Skipped, data.Failed)
 			}
 			for _, it := range data.Items {
-				if it.Action == "import" {
+				if it.Action == "adopt" {
 					_, _ = fmt.Fprintf(out, "  %s  msg %d  %s\n", it.Kind, it.MessageID, it.Path)
 					continue
 				}
@@ -85,6 +88,46 @@ func NewImportCmd(rt Runtime) *cobra.Command {
 	c.Flags().BoolVar(&dryRun, "dry-run", false, "print the adopt plan without editing Telegram")
 	c.Flags().BoolVar(&continueOnError, "continue-on-error", false, "continue adopting after a per-message error")
 	c.Flags().BoolVar(&rewriteCaptions, "rewrite-captions", false, "restore one human caption per album, delete per-file replies, and write one td-album:v1 inventory")
+	return c
+}
+
+// NewImportCmd holds the reserved `import` name for external-chat ingest
+// (ADR 0019): `td import <source>` brings content in from another Telegram
+// chat by re-uploading fresh bytes. The first source (`saved`, #41) is not
+// implemented yet, so every invocation currently fails. Old in-place claim
+// forms point at `td adopt`.
+func NewImportCmd(rt Runtime) *cobra.Command {
+	var unmanaged, hash, rewriteCaptions bool
+	var into string
+	c := &cobra.Command{
+		Use:   "import <source>",
+		Short: "Import content from an external Telegram chat (reserved; first source ships with #41)",
+		Args:  cobra.MaximumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			r := rt.Renderer()
+			pointer := "the in-place claim moved to td adopt; external sources begin with td import saved"
+			oldFlag := cmd.Flags().Changed("unmanaged") || cmd.Flags().Changed("into") ||
+				cmd.Flags().Changed("hash") || cmd.Flags().Changed("rewrite-captions")
+			if len(args) != 1 {
+				// bare td import, td import --unmanaged, td import <id> <path>
+				return r.Error(apperr.New(apperr.ErrUsage, pointer))
+			}
+			if oldFlag {
+				return r.Error(apperr.New(apperr.ErrFlagConflict, pointer))
+			}
+			if args[0] == "saved" {
+				return r.Error(apperr.New(apperr.ErrUsage, "the `saved` source is not implemented yet (issue #41); "+pointer))
+			}
+			return r.Error(apperr.New(apperr.ErrUsage, fmt.Sprintf("unknown import source %q; the first source is `saved` (issue #41)", args[0])))
+		},
+	}
+	c.Flags().BoolVar(&unmanaged, "unmanaged", false, "kept only to reject the old in-place claim form")
+	c.Flags().StringVar(&into, "into", "/", "kept only to reject the old in-place claim form")
+	c.Flags().BoolVar(&hash, "hash", false, "kept only to reject the old in-place claim form")
+	c.Flags().BoolVar(&rewriteCaptions, "rewrite-captions", false, "kept only to reject the old in-place claim form")
+	for _, name := range []string{"unmanaged", "into", "hash", "rewrite-captions"} {
+		_ = c.Flags().MarkHidden(name)
+	}
 	return c
 }
 

@@ -110,3 +110,83 @@ func TestRepairDeleteOrphanedConfirm(t *testing.T) {
 		t.Fatalf("deleted = %v, want 0 on a clean channel", data)
 	}
 }
+
+// TestImportReservedForExternalIngest pins the adopt/import vocabulary split
+// (ADR 0019): old in-place claim forms fail with pointers naming the split.
+func TestImportReservedForExternalIngest(t *testing.T) {
+	bin := buildBinary(t)
+	cases := []struct {
+		name string
+		args []string
+		code string
+	}{
+		{"bare import", []string{"import"}, "ERR_USAGE"},
+		{"old unmanaged form", []string{"import", "--unmanaged"}, "ERR_USAGE"},
+		{"old rewrite-captions form", []string{"import", "--rewrite-captions"}, "ERR_USAGE"},
+		{"old positional form", []string{"import", "123", "/videos/x.mp4"}, "ERR_USAGE"},
+		{"old flag on new form", []string{"import", "saved", "--unmanaged"}, "ERR_FLAG_CONFLICT"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command(bin, append([]string{"--json"}, tc.args...)...)
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout = &stdout
+			cmd.Stderr = &stderr
+			err := cmd.Run()
+			exit, ok := err.(*exec.ExitError)
+			if err == nil || !ok || !exit.Exited() {
+				t.Fatalf("err = %v", err)
+			}
+			if exit.ExitCode() != 2 {
+				t.Fatalf("exit = %d, want 2 (stdout=%s)", exit.ExitCode(), stdout.String())
+			}
+			out := stdout.String()
+			if !strings.Contains(out, tc.code) {
+				t.Fatalf("%s missing from %s", tc.code, out)
+			}
+			if !strings.Contains(out, "td adopt") || !strings.Contains(out, "td import saved") {
+				t.Fatalf("split pointer missing: %s", out)
+			}
+		})
+	}
+}
+
+// TestImportSourceSlotNotImplemented: the first external-chat source (`saved`)
+// is reserved for #41 and every other source name is unknown.
+func TestImportSourceSlotNotImplemented(t *testing.T) {
+	bin := buildBinary(t)
+	for src, want := range map[string]string{
+		"saved":  "not implemented yet",
+		"random": "unknown import source",
+	} {
+		cmd := exec.Command(bin, "--json", "import", src)
+		var stdout bytes.Buffer
+		cmd.Stdout = &stdout
+		if err := cmd.Run(); err == nil {
+			t.Fatalf("expected error for source %q", src)
+		}
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("source %q: %s", src, stdout.String())
+		}
+	}
+}
+
+// TestAdoptRequiresConfirm gates the renamed claim command.
+func TestAdoptRequiresConfirm(t *testing.T) {
+	bin := buildBinary(t)
+	cmd := exec.Command(bin, "--json", "adopt", "--unmanaged")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	exit, ok := err.(*exec.ExitError)
+	if err == nil || !ok || !exit.Exited() {
+		t.Fatalf("err = %v", err)
+	}
+	if exit.ExitCode() != 10 {
+		t.Fatalf("exit = %d, want 10 (stdout=%s)", exit.ExitCode(), stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "ERR_CONFIRMATION_REQUIRED") {
+		t.Fatalf("stdout = %s", stdout.String())
+	}
+}

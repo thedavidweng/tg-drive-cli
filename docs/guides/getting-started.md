@@ -99,7 +99,7 @@ next: td cp <local-file> /<remote-path>
 
 To adopt a channel that already contains media, use
 `--bind-channel` instead and see
-[Import an existing channel](import-an-existing-channel.md).
+[Adopt an existing channel](adopt-an-existing-channel.md).
 
 **Next step:** upload a file.
 

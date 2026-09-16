@@ -43,9 +43,10 @@ Channels
   channels    List Telegram channels
 
 Files
+  adopt       Adopt existing Telegram messages into the virtual file tree
   cp          Upload local file or directory
   get         Download remote file or directory
-  import      Adopt existing Telegram messages into the virtual file tree
+  import      Import content from an external Telegram chat (reserved; first source ships with #41)
   init        Initialize a local root
   ls          List remote directory
   mv          Move or rename remote file
@@ -288,24 +289,40 @@ Flags:
 
 `--confirm` is required unless `--dry-run`.
 
-### td import
+### td adopt
 
-Adopt existing Telegram messages into the virtual file tree.
+Adopt existing Telegram messages into the virtual file tree. The in-place
+claim lives here since ADR 0019; `td import` is reserved for external-chat
+ingest and its first source ships with #41.
 
 ```text
 Usage:
-  td import [message-id] [remote-path] [flags]
+  td adopt [message-id] [remote-path] [flags]
 
 Flags:
       --confirm             confirm adopting existing messages into the local index
       --continue-on-error   continue adopting after a per-message error
       --dry-run             print the adopt plan without editing Telegram
       --hash                download each adopted file to compute and store its BLAKE3 content hash
-      --rewrite-captions    convert to comment records: human-only captions, one td-manifest/td-album comment per file or group (ADR 0018)
+      --into string         remote directory prefix for --unmanaged (default "/")
+      --rewrite-captions    restore one human caption per album, delete per-file replies, and write one td-album:v1 inventory
       --unmanaged           adopt every unmanaged media/text message in the channel
 ```
 
 `--confirm` is required unless `--dry-run`.
+
+### td import
+
+Import content from an external Telegram chat (reserved; first source ships
+with #41). Brings content in from another Telegram chat by re-uploading fresh
+bytes; the first source (`saved`) ships with issue #41. Until then every
+invocation fails: old in-place claim forms with `ERR_USAGE` pointing at
+`td adopt`, adopt-only flags with `ERR_FLAG_CONFLICT`.
+
+```text
+Usage:
+  td import <source> [flags]
+```
 
 ### td share
 

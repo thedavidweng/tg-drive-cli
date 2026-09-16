@@ -20,6 +20,7 @@
 - **Resumable upload** — A big-file upload whose part state is persisted in `upload_progress` so it can continue after interruption.
 - **Operation lock** — A row in `operation_locks` that serializes path-touching operations across processes.
 - **File publisher** — The module that publishes a file to the index, turning a canonical path, display name, content hash, and Telegram message into a file row, manifest, hashtag tags, slug mappings, and derived nodes.
+- **Adopt** — Claim an existing message of the bound drive channel into the virtual file tree without re-uploading bytes (`td adopt`). The media message stays where it is; td writes machine records and indexes the file.
 - **Scan** — Reading a Telegram channel's messages and rebuilding the local SQLite index.
 - **Tombstone** — A soft delete: the Telegram message is edited to a tombstone caption instead of being removed.
 

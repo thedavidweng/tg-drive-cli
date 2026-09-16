@@ -20,8 +20,8 @@ import (
 	"lukechampine.com/blake3"
 )
 
-// ImportOptions controls td import / adopt.
-type ImportOptions struct {
+// AdoptOptions controls td adopt.
+type AdoptOptions struct {
 	MessageID       int
 	Dest            string
 	Into            string
@@ -32,8 +32,8 @@ type ImportOptions struct {
 	RewriteCaptions bool
 }
 
-// ImportPlanItem is one message that would be adopted or restored.
-type ImportPlanItem struct {
+// AdoptPlanItem is one message that would be adopted or restored.
+type AdoptPlanItem struct {
 	MessageID int    `json:"message_id"`
 	Kind      string `json:"kind"`
 	MIME      string `json:"mime,omitempty"`
@@ -46,28 +46,28 @@ type ImportPlanItem struct {
 	Caption   string `json:"caption,omitempty"`
 }
 
-// ImportResult is the dry-run or execute summary.
-type ImportResult struct {
-	DryRun   bool             `json:"dry_run"`
-	Imported int              `json:"imported"`
-	Skipped  int              `json:"skipped"`
-	Failed   int              `json:"failed"`
-	Deleted  int              `json:"deleted"`
-	Items    []ImportPlanItem `json:"items"`
+// AdoptResult is the dry-run or execute summary.
+type AdoptResult struct {
+	DryRun  bool            `json:"dry_run"`
+	Adopted int             `json:"adopted"`
+	Skipped int             `json:"skipped"`
+	Failed  int             `json:"failed"`
+	Deleted int             `json:"deleted"`
+	Items   []AdoptPlanItem `json:"items"`
 }
 
-func (a *App) Import(ctx context.Context, opts ImportOptions) (*ImportResult, error) {
+func (a *App) Adopt(ctx context.Context, opts AdoptOptions) (*AdoptResult, error) {
 	if opts.RewriteCaptions {
 		return a.rewriteAdoptCaptions(ctx, opts)
 	}
 	if !opts.Unmanaged && opts.MessageID <= 0 {
-		return nil, apperr.New(apperr.ErrUsage, "import requires a message id or --unmanaged")
+		return nil, apperr.New(apperr.ErrUsage, "adopt requires a message id or --unmanaged")
 	}
 	channelID, _, err := a.channelID(ctx)
 	if err != nil {
 		return nil, err
 	}
-	// New machine records are comment threads (ADR 0018): import needs the
+	// New machine records are comment threads (ADR 0018): adopt needs the
 	// linked discussion group.
 	manifestChat, err := a.discussionChatID(ctx, channelID)
 	if err != nil {
@@ -110,7 +110,7 @@ func (a *App) Import(ctx context.Context, opts ImportOptions) (*ImportResult, er
 		return nil, err
 	}
 
-	out := &ImportResult{DryRun: opts.DryRun, Items: []ImportPlanItem{}}
+	out := &AdoptResult{DryRun: opts.DryRun, Items: []AdoptPlanItem{}}
 	used := map[string]bool{}
 	for _, ap := range active {
 		if !ap.IsDir {
@@ -119,7 +119,7 @@ func (a *App) Import(ctx context.Context, opts ImportOptions) (*ImportResult, er
 	}
 
 	for _, msg := range msgs {
-		item, skip := classifyImport(msg, opts.Dest, into, used)
+		item, skip := classifyAdopt(msg, opts.Dest, into, used)
 		if skip {
 			out.Skipped++
 			out.Items = append(out.Items, item)
@@ -166,15 +166,15 @@ func (a *App) Import(ctx context.Context, opts ImportOptions) (*ImportResult, er
 			out.Items = append(out.Items, item)
 			continue
 		}
-		item.Action = "import"
+		item.Action = "adopt"
 		if opts.DryRun {
-			out.Imported++
+			out.Adopted++
 			out.Items = append(out.Items, item)
 			used[item.Path] = true
 			active = append(active, fsmodel.ActivePath{Canonical: item.Path, IsDir: false})
 			continue
 		}
-		if err := a.importOne(ctx, channelID, tgChID, msg, item.Path, opts); err != nil {
+		if err := a.adoptOne(ctx, channelID, tgChID, msg, item.Path, opts); err != nil {
 			item.Action = "fail"
 			item.Reason = err.Error()
 			out.Failed++
@@ -184,7 +184,7 @@ func (a *App) Import(ctx context.Context, opts ImportOptions) (*ImportResult, er
 			}
 			continue
 		}
-		out.Imported++
+		out.Adopted++
 		out.Items = append(out.Items, item)
 		used[item.Path] = true
 		active = append(active, fsmodel.ActivePath{Canonical: item.Path, IsDir: false})
@@ -217,10 +217,10 @@ func (a *App) indexedMessageIDs(ctx context.Context, channelID int64) (map[int]b
 	return out, nil
 }
 
-func classifyImport(msg telegram.Message, dest, into string, used map[string]bool) (ImportPlanItem, bool) {
-	item := ImportPlanItem{
+func classifyAdopt(msg telegram.Message, dest, into string, used map[string]bool) (AdoptPlanItem, bool) {
+	item := AdoptPlanItem{
 		MessageID: msg.ID,
-		Kind:      importKind(msg),
+		Kind:      adoptKind(msg),
 		MIME:      msg.MIME,
 		Size:      msg.FileSize,
 		FileName:  msg.FileName,
@@ -254,12 +254,12 @@ func classifyImport(msg telegram.Message, dest, into string, used map[string]boo
 		item.Path = p
 		return item, false
 	}
-	item.Path = proposeImportPath(msg, into)
+	item.Path = proposeAdoptPath(msg, into)
 	_ = used
 	return item, false
 }
 
-func importKind(msg telegram.Message) string {
+func adoptKind(msg telegram.Message) string {
 	if msg.Kind == telegram.KindPhoto || strings.HasPrefix(msg.MIME, "image/") {
 		return "photo"
 	}
@@ -278,8 +278,8 @@ func importKind(msg telegram.Message) string {
 	return "unknown"
 }
 
-func proposeImportPath(msg telegram.Message, into string) string {
-	kind := importKind(msg)
+func proposeAdoptPath(msg telegram.Message, into string) string {
+	kind := adoptKind(msg)
 	folder := "files"
 	switch kind {
 	case "video":
@@ -291,7 +291,7 @@ func proposeImportPath(msg telegram.Message, into string) string {
 	case "text":
 		folder = "notes"
 	}
-	name := sanitizeImportName(msg.FileName)
+	name := sanitizeAdoptName(msg.FileName)
 	if name == "" && kind == "photo" {
 		name = captionFileName(msg.Caption, msg.ID, ".jpg")
 	}
@@ -314,7 +314,7 @@ func proposeImportPath(msg telegram.Message, into string) string {
 	return p
 }
 
-func sanitizeImportName(name string) string {
+func sanitizeAdoptName(name string) string {
 	name = strings.TrimSpace(norm.NFC.String(name))
 	name = strings.ReplaceAll(name, "\\", "_")
 	name = strings.ReplaceAll(name, "/", "_")
@@ -332,7 +332,7 @@ func sanitizeImportName(name string) string {
 }
 
 func captionFileName(caption string, id int, ext string) string {
-	human := sanitizeImportName(manifest.SplitHumanAndMachine(caption))
+	human := sanitizeAdoptName(manifest.SplitHumanAndMachine(caption))
 	line := strings.TrimSpace(strings.Split(human, "\n")[0])
 	if line == "" || strings.HasPrefix(strings.ToLower(line), "http://") || strings.HasPrefix(strings.ToLower(line), "https://") {
 		return fmt.Sprintf("photo-%d%s", id, ext)
@@ -352,7 +352,7 @@ func noteName(text string, id int) string {
 	human := manifest.SplitHumanAndMachine(text)
 	line := strings.TrimSpace(strings.Split(human, "\n")[0])
 	line = strings.TrimLeft(line, "#")
-	line = sanitizeImportName(line)
+	line = sanitizeAdoptName(line)
 	if line == "" || strings.HasPrefix(strings.ToLower(line), "http://") || strings.HasPrefix(strings.ToLower(line), "https://") {
 		return fmt.Sprintf("note-%d.txt", id)
 	}
@@ -384,17 +384,17 @@ func extForMIME(mime string) string {
 	}
 }
 
-func (a *App) importOne(ctx context.Context, channelID, tgChID int64, msg telegram.Message, dest string, opts ImportOptions) error {
-	// Import only claims the message in the local index. Telegram captions
+func (a *App) adoptOne(ctx context.Context, channelID, tgChID int64, msg telegram.Message, dest string, opts AdoptOptions) error {
+	// Adopt only claims the message in the local index. Telegram captions
 	// stay untouched so media albums keep their single human caption.
 	display := fsmodel.BaseName(dest)
 	size := msg.FileSize
 	mimeType := msg.MIME
-	if mimeType == "" && importKind(msg) == "text" {
+	if mimeType == "" && adoptKind(msg) == "text" {
 		mimeType = "text/plain"
 	}
 	body := manifest.SplitHumanAndMachine(msg.Text)
-	if importKind(msg) == "text" && size == 0 {
+	if adoptKind(msg) == "text" && size == 0 {
 		size = int64(len([]byte(body)))
 	}
 
@@ -403,7 +403,7 @@ func (a *App) importOne(ctx context.Context, channelID, tgChID int64, msg telegr
 	contentHash := ""
 	if !opts.NoHash {
 		h := blake3.New(32, nil)
-		if importKind(msg) == "text" {
+		if adoptKind(msg) == "text" {
 			_, _ = h.Write([]byte(body))
 		} else {
 			if err := a.TG.DownloadMedia(ctx, tgChID, msg.ID, h); err != nil {
@@ -438,7 +438,7 @@ func (a *App) importOne(ctx context.Context, channelID, tgChID int64, msg telegr
 	})
 }
 
-func (a *App) rewriteAdoptCaptions(ctx context.Context, opts ImportOptions) (*ImportResult, error) {
+func (a *App) rewriteAdoptCaptions(ctx context.Context, opts AdoptOptions) (*AdoptResult, error) {
 	channelID, _, err := a.channelID(ctx)
 	if err != nil {
 		return nil, err
@@ -475,14 +475,14 @@ func (a *App) rewriteAdoptCaptions(ctx context.Context, opts ImportOptions) (*Im
 		return nil, telegram.MapError(err)
 	}
 
-	out := &ImportResult{DryRun: opts.DryRun, Items: []ImportPlanItem{}}
+	out := &AdoptResult{DryRun: opts.DryRun, Items: []AdoptPlanItem{}}
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	for _, msg := range history {
 		if !isPerFileManifestReply(msg) {
 			continue
 		}
-		item := ImportPlanItem{MessageID: msg.ID, Kind: "reply", Action: "delete", Reason: "per-file td-manifest:v1 reply"}
+		item := AdoptPlanItem{MessageID: msg.ID, Kind: "reply", Action: "delete", Reason: "per-file td-manifest:v1 reply"}
 		if opts.DryRun {
 			out.Deleted++
 			out.Items = append(out.Items, item)
@@ -544,7 +544,7 @@ func (a *App) rewriteAdoptCaptions(ctx context.Context, opts ImportOptions) (*Im
 	return out, nil
 }
 
-func (a *App) restoreAlbumCaptions(ctx context.Context, tgChID int64, members []telegram.Message, files map[int]fileRowLookup, opts ImportOptions, out *ImportResult) error {
+func (a *App) restoreAlbumCaptions(ctx context.Context, tgChID int64, members []telegram.Message, files map[int]fileRowLookup, opts AdoptOptions, out *AdoptResult) error {
 	sort.Slice(members, func(i, j int) bool { return members[i].ID < members[j].ID })
 	want := pickAlbumCaption(members, files)
 	for i, msg := range members {
@@ -557,20 +557,20 @@ func (a *App) restoreAlbumCaptions(ctx context.Context, tgChID int64, members []
 		current := messageBody(msg)
 		if current == target {
 			out.Skipped++
-			out.Items = append(out.Items, ImportPlanItem{
-				MessageID: msg.ID, Kind: importKind(msg), FileName: msg.FileName,
+			out.Items = append(out.Items, AdoptPlanItem{
+				MessageID: msg.ID, Kind: adoptKind(msg), FileName: msg.FileName,
 				GroupedID: msg.GroupedID, Action: "skip", Reason: "album caption already correct",
 				Caption: target, Path: files[msg.ID].path,
 			})
 			continue
 		}
-		item := ImportPlanItem{
-			MessageID: msg.ID, Kind: importKind(msg), FileName: msg.FileName,
+		item := AdoptPlanItem{
+			MessageID: msg.ID, Kind: adoptKind(msg), FileName: msg.FileName,
 			GroupedID: msg.GroupedID, Action: action, Caption: target,
 			Path: files[msg.ID].path, Reason: albumActionReason(action, target),
 		}
 		if opts.DryRun {
-			out.Imported++
+			out.Adopted++
 			out.Items = append(out.Items, item)
 			continue
 		}
@@ -584,18 +584,18 @@ func (a *App) restoreAlbumCaptions(ctx context.Context, tgChID int64, members []
 			}
 			continue
 		}
-		out.Imported++
+		out.Adopted++
 		out.Items = append(out.Items, item)
 	}
 	return nil
 }
 
-func (a *App) restoreSingleCaption(ctx context.Context, tgChID int64, msg telegram.Message, files map[int]fileRowLookup, opts ImportOptions, out *ImportResult) error {
+func (a *App) restoreSingleCaption(ctx context.Context, tgChID int64, msg telegram.Message, files map[int]fileRowLookup, opts AdoptOptions, out *AdoptResult) error {
 	body := messageBody(msg)
 	if !manifest.HasMachineMeta(body) {
 		out.Skipped++
-		out.Items = append(out.Items, ImportPlanItem{
-			MessageID: msg.ID, Kind: importKind(msg), FileName: msg.FileName,
+		out.Items = append(out.Items, AdoptPlanItem{
+			MessageID: msg.ID, Kind: adoptKind(msg), FileName: msg.FileName,
 			Action: "skip", Reason: "ungrouped caption already human", Path: files[msg.ID].path,
 		})
 		return nil
@@ -607,13 +607,13 @@ func (a *App) restoreSingleCaption(ctx context.Context, tgChID int64, msg telegr
 		parent = fsmodel.HumanParent(f.path)
 	}
 	visible := manifest.HumanVisibleCaption(body, display, parent)
-	item := ImportPlanItem{
-		MessageID: msg.ID, Kind: importKind(msg), FileName: msg.FileName,
+	item := AdoptPlanItem{
+		MessageID: msg.ID, Kind: adoptKind(msg), FileName: msg.FileName,
 		Action: "keep", Caption: visible, Path: files[msg.ID].path,
 		Reason: "strip td:v1 from ungrouped caption",
 	}
 	if opts.DryRun {
-		out.Imported++
+		out.Adopted++
 		out.Items = append(out.Items, item)
 		return nil
 	}
@@ -627,7 +627,7 @@ func (a *App) restoreSingleCaption(ctx context.Context, tgChID int64, msg telegr
 		}
 		return nil
 	}
-	out.Imported++
+	out.Adopted++
 	out.Items = append(out.Items, item)
 	return nil
 }
@@ -673,7 +673,7 @@ func albumCaptionCandidate(caption, fileName, display string) string {
 	if !isInventedCaption(human, fileName, display) {
 		return human
 	}
-	// Import used to turn the album caption into a filename like
+	// Adopt used to turn the album caption into a filename like
 	// "foo #bar.jpg". Strip the extension and keep the human text.
 	stripped := stripMediaExt(human)
 	if stripped != human && strings.Contains(stripped, "#") {
@@ -756,10 +756,10 @@ func messageBody(msg telegram.Message) string {
 	return msg.Text
 }
 
-func previewNewManifests(msgs []telegram.Message, out *ImportResult) {
+func previewNewManifests(msgs []telegram.Message, out *AdoptResult) {
 	planned := map[int]bool{}
 	for _, it := range out.Items {
-		if it.Action == "import" {
+		if it.Action == "adopt" {
 			planned[it.MessageID] = true
 		}
 	}
@@ -777,18 +777,18 @@ func previewNewManifests(msgs []telegram.Message, out *ImportResult) {
 	sort.Slice(gids, func(i, j int) bool { return gids[i] < gids[j] })
 	for _, gid := range gids {
 		members := albums[gid]
-		out.Items = append(out.Items, ImportPlanItem{
+		out.Items = append(out.Items, AdoptPlanItem{
 			MessageID: members[0].ID, Kind: "album", GroupedID: gid,
 			Action: "album-manifest", Reason: fmt.Sprintf("one inventory reply for %d files", len(members)),
 		})
-		out.Imported++
+		out.Adopted++
 	}
 	for _, msg := range singles {
-		out.Items = append(out.Items, ImportPlanItem{
-			MessageID: msg.ID, Kind: importKind(msg),
+		out.Items = append(out.Items, AdoptPlanItem{
+			MessageID: msg.ID, Kind: adoptKind(msg),
 			Action: "manifest", Reason: "one reconstructable reply for ungrouped file",
 		})
-		out.Imported++
+		out.Adopted++
 	}
 }
 

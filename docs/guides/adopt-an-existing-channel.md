@@ -1,4 +1,4 @@
-# Import an existing channel
+# Adopt an existing channel
 
 How to adopt messages that already exist in a Telegram channel — media you
 uploaded by hand before using `td` — into the virtual file tree, without
@@ -18,25 +18,25 @@ are there; the index just does not know them yet.
 Preview first — a dry run edits nothing on Telegram and writes no file rows:
 
 ```sh
-td import --unmanaged --dry-run
+td adopt --unmanaged --dry-run
 ```
 
 Captured from a real run (channel without unmanaged media):
 
 ```text
-import dry-run: 0 adopted, 0 skipped, 0 failed
+adopt dry-run: 0 adopted, 0 skipped, 0 failed
 ```
 
 On a channel with history the plan lists every message it would touch:
 
 ```sh
-td import --unmanaged --dry-run
+td adopt --unmanaged --dry-run
 ```
 
 *Illustrative:*
 
 ```text
-import dry-run: 3 adopted, 1 skipped, 0 failed
+adopt dry-run: 3 adopted, 1 skipped, 0 failed
   video  msg 61  /videos/The Bet.mp4
   photo  msg 88  /photos/2024/06/team.jpg
   photo  msg 89  /photos/2024/06/offsite.jpg
@@ -50,13 +50,13 @@ Run it for real. Adoption writes to Telegram (manifest replies) and to the
 index, so it requires `--confirm`:
 
 ```sh
-td import --unmanaged --confirm
+td adopt --unmanaged --confirm
 ```
 
 *Illustrative:*
 
 ```text
-import done: 3 adopted, 1 skipped, 0 failed
+adopt done: 3 adopted, 1 skipped, 0 failed
   video  msg 61  /videos/The Bet.mp4
   photo  msg 88  /photos/2024/06/team.jpg
   photo  msg 89  /photos/2024/06/offsite.jpg
@@ -77,13 +77,13 @@ td tree /
 **Scenario:** one specific message should join the tree at a path you choose.
 
 ```sh
-td import 61 --confirm "/videos/The Bet.mp4"
+td adopt 61 --confirm "/videos/The Bet.mp4"
 ```
 
 *Illustrative:*
 
 ```text
-import done: 1 adopted, 0 skipped, 0 failed
+adopt done: 1 adopted, 0 skipped, 0 failed
   video  msg 61  /videos/The Bet.mp4
 ```
 
@@ -98,13 +98,13 @@ machine reconstruction would be incomplete.
 group:
 
 ```sh
-td import --unmanaged --rewrite-captions --confirm
+td adopt --unmanaged --rewrite-captions --confirm
 ```
 
 *Illustrative:*
 
 ```text
-import done: 2 captions restored, 5 replies deleted, 0 skipped, 0 failed
+adopt done: 2 captions restored, 5 replies deleted, 0 skipped, 0 failed
 ```
 
 Caption edits on old messages can fail (`ERR_MESSAGE_NOT_EDITABLE`);
@@ -117,7 +117,7 @@ channel.
 hash, rebuilt rows cannot prove content identity.
 
 ```sh
-td import --unmanaged --hash --confirm
+td adopt --unmanaged --hash --confirm
 ```
 
 This downloads each adopted file once to compute its BLAKE3 hash, so it is
@@ -125,6 +125,6 @@ slower but makes future integrity checks possible.
 
 ## Next steps
 
-- [Recover the index](recover-the-index.md) — full scan vs import: a scan
-  re-reads managed messages, an import adopts unmanaged ones
-- [Script with JSON](script-with-json.md) — machine-readable import plans
+- [Recover the index](recover-the-index.md) — full scan vs adopt: a scan
+  re-reads managed messages, an adopt claims unmanaged ones
+- [Script with JSON](script-with-json.md) — machine-readable adopt plans

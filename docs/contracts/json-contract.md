@@ -211,19 +211,23 @@ rows also carry `"status": "active"`, and directory entries may carry
 }
 ```
 
-## Import / adopt
+## Adopt
+
+Emitted by `td adopt`. ADR 0019 renamed the command from `import`; in the
+same release the `imported` counter became `adopted` and the per-item
+action `import` became `adopt`.
 
 ```json
 {
   "ok": true,
   "data": {
     "dry_run": true,
-    "imported": 3,
+    "adopted": 3,
     "skipped": 1,
     "failed": 0,
     "deleted": 0,
     "items": [
-      {"message_id": 61, "kind": "video", "path": "/videos/The Bet.mp4", "action": "import", "size": 55113768, "file_name": "The Bet.mp4"},
+      {"message_id": 61, "kind": "video", "path": "/videos/The Bet.mp4", "action": "adopt", "size": 55113768, "file_name": "The Bet.mp4"},
       {"message_id": 114, "kind": "reply", "action": "delete", "reason": "per-file td-manifest:v1 reply"},
       {"message_id": 3, "kind": "photo", "action": "keep", "grouped_id": 99, "caption": "#tag dump"},
       {"message_id": 3, "kind": "album", "action": "album-manifest", "grouped_id": 99, "reason": "one inventory reply for 6 files"}

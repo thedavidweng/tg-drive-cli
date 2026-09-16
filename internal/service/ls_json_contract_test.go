@@ -72,7 +72,7 @@ func TestLSJSONHashFieldContract(t *testing.T) {
 		ID: 90, Kind: telegram.KindDocument, MIME: "text/plain",
 		FileName: "adopted.txt", FileSize: 7, Data: []byte("adopted"),
 	})
-	if _, err := app.Import(ctx, ImportOptions{MessageID: 90, Dest: "/docs/adopted.txt", NoHash: true}); err != nil {
+	if _, err := app.Adopt(ctx, AdoptOptions{MessageID: 90, Dest: "/docs/adopted.txt", NoHash: true}); err != nil {
 		t.Fatal(err)
 	}
 

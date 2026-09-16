@@ -132,6 +132,7 @@ Environment:
 	add(commands.NewMvCmd(opts), "files")
 	add(commands.NewRmCmd(opts), "files")
 	add(commands.NewShareCmd(opts), "maintenance")
+	add(commands.NewAdoptCmd(opts), "files")
 	add(commands.NewImportCmd(opts), "files")
 	add(commands.NewRepairCmd(opts), "maintenance")
 	add(commands.NewCompletionCmd(opts), "core")

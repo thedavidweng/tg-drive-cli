@@ -95,7 +95,7 @@ What to look for:
 | `orphaned` | > 0 | `td repair --orphaned` (see [Recover the index](recover-the-index.md)) |
 | `stale_locks` | > 0 after a killed process | `td repair --pending` clears locks |
 | `scan_errors_pending` | > 0 | `td repair --scan-errors` |
-| `files` | empty but the channel has media | [import](import-an-existing-channel.md) or `td scan --full` |
+| `files` | empty but the channel has media | [adopt](adopt-an-existing-channel.md) or `td scan --full` |
 
 ## Rate limits (flood waits)
 

@@ -163,6 +163,6 @@ resolved: 2
 ## Next steps
 
 - [Troubleshoot](troubleshoot.md) — diagnose what is wrong before repairing
-- [Import an existing channel](import-an-existing-channel.md) — adopt
+- [Adopt an existing channel](adopt-an-existing-channel.md) — claim
   messages that were never managed by `td`
 - [How td works](how-td-works.md) — why Telegram stays the source of truth

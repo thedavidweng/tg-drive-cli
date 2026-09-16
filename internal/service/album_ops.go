@@ -19,7 +19,7 @@ import (
 // records: one td-album:v1 comment per media group, and one td-manifest:v1
 // comment per ungrouped adopted file that has no machine record. Legacy
 // in-channel replies found on the channel are converted to comment threads.
-func (a *App) ensureTelegramManifests(ctx context.Context, channelID, tgChID int64, manifestChat string, history []telegram.Message, opts ImportOptions, out *ImportResult) error {
+func (a *App) ensureTelegramManifests(ctx context.Context, channelID, tgChID int64, manifestChat string, history []telegram.Message, opts AdoptOptions, out *AdoptResult) error {
 	byID := map[int]telegram.Message{}
 	var albumReplies []telegram.Message
 	perFileReply := map[int]int{} // media id -> reply id
@@ -109,7 +109,7 @@ func (a *App) ensureTelegramManifests(ctx context.Context, channelID, tgChID int
 			return err
 		}
 		existing, has := albumByGroup[gid]
-		item := ImportPlanItem{
+		item := AdoptPlanItem{
 			MessageID: members[0].ID,
 			Kind:      "album",
 			GroupedID: gid,
@@ -124,7 +124,7 @@ func (a *App) ensureTelegramManifests(ctx context.Context, channelID, tgChID int
 			continue
 		}
 		if opts.DryRun {
-			out.Imported++
+			out.Adopted++
 			out.Items = append(out.Items, item)
 			continue
 		}
@@ -197,7 +197,7 @@ func (a *App) ensureTelegramManifests(ctx context.Context, channelID, tgChID int
 			out.Items = append(out.Items, item)
 			continue
 		}
-		out.Imported++
+		out.Adopted++
 		out.Items = append(out.Items, item)
 	}
 
@@ -210,12 +210,12 @@ func (a *App) ensureTelegramManifests(ctx context.Context, channelID, tgChID int
 		if r.manChat != "" {
 			continue
 		}
-		item := ImportPlanItem{
-			MessageID: msg.ID, Kind: importKind(msg), Path: r.path,
+		item := AdoptPlanItem{
+			MessageID: msg.ID, Kind: adoptKind(msg), Path: r.path,
 			Action: "manifest", Reason: "one reconstructable comment for ungrouped file",
 		}
 		if opts.DryRun {
-			out.Imported++
+			out.Adopted++
 			out.Items = append(out.Items, item)
 			continue
 		}
@@ -272,7 +272,7 @@ func (a *App) ensureTelegramManifests(ctx context.Context, channelID, tgChID int
 			out.Items = append(out.Items, item)
 			continue
 		}
-		out.Imported++
+		out.Adopted++
 		out.Items = append(out.Items, item)
 	}
 	return nil

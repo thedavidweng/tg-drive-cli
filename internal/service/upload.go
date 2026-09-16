@@ -206,17 +206,24 @@ func (a *App) uploadLimit(ctx context.Context) int64 {
 
 // UploadFile uploads a single local file as a plain document.
 func (a *App) UploadFile(ctx context.Context, localPath, remotePath string, policy ConflictPolicy, noHash bool) (map[string]any, error) {
-	return a.uploadFile(ctx, localPath, remotePath, policy, noHash, Presentation{})
+	return a.uploadFile(ctx, localPath, remotePath, policy, noHash, Presentation{}, "")
+}
+
+// uploadFileWithCaption uploads one file keeping humanCaption above the
+// rendered caption block. Imports (td import saved) use it to carry the
+// source message's own text onto the republished message.
+func (a *App) uploadFileWithCaption(ctx context.Context, localPath, remotePath string, policy ConflictPolicy, noHash bool, pres Presentation, humanCaption string) (map[string]any, error) {
+	return a.uploadFile(ctx, localPath, remotePath, policy, noHash, pres, humanCaption)
 }
 
 // UploadFileAs uploads a single local file with presentation metadata that
 // selects how native Telegram clients render the message. The zero
 // Presentation behaves exactly like UploadFile.
 func (a *App) UploadFileAs(ctx context.Context, localPath, remotePath string, policy ConflictPolicy, noHash bool, pres Presentation) (map[string]any, error) {
-	return a.uploadFile(ctx, localPath, remotePath, policy, noHash, pres)
+	return a.uploadFile(ctx, localPath, remotePath, policy, noHash, pres, "")
 }
 
-func (a *App) uploadFile(ctx context.Context, localPath, remotePath string, policy ConflictPolicy, noHash bool, pres Presentation) (map[string]any, error) {
+func (a *App) uploadFile(ctx context.Context, localPath, remotePath string, policy ConflictPolicy, noHash bool, pres Presentation, humanCaption string) (map[string]any, error) {
 	if err := pres.Validate(); err != nil {
 		return nil, err
 	}
@@ -324,6 +331,7 @@ func (a *App) uploadFile(ctx context.Context, localPath, remotePath string, poli
 			oldManifestID:   oldManifestID,
 			oldManifestChat: oldManifestChat,
 			pres:            pres,
+			humanCaption:    humanCaption,
 		})
 		return err
 	})
@@ -347,6 +355,9 @@ type uploadLockedArgs struct {
 	oldManifestID   sql.NullInt64
 	oldManifestChat string
 	pres            Presentation
+	// humanCaption is the source text kept above the rendered caption block
+	// (imports only); empty renders the block alone.
+	humanCaption string
 }
 
 func (a *App) uploadLocked(ctx context.Context, args uploadLockedArgs) (map[string]any, error) {
@@ -407,7 +418,7 @@ func (a *App) uploadLocked(ctx context.Context, args uploadLockedArgs) (map[stri
 	}
 	// Render the caption exactly once and thread it into the publish step, so
 	// the caption on Telegram and the tags in the index cannot diverge.
-	meta, capRes, tags, slugMaps, err := a.renderUploadMeta(dest, localPath, size, contentHash, now, existingSlugs)
+	meta, capRes, tags, slugMaps, err := a.renderUploadMetaWithCaption(dest, localPath, size, contentHash, now, existingSlugs, args.humanCaption)
 	if err != nil {
 		return nil, err
 	}

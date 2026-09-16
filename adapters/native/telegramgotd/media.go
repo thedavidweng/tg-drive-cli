@@ -396,37 +396,44 @@ func (c *Client) DownloadMedia(ctx context.Context, channelID int64, messageID i
 		if err != nil {
 			return err
 		}
-		switch media := msg.Media.(type) {
-		case *tg.MessageMediaDocument:
-			if media.Document == nil {
-				return errors.New("message has no document")
-			}
-			doc, ok := media.Document.(*tg.Document)
-			if !ok {
-				return errors.New("unsupported document type")
-			}
-			dl := downloader.NewDownloader()
-			_, err = dl.Download(api, doc.AsInputDocumentFileLocation("")).Stream(ctx, dst)
-			return mapRPCError(err)
-		case *tg.MessageMediaPhoto:
-			photo, ok := media.Photo.(*tg.Photo)
-			if !ok {
-				return errors.New("message has no photo")
-			}
-			thumb := largestPhotoType(photo)
-			dl := downloader.NewDownloader()
-			_, err = dl.Download(api, photo.AsInputPhotoFileLocation(thumb)).Stream(ctx, dst)
-			return mapRPCError(err)
-		case nil:
-			if strings.TrimSpace(msg.Message) == "" {
-				return errors.New("message has no downloadable content")
-			}
-			_, err := dst.Write([]byte(manifest.SplitHumanAndMachine(msg.Message)))
-			return err
-		default:
-			return errors.New("unsupported media type")
-		}
+		return streamMessageMedia(ctx, api, msg, dst)
 	})
+}
+
+// streamMessageMedia streams one message's body into dst: document or photo
+// bytes for media messages, the human part of the text for text messages.
+// Shared by channel and saved-chat downloads so both see identical bytes.
+func streamMessageMedia(ctx context.Context, api *tg.Client, msg *tg.Message, dst io.Writer) error {
+	switch media := msg.Media.(type) {
+	case *tg.MessageMediaDocument:
+		if media.Document == nil {
+			return errors.New("message has no document")
+		}
+		doc, ok := media.Document.(*tg.Document)
+		if !ok {
+			return errors.New("unsupported document type")
+		}
+		dl := downloader.NewDownloader()
+		_, err := dl.Download(api, doc.AsInputDocumentFileLocation("")).Stream(ctx, dst)
+		return mapRPCError(err)
+	case *tg.MessageMediaPhoto:
+		photo, ok := media.Photo.(*tg.Photo)
+		if !ok {
+			return errors.New("message has no photo")
+		}
+		thumb := largestPhotoType(photo)
+		dl := downloader.NewDownloader()
+		_, err := dl.Download(api, photo.AsInputPhotoFileLocation(thumb)).Stream(ctx, dst)
+		return mapRPCError(err)
+	case nil:
+		if strings.TrimSpace(msg.Message) == "" {
+			return errors.New("message has no downloadable content")
+		}
+		_, err := dst.Write([]byte(manifest.SplitHumanAndMachine(msg.Message)))
+		return err
+	default:
+		return errors.New("unsupported media type")
+	}
 }
 
 func largestPhotoType(photo *tg.Photo) string {
@@ -455,6 +462,8 @@ func firstMessage(msgs tg.MessagesMessagesClass) (*tg.Message, error) {
 	case *tg.MessagesChannelMessages:
 		list = v.Messages
 	case *tg.MessagesMessages:
+		list = v.Messages
+	case *tg.MessagesMessagesSlice:
 		list = v.Messages
 	default:
 		return nil, errors.New("message not found")

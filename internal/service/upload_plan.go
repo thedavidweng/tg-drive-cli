@@ -193,10 +193,12 @@ func (a *App) stagePendingRow(ctx context.Context, channelRowID int64, dest, loc
 	return fileID, false, nil
 }
 
-// renderUploadMeta builds the publication metadata and human caption for one
-// upload. Rendering once and threading the outputs into Publish keeps the
-// caption on Telegram and the tags in the index from diverging.
-func (a *App) renderUploadMeta(dest, localPath string, size int64, contentHash, now string, existingSlugs map[string]string) (meta manifest.FileMeta, capRes manifest.CaptionResult, tags []string, slugMaps []pathcodec.SlugMapping, err error) {
+// renderUploadMetaWithCaption builds publication metadata and a human caption
+// with the source message's
+// own caption kept on top of the rendered block. Imports (td import saved)
+// carry the original text into the republished message; ordinary uploads pass
+// an empty prefix and render exactly as before.
+func (a *App) renderUploadMetaWithCaption(dest, localPath string, size int64, contentHash, now string, existingSlugs map[string]string, humanPrefix string) (meta manifest.FileMeta, capRes manifest.CaptionResult, tags []string, slugMaps []pathcodec.SlugMapping, err error) {
 	meta = manifest.FileMeta{
 		CanonicalPath: dest,
 		DisplayName:   fsmodel.BaseName(dest),
@@ -211,7 +213,7 @@ func (a *App) renderUploadMeta(dest, localPath string, size int64, contentHash, 
 		return meta, capRes, nil, nil, err
 	}
 	meta.Tags = tags
-	capRes, err = manifest.RenderCaption(meta, a.Cfg.Caption.SafeMediaCaptionUTF16Units, a.Cfg.Caption.MarginUTF16Units)
+	capRes, err = manifest.RenderCaptionWithPrefix(meta, humanPrefix, a.Cfg.Caption.SafeMediaCaptionUTF16Units, a.Cfg.Caption.MarginUTF16Units)
 	if err != nil {
 		return meta, capRes, nil, nil, err
 	}

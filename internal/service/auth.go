@@ -283,23 +283,47 @@ func (a *App) Doctor(ctx context.Context) (map[string]any, error) {
 		checks["invite_link"] = "unknown"
 		checks["edit_old_caption"] = "unknown"
 		checks["file_size_limit"] = "unknown"
+		// Saved Messages is independent of the bound drive channel. Probe it
+		// with a zero channel id so `td doctor` can still report whether
+		// `td import saved` is available before `td init`.
+		if caps, err := a.TG.Doctor(ctx, 0); err != nil || caps == nil {
+			checks["saved_history"] = "unknown"
+			checks["saved_delete"] = "unknown"
+		} else {
+			checks["saved_history"] = boolCheck(caps.SavedHistoryOK)
+			checks["saved_delete"] = boolCheck(caps.SavedDeleteOK)
+			out["saved_history_ok"] = caps.SavedHistoryOK
+			out["saved_delete_ok"] = caps.SavedDeleteOK
+		}
 	} else {
 		checks["channel"] = "pass"
 		tgChID, _ := a.tgChannelID(ctx)
 		caps, err := a.TG.Doctor(ctx, tgChID)
 		if err != nil {
 			checks["upload"] = "unknown"
+			checks["saved_history"] = "unknown"
+			checks["saved_delete"] = "unknown"
 		} else {
 			checks["upload"] = boolCheck(caps.UploadOK)
 			checks["delete"] = boolCheck(caps.DeleteOK)
 			checks["invite_link"] = boolCheck(caps.InviteLinkOK)
 			checks["edit_old_caption"] = boolCheck(caps.EditOldCaptionOK)
 			checks["discussion"] = boolCheck(caps.DiscussionOK)
+			checks["saved_history"] = boolCheck(caps.SavedHistoryOK)
+			checks["saved_delete"] = boolCheck(caps.SavedDeleteOK)
 			if !caps.DiscussionOK {
 				hints["discussion"] = "no linked discussion group; machine records need it (ADR 0018); run: td channels link-discussion"
 			}
+			if !caps.SavedHistoryOK {
+				hints["saved_history"] = "Saved Messages history is unavailable; check authentication and Telegram access"
+			}
+			if !caps.SavedDeleteOK {
+				hints["saved_delete"] = "--delete-source is unavailable for Saved Messages"
+			}
 			out["max_upload_bytes"] = caps.MaxUploadBytes
 			out["discussion_ok"] = caps.DiscussionOK
+			out["saved_history_ok"] = caps.SavedHistoryOK
+			out["saved_delete_ok"] = caps.SavedDeleteOK
 			switch {
 			case caps.MaxUploadBytes >= a.Cfg.Limits.PremiumUploadBytes:
 				checks["file_size_limit"] = "pass"

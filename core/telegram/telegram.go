@@ -127,6 +127,21 @@ type VideoAttributes struct {
 	SupportsStreaming bool
 }
 
+// ForwardOrigin is the forward-header snapshot of a message: where its bytes
+// were first published. The title is a snapshot on purpose — the origin
+// channel can vanish, and its name is then the only human trace left.
+type ForwardOrigin struct {
+	// FromID is the origin channel or user id; 0 when Telegram hid it.
+	FromID int64
+	// Title is the origin channel title or sender name as it read at the
+	// time of the read.
+	Title string
+	// PostID is the origin channel post id; 0 for non-channel origins.
+	PostID int
+	// Date is when the origin message was published; zero when unknown.
+	Date time.Time
+}
+
 // Message represents a channel message with optional media.
 type Message struct {
 	ID          int
@@ -139,6 +154,17 @@ type Message struct {
 	Data        []byte
 	ReplyTo     *int
 	NotEditable bool
+	// Date is when the message was posted; zero when unknown.
+	Date time.Time
+	// Forward is the forward-header snapshot of a forwarded message; nil
+	// when the message was posted directly.
+	Forward *ForwardOrigin
+	// SavedPeerID names the Saved Messages 2.0 sub-chat a saved message
+	// lives in; 0 means the main saved chat. Only saved-chat reads set it.
+	SavedPeerID int64
+	// SavedPeerTitle is that sub-chat's display name as resolved at read
+	// time; empty when the adapter could not resolve one.
+	SavedPeerTitle string
 	// GroupedID is Telegram's media-album id. 0 means the message is not
 	// part of an album. Members of one album share a single human caption
 	// on the first item and appear as one timeline block.
@@ -209,7 +235,12 @@ type Capabilities struct {
 	EditOldCaptionOK bool
 	// DiscussionOK reports that the channel has a linked discussion group,
 	// the carrier of machine manifest comments (ADR 0018).
-	DiscussionOK   bool
+	DiscussionOK bool
+	// SavedHistoryOK reports that the Saved Messages chat's history is
+	// readable, and SavedDeleteOK that saved messages can be deleted — the
+	// capabilities td import saved needs.
+	SavedHistoryOK bool
+	SavedDeleteOK  bool
 	MaxUploadBytes int64
 	CheckedAt      time.Time
 }
@@ -221,6 +252,7 @@ type Client interface {
 	MediaClient
 	HistoryClient
 	DiscussionClient
+	SavedClient
 }
 
 // AuthClient handles authentication.
@@ -286,6 +318,29 @@ type HistoryClient interface {
 	// everything down to the afterID boundary.
 	StreamHistory(ctx context.Context, channelID int64, afterID int, fn func(Message) error) (HistoryMeta, error)
 	GetMessage(ctx context.Context, channelID int64, messageID int) (Message, error)
+}
+
+// SavedClient reads and mutates the authenticated user's Saved Messages
+// chat (the self chat), the first external source of td import saved.
+//
+// Saved Messages is not a channel: it has no linked discussion group, so it
+// can carry no machine records, and its items are addressed by saved message
+// id alone. Saved Messages 2.0 partitions items into sub-chats; a saved
+// message reports its sub-chat through Message.SavedPeerID.
+type SavedClient interface {
+	// StreamSavedHistory feeds saved messages newer than afterID to fn,
+	// newest-first, covering the main saved chat and every sub-chat in one
+	// walk. Returning an error from fn stops the stream. The HistoryMeta
+	// describes whether the read provably covered everything down to the
+	// afterID boundary.
+	StreamSavedHistory(ctx context.Context, afterID int, fn func(Message) error) (HistoryMeta, error)
+	// GetSavedMessage returns one saved message by id.
+	GetSavedMessage(ctx context.Context, messageID int) (Message, error)
+	// DownloadSavedMedia streams the media body of a saved message into dst.
+	DownloadSavedMedia(ctx context.Context, messageID int, dst io.Writer) error
+	// DeleteSavedMessage deletes one saved message. Saved Messages has no
+	// tombstone form, so the delete is real and unrecoverable.
+	DeleteSavedMessage(ctx context.Context, messageID int) error
 }
 
 // ThreadMessage is one message from a discussion-group history walk

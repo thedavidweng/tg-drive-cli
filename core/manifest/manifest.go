@@ -50,6 +50,36 @@ func FitsTelegramCaption(s string, budget, margin int) bool {
 	return UTF16Units(s) <= budget-margin
 }
 
+// TruncateUTF16 cuts s to at most limit UTF-16 code units, on a rune
+// boundary, marking a cut with an ellipsis. It returns "" when not even the
+// ellipsis fits, so callers can tell "shortened" from "no room at all".
+func TruncateUTF16(s string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if UTF16Units(s) <= limit {
+		return s
+	}
+	const ellipsis = "…"
+	room := limit - UTF16Units(ellipsis)
+	if room <= 0 {
+		return ""
+	}
+	used, cut := 0, 0
+	for i, r := range []rune(s) {
+		n := UTF16Units(string(r))
+		if used+n > room {
+			break
+		}
+		used += n
+		cut = i + 1
+	}
+	if cut == 0 {
+		return ""
+	}
+	return string([]rune(s)[:cut]) + ellipsis
+}
+
 // FitsTelegramText reports whether s fits the safe text budget.
 func FitsTelegramText(s string, budget, margin int) bool {
 	if budget <= 0 {
@@ -134,6 +164,16 @@ type CaptionResult struct {
 // directory line, and the hashtag chain within the caption budget. Machine
 // metadata never rides on captions; it lives in comment threads (ADR 0018).
 func RenderCaption(m FileMeta, budget, margin int) (CaptionResult, error) {
+	return RenderCaptionWithPrefix(m, "", budget, margin)
+}
+
+// RenderCaptionWithPrefix renders the caption with an imported message's own
+// text above the standard block, separated by a blank line. Imports need it:
+// the source caption is content in its own right and must stay visible on the
+// republished message. A prefix too long for the budget is truncated rather
+// than dropped, and never displaces the display name, parent line, or the
+// tags that fit — those are what the tree is browsed by.
+func RenderCaptionWithPrefix(m FileMeta, prefix string, budget, margin int) (CaptionResult, error) {
 	if budget <= 0 {
 		budget = DefaultCaptionBudget
 	}
@@ -142,14 +182,24 @@ func RenderCaption(m FileMeta, budget, margin int) (CaptionResult, error) {
 	}
 	limit := budget - margin
 
-	lines := []string{m.DisplayName}
+	block := []string{m.DisplayName}
 	if m.ParentHuman != "" {
-		lines = append(lines, m.ParentHuman+"/")
+		block = append(block, m.ParentHuman+"/")
 	} else {
-		lines = append(lines, "")
+		block = append(block, "")
 	}
+	block = append(block, "")
 
-	lines = append(lines, "")
+	var lines []string
+	if prefix = strings.TrimRight(prefix, "\n"); prefix != "" {
+		// +2 for the blank line that separates the prefix from the block.
+		room := limit - UTF16Units(strings.Join(block, "\n")) - 2
+		prefix = TruncateUTF16(prefix, room)
+		if prefix != "" {
+			lines = append(lines, prefix, "")
+		}
+	}
+	lines = append(lines, block...)
 	// UTF-16 length is additive over concatenation, so the running count
 	// tracks each appended tag instead of re-encoding the whole caption.
 	cur := UTF16Units(strings.Join(lines, "\n"))
@@ -386,14 +436,17 @@ func SplitHumanAndMachine(s string) string {
 }
 
 // lineHasMachineMeta reports whether one trimmed line is a machine metadata
-// record: a line that STARTS with the td:v1 / td-manifest:v1 / td-album:v1
-// marker. Line-anchoring matters: a human caption that merely mentions "td:v1"
-// mid-sentence must not be treated as managed metadata.
+// record: a line that STARTS with the td:v1 / td-manifest:v1 / td-album:v1 /
+// td-origin:v1 / td-dupe:v1 marker. Line-anchoring matters: a human caption
+// that merely mentions "td:v1" mid-sentence must not be treated as managed
+// metadata.
 func lineHasMachineMeta(line string) bool {
 	t := strings.TrimSpace(line)
 	return strings.HasPrefix(t, "td:v1") ||
 		strings.HasPrefix(t, "td-manifest:v1") ||
-		strings.HasPrefix(t, AlbumMagic)
+		strings.HasPrefix(t, AlbumMagic) ||
+		strings.HasPrefix(t, OriginMagic) ||
+		strings.HasPrefix(t, DupeMagic)
 }
 
 // HasMachineMeta reports whether s contains a machine metadata line.

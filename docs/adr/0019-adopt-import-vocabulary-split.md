@@ -16,17 +16,17 @@ existing messages". Only the command surface says import.
 Meanwhile `import` carries its universal meaning across tools — bring
 content in from an external source, usually moving bytes (docker import,
 photo import; Homebrew reserves `brew adopt` for claiming an existing
-installation in place). The planned Saved Messages re-homing (#41) needs
-exactly that word as its command surface, and keeping both behaviors under
-`import` would hang two contradictory byte promises on one command.
+installation in place). Saved Messages re-homing needs exactly that word as
+its command surface, and keeping both behaviors under `import` would hang two
+contradictory byte promises on one command.
 
 ## Decision
 
 - Rename the in-place claim to `td adopt`; semantics and flags are
   unchanged (ADR 0012 behavior).
 - Reserve `td import <source>` for external-chat ingest: bring content in
-  from another Telegram chat by re-uploading fresh bytes. The first source
-  (`saved`) ships with #41.
+  from another Telegram chat by re-uploading fresh bytes. The implemented
+  first source is `saved`.
 - Hard cutover in one release: the repository has no published releases, so
   there is no compatibility surface worth a deprecation window. Old forms
   (bare `td import`, `td import <id> <path>`, `td import --unmanaged`,
@@ -45,10 +45,10 @@ exactly that word as its command surface, and keeping both behaviors under
 
 - The CLI contract, JSON contract, CLI reference, guides, README, and
   completions all rename with the command.
-- `td import` is a stub until #41 lands: every invocation answers with a
-  typed usage error that points at `td adopt` and the upcoming
-  `td import saved`.
-- The glossary gains **Adopt** (this change) and **Import** (with #41).
+- `td import saved` is the first external-chat ingest and points old
+  in-place callers at `td adopt`.
+- The glossary defines **Adopt**, **Import**, **Saved Messages**, and the
+  provenance records used by the saved import.
 - Scripts written against `td import`'s old surface break in one release —
   acceptable before the first published release, and the error message
   tells the operator exactly where each old form went.

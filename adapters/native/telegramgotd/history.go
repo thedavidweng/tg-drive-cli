@@ -61,6 +61,14 @@ func (c *Client) streamHistory(ctx context.Context, channelID int64, afterID, li
 // mid-history therefore surfaces as Complete=false instead of silently
 // truncating the read.
 func (c *Client) paginateHistory(ctx context.Context, api *tg.Client, peer tg.InputPeerClass, afterID, limit int, emit func(*tg.Message) error) (tgtelegram.HistoryMeta, error) {
+	return c.paginateHistoryPages(ctx, api, peer, afterID, limit, nil, emit)
+}
+
+// paginateHistoryPages is paginateHistory with an optional per-page hook that
+// runs before the page's messages are emitted. Saved-chat reads use it to
+// harvest the page's peer entities (channel and chat titles), which are the
+// only place forward-origin and sub-chat names appear.
+func (c *Client) paginateHistoryPages(ctx context.Context, api *tg.Client, peer tg.InputPeerClass, afterID, limit int, onPage func(tg.MessagesMessagesClass), emit func(*tg.Message) error) (tgtelegram.HistoryMeta, error) {
 	var meta tgtelegram.HistoryMeta
 	offsetID := 0
 	collected := 0
@@ -77,6 +85,9 @@ func (c *Client) paginateHistory(ctx context.Context, api *tg.Client, peer tg.In
 		})
 		if err != nil {
 			return tgtelegram.HistoryMeta{}, mapRPCError(err)
+		}
+		if onPage != nil {
+			onPage(msgs)
 		}
 		// Pagination must be driven by the RAW page (including service
 		// messages the media filter drops), or scans stop early.
@@ -244,7 +255,49 @@ func messageFromTG(msg *tg.Message) tgtelegram.Message {
 	if id, ok := msg.GetGroupedID(); ok {
 		out.GroupedID = id
 	}
+	out.Date = unixTime(msg.Date)
+	if fwd, ok := msg.GetFwdFrom(); ok {
+		origin := &tgtelegram.ForwardOrigin{Date: unixTime(fwd.Date)}
+		if from, ok := fwd.GetFromID(); ok {
+			origin.FromID = peerRawID(from)
+		}
+		if name, ok := fwd.GetFromName(); ok {
+			origin.Title = name
+		}
+		if post, ok := fwd.GetChannelPost(); ok {
+			origin.PostID = post
+		}
+		out.Forward = origin
+	}
+	if saved, ok := msg.GetSavedPeerID(); ok {
+		out.SavedPeerID = peerRawID(saved)
+	}
 	return out
+}
+
+// unixTime converts a Telegram second-resolution timestamp; 0 stays zero so
+// callers can tell "unknown" from "the epoch".
+func unixTime(sec int) time.Time {
+	if sec <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(int64(sec), 0).UTC()
+}
+
+// peerRawID flattens a peer reference to its bare numeric id. Callers only
+// need identity and a title snapshot, never a re-resolvable peer handle: the
+// origin of a saved message may be gone by the time anyone reads the record.
+func peerRawID(p tg.PeerClass) int64 {
+	switch v := p.(type) {
+	case *tg.PeerChannel:
+		return v.ChannelID
+	case *tg.PeerUser:
+		return v.UserID
+	case *tg.PeerChat:
+		return v.ChatID
+	default:
+		return 0
+	}
 }
 
 func (c *Client) GetMessage(ctx context.Context, channelID int64, messageID int) (tgtelegram.Message, error) {
@@ -286,6 +339,7 @@ func (c *Client) Doctor(ctx context.Context, channelID int64) (*tgtelegram.Capab
 		if !status.Authorized {
 			return nil
 		}
+		caps.SavedHistoryOK, caps.SavedDeleteOK = c.savedCapabilities(ctx, api)
 		peer, err := c.resolveChannelPeer(ctx, api, strconv.FormatInt(channelID, 10))
 		if err != nil {
 			caps.ChannelOK = false

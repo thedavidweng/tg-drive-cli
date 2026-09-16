@@ -46,7 +46,7 @@ Files
   adopt       Adopt existing Telegram messages into the virtual file tree
   cp          Upload local file or directory
   get         Download remote file or directory
-  import      Import content from an external Telegram chat (reserved; first source ships with #41)
+  import      Import content from an external Telegram chat into the drive
   init        Initialize a local root
   ls          List remote directory
   mv          Move or rename remote file
@@ -292,8 +292,7 @@ Flags:
 ### td adopt
 
 Adopt existing Telegram messages into the virtual file tree. The in-place
-claim lives here since ADR 0019; `td import` is reserved for external-chat
-ingest and its first source ships with #41.
+claim lives here since ADR 0019; `td import` handles external-chat ingest.
 
 ```text
 Usage:
@@ -313,16 +312,34 @@ Flags:
 
 ### td import
 
-Import content from an external Telegram chat (reserved; first source ships
-with #41). Brings content in from another Telegram chat by re-uploading fresh
-bytes; the first source (`saved`) ships with issue #41. Until then every
-invocation fails: old in-place claim forms with `ERR_USAGE` pointing at
-`td adopt`, adopt-only flags with `ERR_FLAG_CONFLICT`.
+Import content from an external Telegram chat into the drive by re-uploading
+fresh bytes. The implemented source is `saved`, which imports Saved Messages.
+Forwarded origin details are preserved in `td-origin:v1` comments. Hash
+duplicates are skipped by default and their captions are preserved in
+`td-dupe:v1` comments.
 
 ```text
 Usage:
-  td import <source> [flags]
+  td import <source> [message-id...] [flags]
+
+Flags:
+      --auto-rename         auto-rename items whose destination already exists
+      --confirm             confirm republishing saved content into the drive channel
+      --continue-on-error   continue importing after a per-item error
+      --delete-source       delete the saved originals of published and duplicate items (requires --confirm)
+      --dry-run             print the import plan without touching Telegram
+      --events              emit NDJSON progress events during the import
+      --into string         remote directory the imported content lands in (default "/saved")
+      --merge-captions      append a skipped duplicate's caption to the matched file's caption
+      --no-dedupe           import even when the content hash already exists in the tree
+      --photos-as string    republish photo messages as document (keeps the bytes) or photo (native, recompressed)
+      --replace             replace an existing file at the destination
+      --skip-existing       skip items whose destination already exists
 ```
+
+`--confirm` is required unless `--dry-run`. A photo import requires
+`--photos-as` in JSON and non-interactive runs. `--delete-source` also
+requires `--confirm`.
 
 ### td share
 

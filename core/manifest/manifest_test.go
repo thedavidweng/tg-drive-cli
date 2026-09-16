@@ -103,6 +103,49 @@ func TestRenderCaptionHumanOnly(t *testing.T) {
 	}
 }
 
+func TestTruncateUTF16KeepsRuneBoundaries(t *testing.T) {
+	if got := TruncateUTF16("a😀bc", 4); got != "a😀…" {
+		t.Fatalf("truncate = %q, want %q", got, "a😀…")
+	}
+	if got := TruncateUTF16("😀x", 2); got != "" {
+		t.Fatalf("truncate without room = %q, want empty", got)
+	}
+	if got := TruncateUTF16("short", 20); got != "short" {
+		t.Fatalf("unchanged string = %q", got)
+	}
+}
+
+func TestRenderCaptionWithPrefixPreservesImportedText(t *testing.T) {
+	m := FileMeta{
+		DisplayName:   "clip.mp4",
+		ParentHuman:   "saved/Trips",
+		CanonicalPath: "/saved/Trips/clip.mp4",
+		Tags:          []string{"#td_saved", "#td_saved_Trips"},
+	}
+	res, err := RenderCaptionWithPrefix(m, "original caption 😀", 128, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(res.Caption, "original caption 😀\n\nclip.mp4\nsaved/Trips/") {
+		t.Fatalf("caption = %q", res.Caption)
+	}
+	if len(res.IncludedTags) != 2 {
+		t.Fatalf("included tags = %v", res.IncludedTags)
+	}
+
+	long := strings.Repeat("源😀", 100)
+	res, err = RenderCaptionWithPrefix(m, long, 80, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Caption, "…\n\nclip.mp4") {
+		t.Fatalf("long prefix was not truncated before file block: %q", res.Caption)
+	}
+	if !FitsTelegramCaption(res.Caption, 80, 16) {
+		t.Fatalf("caption exceeds budget: %d", UTF16Units(res.Caption))
+	}
+}
+
 func TestManifestReplyFitsTextBudget(t *testing.T) {
 	tags := make([]string, 40)
 	for i := range tags {

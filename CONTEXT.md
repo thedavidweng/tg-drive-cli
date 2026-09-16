@@ -21,6 +21,20 @@
 - **Operation lock** — A row in `operation_locks` that serializes path-touching operations across processes.
 - **File publisher** — The module that publishes a file to the index, turning a canonical path, display name, content hash, and Telegram message into a file row, manifest, hashtag tags, slug mappings, and derived nodes.
 - **Adopt** — Claim an existing message of the bound drive channel into the virtual file tree without re-uploading bytes (`td adopt`). The media message stays where it is; td writes machine records and indexes the file.
+- **Import** — Re-upload content from an external Telegram chat into the bound
+  drive channel (`td import saved`). Importing Saved Messages copies fresh
+  bytes, mirrors Saved Messages sub-chats below `/saved`, and preserves
+  source provenance.
+- **Saved Messages** — Telegram's self chat. Forwarded media stored there can
+  disappear when the origin channel deletes its post, so `td import saved`
+  makes a new drive-channel upload. Saved Messages 2.0 sub-chats are mirrored
+  as directories.
+- **Origin record** — An additive `td-origin:v1` discussion comment naming
+  where an imported file or album came from. It is provenance, not the
+  authoritative path record.
+- **Duplicate record** — An additive `td-dupe:v1` discussion comment naming
+  an existing file whose bytes matched a skipped Saved Messages item and
+  preserving that item's caption.
 - **Scan** — Reading a Telegram channel's messages and rebuilding the local SQLite index.
 - **Tombstone** — A soft delete: the Telegram message is edited to a tombstone caption instead of being removed.
 

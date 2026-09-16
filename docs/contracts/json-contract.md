@@ -98,6 +98,29 @@ A retry that adopted a pending upload and sent only its unconfirmed parts adds
 `"resumed": true` (files above 10 MB; the identity — size and content hash —
 must match the interrupted attempt).
 
+## Doctor
+
+`td doctor` includes the Saved Messages capabilities in both the human checks
+and JSON data:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "checks": {
+      "saved_history": "pass",
+      "saved_delete": "pass"
+    },
+    "saved_history_ok": true,
+    "saved_delete_ok": true
+  }
+}
+```
+
+`saved_history_ok` gates reading `td import saved`; `saved_delete_ok` reports
+whether verified source cleanup is available. The values may be `false` or
+absent from a partial/unknown capability probe.
+
 ## Upload result (multi-file album)
 
 `td cp <local...> <remote-dir>` and `td cp --recursive` report aggregate
@@ -235,6 +258,67 @@ action `import` became `adopt`.
   }
 }
 ```
+
+## Import saved
+
+`td import saved` re-uploads Saved Messages content into the bound drive
+channel. It preserves forwarded provenance in `td-origin:v1` comments and
+records skipped duplicate captions in `td-dupe:v1` comments.
+
+```json
+{
+  "ok": true,
+  "data": {
+    "dry_run": false,
+    "source": "saved",
+    "into": "/saved",
+    "photos_as": "document",
+    "history_complete": true,
+    "imported": 2,
+    "skipped": 1,
+    "failed": 0,
+    "duplicates": 1,
+    "captions_merged": 0,
+    "sources_deleted": 0,
+    "photos": 1,
+    "items": [
+      {
+        "message_id": 101,
+        "kind": "video",
+        "action": "import",
+        "path": "/saved/Trips/clip.mp4",
+        "size": 55113768,
+        "hash": "blake3:fullhexvalue",
+        "new_message_id": 8821,
+        "origin_record_id": 8830
+      },
+      {
+        "message_id": 102,
+        "kind": "document",
+        "action": "skip",
+        "path": "/saved/report.pdf",
+        "duplicate_of": "/Archive/report.pdf",
+        "reason": "duplicate of /Archive/report.pdf",
+        "dupe_record_id": 8831
+      }
+    ]
+  }
+}
+```
+
+`items` contains one entry for every readable saved message, including
+unsupported/service messages skipped during planning. `history_complete=false`
+means Telegram ended the read before td could prove that all Saved Messages
+were covered; a rerun is required to find the remainder. `--photos-as photo`
+uses Telegram's native photo representation and therefore does not promise
+byte-for-byte hash identity; `--photos-as document` keeps the downloaded
+bytes. In non-interactive or `--json` runs, a photo import without
+`--photos-as` is `ERR_USAGE`.
+
+With `--events`, each item is emitted as an `import.item` NDJSON envelope and
+the final result is emitted as an `import` envelope. `--dry-run` returns this
+same result shape without downloading, uploading, writing records, or
+deleting sources.
 
 ## Recursive download
 

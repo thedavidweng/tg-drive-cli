@@ -12,7 +12,7 @@ import (
 )
 
 // Adopt (in-place claim, ADR 0019) and repair commands. The `import` name is
-// reserved for external-chat ingest: `td import <source>` (ADR 0019, #41).
+// reserved for external-chat ingest: `td import <source>` (ADR 0019).
 
 // NewAdoptCmd claims existing drive-channel messages into the index without
 // moving bytes.
@@ -88,46 +88,6 @@ func NewAdoptCmd(rt Runtime) *cobra.Command {
 	c.Flags().BoolVar(&dryRun, "dry-run", false, "print the adopt plan without editing Telegram")
 	c.Flags().BoolVar(&continueOnError, "continue-on-error", false, "continue adopting after a per-message error")
 	c.Flags().BoolVar(&rewriteCaptions, "rewrite-captions", false, "restore one human caption per album, delete per-file replies, and write one td-album:v1 inventory")
-	return c
-}
-
-// NewImportCmd holds the reserved `import` name for external-chat ingest
-// (ADR 0019): `td import <source>` brings content in from another Telegram
-// chat by re-uploading fresh bytes. The first source (`saved`, #41) is not
-// implemented yet, so every invocation currently fails. Old in-place claim
-// forms point at `td adopt`.
-func NewImportCmd(rt Runtime) *cobra.Command {
-	var unmanaged, hash, rewriteCaptions bool
-	var into string
-	c := &cobra.Command{
-		Use:   "import <source>",
-		Short: "Import content from an external Telegram chat (reserved; first source ships with #41)",
-		Args:  cobra.MaximumNArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			r := rt.Renderer()
-			pointer := "the in-place claim moved to td adopt; external sources begin with td import saved"
-			oldFlag := cmd.Flags().Changed("unmanaged") || cmd.Flags().Changed("into") ||
-				cmd.Flags().Changed("hash") || cmd.Flags().Changed("rewrite-captions")
-			if len(args) != 1 {
-				// bare td import, td import --unmanaged, td import <id> <path>
-				return r.Error(apperr.New(apperr.ErrUsage, pointer))
-			}
-			if oldFlag {
-				return r.Error(apperr.New(apperr.ErrFlagConflict, pointer))
-			}
-			if args[0] == "saved" {
-				return r.Error(apperr.New(apperr.ErrUsage, "the `saved` source is not implemented yet (issue #41); "+pointer))
-			}
-			return r.Error(apperr.New(apperr.ErrUsage, fmt.Sprintf("unknown import source %q; the first source is `saved` (issue #41)", args[0])))
-		},
-	}
-	c.Flags().BoolVar(&unmanaged, "unmanaged", false, "kept only to reject the old in-place claim form")
-	c.Flags().StringVar(&into, "into", "/", "kept only to reject the old in-place claim form")
-	c.Flags().BoolVar(&hash, "hash", false, "kept only to reject the old in-place claim form")
-	c.Flags().BoolVar(&rewriteCaptions, "rewrite-captions", false, "kept only to reject the old in-place claim form")
-	for _, name := range []string{"unmanaged", "into", "hash", "rewrite-captions"} {
-		_ = c.Flags().MarkHidden(name)
-	}
 	return c
 }
 

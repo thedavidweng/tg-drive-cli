@@ -26,6 +26,15 @@ import (
 type albumSource struct {
 	localPath string
 	dest      string
+	// humanCaption is the source text kept above the rendered caption block.
+	// Only imports set it (the original message's caption); local uploads
+	// leave it empty and render the block alone.
+	humanCaption string
+	// pres overrides the batch presentation for this member. Imports need it:
+	// one saved album can hold videos with per-file duration and dimensions,
+	// which a single batch-wide presentation cannot describe. nil uses the
+	// batch presentation.
+	pres *Presentation
 }
 
 // albumMember is a fully planned batch member: hashed, caption-rendered,
@@ -248,7 +257,7 @@ func (a *App) planAlbumMember(ctx context.Context, channelRowID int64, src album
 		return nil, err
 	}
 
-	meta, capRes, tags, slugMaps, err := a.renderUploadMeta(dest, src.localPath, info.Size, contentHash, now, existingSlugs)
+	meta, capRes, tags, slugMaps, err := a.renderUploadMetaWithCaption(dest, src.localPath, info.Size, contentHash, now, existingSlugs, src.humanCaption)
 	if err != nil {
 		return nil, err
 	}
@@ -277,7 +286,7 @@ func (a *App) planAlbumMember(ctx context.Context, channelRowID int64, src album
 	}
 
 	return &albumMember{
-		src:      albumSource{localPath: src.localPath, dest: dest},
+		src:      albumSource{localPath: src.localPath, dest: dest, humanCaption: src.humanCaption, pres: src.pres},
 		size:     info.Size,
 		hash:     contentHash,
 		mime:     meta.MIME,
@@ -325,15 +334,10 @@ func (a *App) runAlbumBatch(ctx context.Context, batch *albumBatch, channelID, t
 			}
 		}
 
-		for start := 0; start < len(batch.members); start += telegram.MaxMediaGroupMembers {
-			end := start + telegram.MaxMediaGroupMembers
-			if end > len(batch.members) {
-				end = len(batch.members)
-			}
-			chunk := batch.members[start:end]
+		for chunkIdx, chunk := range albumChunks(batch) {
 			// One human caption per batch, on the very first member; later
 			// chunks and siblings stay empty.
-			withCaption := start == 0
+			withCaption := chunkIdx == 0
 			if len(chunk) == 1 {
 				// A Telegram media group holds at least two members; a lone
 				// survivor (a one-file directory, or every sibling skipped)
@@ -380,6 +384,40 @@ func (a *App) runAlbumBatch(ctx context.Context, batch *albumBatch, channelID, t
 	return out, nil
 }
 
+// memberPres resolves one member's presentation: its own override when the
+// caller supplied one, otherwise the batch-wide presentation.
+func memberPres(m *albumMember, batch Presentation) Presentation {
+	if m.src.pres != nil {
+		return *m.src.pres
+	}
+	return batch
+}
+
+// albumChunks splits a planned batch into sendable media groups: at most
+// MaxMediaGroupMembers each, and never mixing presentation kinds. A Telegram
+// media group is uniform, and an imported saved album can hold both photos and
+// videos, so a kind change ends the current group.
+func albumChunks(batch *albumBatch) [][]*albumMember {
+	var out [][]*albumMember
+	var cur []*albumMember
+	curKind := ""
+	for _, m := range batch.members {
+		kind := memberPres(m, batch.pres).Kind
+		if len(cur) == telegram.MaxMediaGroupMembers || (len(cur) > 0 && kind != curKind) {
+			out = append(out, cur)
+			cur = nil
+		}
+		if len(cur) == 0 {
+			curKind = kind
+		}
+		cur = append(cur, m)
+	}
+	if len(cur) > 0 {
+		out = append(out, cur)
+	}
+	return out
+}
+
 // sendSingleAlbumMember publishes one planned member as an ordinary single
 // message with its own td:v1 caption (and per-file manifest reply when the
 // caption budget demands one) — the exact single-upload semantics.
@@ -390,6 +428,7 @@ func (a *App) sendSingleAlbumMember(ctx context.Context, m *albumMember, channel
 	if err != nil {
 		return 0, err
 	}
+	pres = memberPres(m, pres)
 	req := telegram.UploadRequest{
 		ChannelID:      tgChID,
 		Caption:        m.capRes.Caption,
@@ -491,7 +530,8 @@ func (a *App) sendAlbumChunk(ctx context.Context, chunk []*albumMember, channelI
 			// group carries it; sibling captions stay empty (ADR 0013).
 			req.Caption = m.capRes.Caption
 		}
-		if len(thumb) > 0 && pres.Kind != telegram.KindPhoto {
+		memberPresentation := memberPres(m, pres)
+		if len(thumb) > 0 && memberPresentation.Kind != telegram.KindPhoto {
 			req.Thumb = thumb
 		}
 		if !m.bigFile {
@@ -505,7 +545,7 @@ func (a *App) sendAlbumChunk(ctx context.Context, chunk []*albumMember, channelI
 		if a.Progress != nil {
 			req.Progress = a.Progress
 		}
-		pres.apply(&req)
+		memberPresentation.apply(&req)
 		reqs = append(reqs, req)
 	}
 

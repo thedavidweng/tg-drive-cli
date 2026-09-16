@@ -56,6 +56,11 @@ type Client struct {
 	// truncateHistory limits history reads to the newest N messages without
 	// reporting completion, simulating a Telegram pagination quirk. 0 disables.
 	truncateHistory int
+
+	// Saved Messages knobs (td import saved): savedUnavailable makes the
+	// saved chat unreadable, failSavedDelete rejects saved deletes.
+	savedUnavailable bool
+	failSavedDelete  bool
 }
 
 // New creates a fake client.
@@ -600,6 +605,8 @@ func (c *Client) Doctor(ctx context.Context, channelID int64) (*telegram.Capabil
 		InviteLinkOK:     true,
 		EditOldCaptionOK: true,
 		DiscussionOK:     c.discussion[channelID] != 0,
+		SavedHistoryOK:   !c.savedUnavailable,
+		SavedDeleteOK:    !c.savedUnavailable && !c.failSavedDelete,
 		MaxUploadBytes:   2147483648,
 		CheckedAt:        time.Now().UTC(),
 	}, nil

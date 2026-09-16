@@ -20,6 +20,7 @@ download, and filter folders by hashtag.
 - Exact `ls` / `tree` over a local cache
 - File-level move, rename, delete, or tombstone
 - Adopt existing channel messages without re-uploading
+- Import Saved Messages with provenance and hash dedupe
 - Recover the index from Telegram after database loss
 - Native hashtag navigation in Telegram clients
 - Stable `--json` output for scripts
@@ -96,6 +97,18 @@ td share /2024
 `td ls` and `td tree` read the local cache. `td share` prints an invite link
 and the subtree hashtag.
 
+To make Saved Messages content durable in the drive channel:
+
+```sh
+td import saved --dry-run --photos-as document
+td import saved --photos-as document --confirm
+```
+
+The import mirrors Saved Messages sub-chats below `/saved`, preserves
+forwarded-origin provenance, and records duplicate captions instead of
+discarding them. Sources remain in Saved Messages unless
+`--delete-source --confirm` is requested.
+
 You only log in once. Later commands reuse the saved session.
 
 ## How it works
@@ -138,6 +151,7 @@ td scan --full
 | `td ls` / `td tree` | Browse the cache |
 | `td mv` / `td rm` | Rename or delete |
 | `td adopt` | Adopt existing Telegram messages |
+| `td import saved` | Re-upload Saved Messages content |
 | `td share` | Invite link and subtree hashtag |
 | `td scan` / `td repair` | Rebuild or fix the index |
 | `td doctor` / `td status` | Health and capability checks |
@@ -150,6 +164,7 @@ td get --recursive /Pictures ./restore
 td mv --confirm /2024/beach.jpg /Archive
 td rm --confirm /2024/beach.jpg
 td adopt --unmanaged --dry-run --channel "Pictures [TD]"
+td import saved --dry-run --photos-as document
 td scan --full
 td doctor
 ```
@@ -158,7 +173,7 @@ Global flags: `--json`, `--quiet`, `--verbose`, `--config`, `--db`,
 `--session`, `--channel`, `--wait`, `--no-wait`.
 
 Destructive remote writes (`rm`, `mv`, `cp --replace`, `adopt`,
-`repair --delete-orphaned`) require `--confirm`.
+`import saved`, and `repair --delete-orphaned`) require `--confirm`.
 
 See `td --help` and `td <command> --help` for the full flag list. Frozen
 command and JSON shapes live in [`docs/contracts/`](docs/contracts/).

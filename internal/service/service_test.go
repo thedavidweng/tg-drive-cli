@@ -220,6 +220,9 @@ func TestDoctor(t *testing.T) {
 	if checks["auth"] != "pass" {
 		t.Fatalf("checks = %v", checks)
 	}
+	if checks["saved_history"] != "pass" || checks["saved_delete"] != "pass" {
+		t.Fatalf("saved checks = %v", checks)
+	}
 }
 
 func TestShare(t *testing.T) {

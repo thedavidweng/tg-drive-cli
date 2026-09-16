@@ -151,14 +151,11 @@ func TestImportReservedForExternalIngest(t *testing.T) {
 	}
 }
 
-// TestImportSourceSlotNotImplemented: the first external-chat source (`saved`)
-// is reserved for #41 and every other source name is unknown.
-func TestImportSourceSlotNotImplemented(t *testing.T) {
+// TestImportSourceValidation checks the first external-chat source (`saved`)
+// and keeps unknown source names rejected.
+func TestImportSourceValidation(t *testing.T) {
 	bin := buildBinary(t)
-	for src, want := range map[string]string{
-		"saved":  "not implemented yet",
-		"random": "unknown import source",
-	} {
+	for src, want := range map[string]string{"random": "unknown import source"} {
 		cmd := exec.Command(bin, "--json", "import", src)
 		var stdout bytes.Buffer
 		cmd.Stdout = &stdout
@@ -168,6 +165,55 @@ func TestImportSourceSlotNotImplemented(t *testing.T) {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("source %q: %s", src, stdout.String())
 		}
+	}
+
+	cmd := exec.Command(bin, "--json", "import", "saved")
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	err := cmd.Run()
+	exit, ok := err.(*exec.ExitError)
+	if err == nil || !ok || !exit.Exited() {
+		t.Fatalf("expected confirmation error, err = %v", err)
+	}
+	if exit.ExitCode() != 10 {
+		t.Fatalf("exit = %d, want 10 (stdout=%s)", exit.ExitCode(), stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "ERR_CONFIRMATION_REQUIRED") {
+		t.Fatalf("stdout = %s", stdout.String())
+	}
+}
+
+// TestE2EImportSavedSurface pins the binary-level safety, dry-run, event, and
+// JSON contracts without needing a real saved message. The fake account starts
+// with an empty Saved Messages chat, which is enough to exercise the command
+// lifecycle and its stable result envelope.
+func TestE2EImportSavedSurface(t *testing.T) {
+	dir := t.TempDir()
+	bin, cfgPath, dbPath, statePath, root := e2eSetup(t, dir)
+	e2eLogin(t, bin, cfgPath, dbPath, statePath)
+	runE2EJSON(t, bin, cfgPath, dbPath, statePath, "init", root, "--create-channel=Drive")
+
+	runE2EExpectError(t, bin, cfgPath, dbPath, statePath, 10, "ERR_CONFIRMATION_REQUIRED",
+		"import", "saved")
+	runE2EExpectError(t, bin, cfgPath, dbPath, statePath, 2, "ERR_USAGE",
+		"import", "saved", "--confirm", "--photos-as", "archive")
+
+	plan := runE2EJSON(t, bin, cfgPath, dbPath, statePath,
+		"import", "saved", "--dry-run", "--photos-as", "document")
+	if plan["source"] != "saved" || plan["into"] != "/saved" || plan["dry_run"] != true {
+		t.Fatalf("import plan = %v", plan)
+	}
+	if plan["history_complete"] != true {
+		t.Fatalf("empty saved history should be complete: %v", plan)
+	}
+
+	events := runE2EEvents(t, bin, cfgPath, dbPath, statePath,
+		"import", "saved", "--dry-run", "--photos-as", "document", "--events")
+	if len(events) != 1 || cmd(events[0]) != "import" {
+		t.Fatalf("import events = %v", events)
+	}
+	if data, ok := events[0]["data"].(map[string]any); !ok || data["source"] != "saved" {
+		t.Fatalf("final import event = %v", events[0])
 	}
 }
 

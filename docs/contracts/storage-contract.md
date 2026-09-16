@@ -213,7 +213,8 @@ When a file leaves `active`, clear `files.node_id` in the same transaction. Then
 
 Machine records (`td-manifest:v1` per ungrouped file, `td-album:v1` per
 album) live in the comment thread of the file's post inside the channel's
-linked discussion group (ADR 0018). Media captions carry human text only.
+linked discussion group (ADR 0018). Import annotations (`td-origin:v1` and
+`td-dupe:v1`) use the same carrier. Media captions carry human text only.
 Telegram creates comment threads only for posts sent **after** the
 discussion group was linked; on the first record write for an older post the
 adapter bootstraps a thread by forwarding the post into the group (the
@@ -225,6 +226,17 @@ in-channel reply carrier, which remains first-class and is parsed forever.
 Every machine-record write (upload, mv, rm, import, repair) requires a
 linked discussion group; reads and scans work on legacy channels.
 `td channels link-discussion` creates and links one; `td doctor` reports it.
+
+`td-origin:v1` is an additive provenance record for content republished by
+`td import saved`. It names the source (`src=saved`), source message
+(`smid`), forwarded origin id/title/post/date when available, import date,
+and either the imported canonical path (`p`, for a single file) or album
+grouped id (`g`). `td-dupe:v1` is an additive record for a saved item skipped
+because its BLAKE3 hash already exists. It names the matched path and hash
+and stores the skipped item's caption, truncating only that caption when the
+Telegram text budget requires it (`capcut=1`). These records are
+non-authoritative: losing one removes provenance or caption history, not the
+file or its path.
 
 Telegram is the source of truth, and contradictory Telegram state resolves in
 a fixed order during `td scan --full`:

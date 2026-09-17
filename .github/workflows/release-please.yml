@@ -7,6 +7,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  actions: write
 
 jobs:
   release-please:
@@ -16,9 +17,35 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      # Prefer a PAT: tags pushed with the default GITHUB_TOKEN do not
-      # trigger the tag-based release workflow. The fallback still lets
-      # release-please manage the release PR when no PAT is configured.
+      # A PAT is optional: tags created with the default GITHUB_TOKEN do not
+      # trigger the tag-based release workflow, so after release-please
+      # creates the tag and release we dispatch the Release workflow
+      # manually. workflow_dispatch is the one event GITHUB_TOKEN may
+      # trigger.
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        id: rp
         with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+      - name: Dispatch Release packaging
+        # release_created is true only on the push that merged the release
+        # PR, right after release-please created the tag and release.
+        if: ${{ steps.rp.outputs.release_created == 'true' && steps.rp.outputs.tag_name != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ steps.rp.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          existing_run="$(gh run list \
+            --repo "${GH_REPO}" \
+            --workflow release.yml \
+            --branch "${TAG_NAME}" \
+            --limit 5 \
+            --json databaseId,status \
+            --jq '[.[] | select(.status == "queued" or .status == "in_progress")] | .[0].databaseId // empty')"
+          if [ -n "${existing_run}" ]; then
+            echo "Release workflow already running for ${TAG_NAME}: ${existing_run}"
+            exit 0
+          fi
+          echo "Dispatching release workflow for ${TAG_NAME}"
+          gh workflow run release.yml -f tag_name="${TAG_NAME}"

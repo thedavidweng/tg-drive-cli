@@ -101,19 +101,6 @@ nfpms:
       - apk
     bindir: /usr/bin
 
-homebrew_casks:
-  - name: tg-drive-cli
-    binaries:
-      - td
-    repository:
-      owner: thedavidweng
-      name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    homepage: https://github.com/thedavidweng/tg-drive-cli
-    description: Telegram-backed virtual file tree CLI
-    hooks:
-      post:
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/td"]
-          end
+# The Homebrew cask is maintained pull-based: the tap repository's Sync
+# Releases workflow updates Casks/tg-drive-cli.rb from the published release
+# assets, so this pipeline needs no cross-repository token.

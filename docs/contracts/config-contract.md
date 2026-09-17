@@ -16,7 +16,6 @@ session_path = "~/.config/tg-drive-cli/session.json"
 safe_media_caption_utf16_units = 1024
 safe_text_message_utf16_units = 4096
 margin_utf16_units = 16
-max_hashtags_in_caption = 32
 
 [hash]
 enabled = true

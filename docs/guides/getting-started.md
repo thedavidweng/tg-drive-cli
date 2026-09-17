@@ -247,8 +247,8 @@ downloaded /2024 -> ./restore (1 files, 0 skipped, 0 failed)
 
 ## 8. Share the drive
 
-**Scenario:** print an invite link and the hashtag that filters this folder
-in native Telegram clients.
+**Scenario:** print an invite link for this folder. A legacy hashtag filter
+may also be shown for older posts.
 
 ```sh
 td share /2024
@@ -259,9 +259,10 @@ td share /2024
 ```text
 Channel: Pictures [TD]
 Invite: https://t.me/+<invite-hash>
-Filter: #td_Pictures_<hash>_2024_<hash>
+Legacy filter: #td_Pictures_<hash>_2024_<hash>
 
-Open the channel, then search or tap the filter tag. In clients that show global hashtag results, choose the current channel/chat tab.
+The filter only matches legacy posts. New uploads use human-only captions;
+use `td ls` or `td tree` for path-aware browsing.
 ```
 
 Anyone with the link joins the channel as a viewer and can browse or download
@@ -271,7 +272,7 @@ every file in it.
 
 - [Recover the index](recover-the-index.md) — rebuild after database loss
 - [Organize files](organize-files.md) — move, rename, delete safely
-- [Share folders](share-and-navigate.md) — invite links and hashtags in depth
+- [Share folders](share-and-navigate.md) — invite links and legacy filters
 - [Script with JSON](script-with-json.md) — stable envelopes and exit codes
 - [Troubleshoot](troubleshoot.md) — doctor, rate limits, common errors
 - [CLI reference](cli-reference.md) — every command and flag

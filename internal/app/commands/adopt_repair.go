@@ -92,21 +92,30 @@ func NewAdoptCmd(rt Runtime) *cobra.Command {
 }
 
 func NewRepairCmd(rt Runtime) *cobra.Command {
-	var pending, orphaned, scanErrors, deleteOrphans, confirm, hash bool
+	var pending, orphaned, scanErrors, deleteOrphans, confirm, hash, captions, dryRun, continueOnError bool
 	c := &cobra.Command{
 		Use:   "repair [path]",
 		Short: "Repair index inconsistencies",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r := rt.Renderer()
+			modes := 0
+			for _, selected := range []bool{pending, orphaned, scanErrors, hash, captions} {
+				if selected {
+					modes++
+				}
+			}
+			if modes > 1 {
+				return r.Error(apperr.New(apperr.ErrUsage, "repair modes are mutually exclusive"))
+			}
 			if deleteOrphans && !orphaned {
 				return r.Error(apperr.New(apperr.ErrUsage, "--delete-orphaned requires --orphaned"))
 			}
 			if deleteOrphans && !confirm {
 				return r.Error(apperr.New(apperr.ErrConfirmationRequired, "deleting orphaned Telegram messages requires --confirm"))
 			}
-			if hash && (pending || orphaned || scanErrors) {
-				return r.Error(apperr.New(apperr.ErrUsage, "--hash cannot be combined with --pending/--orphaned/--scan-errors"))
+			if (dryRun || continueOnError) && !captions {
+				return r.Error(apperr.New(apperr.ErrUsage, "--dry-run and --continue-on-error require --captions"))
 			}
 			app, cleanup, err := rt.OpenApp(cmd)
 			if err != nil {
@@ -120,6 +129,8 @@ func NewRepairCmd(rt Runtime) *cobra.Command {
 				pathArg = args[0]
 			}
 			switch {
+			case captions:
+				data, err = app.RepairCaptions(ctx, pathArg, dryRun, continueOnError)
 			case hash:
 				data, err = app.RepairHash(ctx, pathArg)
 			case len(args) == 1:
@@ -149,5 +160,8 @@ func NewRepairCmd(rt Runtime) *cobra.Command {
 	c.Flags().BoolVar(&deleteOrphans, "delete-orphaned", false, "delete orphaned Telegram messages instead of completing them")
 	c.Flags().BoolVar(&confirm, "confirm", false, "confirm deleting orphaned Telegram messages")
 	c.Flags().BoolVar(&hash, "hash", false, "download files missing a content hash and backfill it into the index and machine records")
+	c.Flags().BoolVar(&captions, "captions", false, "remove td's old parent-path and path-hashtag caption scaffold")
+	c.Flags().BoolVar(&dryRun, "dry-run", false, "report caption changes without editing Telegram (requires --captions)")
+	c.Flags().BoolVar(&continueOnError, "continue-on-error", false, "continue caption cleanup after an individual error")
 	return c
 }

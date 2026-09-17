@@ -208,9 +208,13 @@ func TestRepairOrphanedCompletesUpload(t *testing.T) {
 		t.Fatalf("status = %q, want active", got)
 	}
 	var manifestID int
-	_ = app.DB.Raw().QueryRow(`select coalesce(manifest_message_id,0) from files where canonical_path=? and status='active'`, remote).Scan(&manifestID)
+	var manifestChat string
+	_ = app.DB.Raw().QueryRow(`select coalesce(manifest_message_id,0), coalesce(manifest_chat_tg_id,'') from files where canonical_path=? and status='active'`, remote).Scan(&manifestID, &manifestChat)
 	if manifestID == 0 {
 		t.Fatal("manifest reply not recorded after repair")
+	}
+	if manifestChat == "" {
+		t.Fatal("orphan repair used the legacy in-channel carrier")
 	}
 }
 

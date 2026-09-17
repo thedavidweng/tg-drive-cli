@@ -23,34 +23,29 @@ design decision follows from this:
 
 ## What a file looks like on Telegram
 
-An uploaded file is an ordinary media message whose caption carries
-reconstructable metadata. Illustrative structure:
+An uploaded file is an ordinary media message with a human-only caption.
+Illustrative structure:
 
 ```text
 beach.jpg
-/2024
 
-td:v1 p=/2024/beach.jpg n=beach.jpg s=2482911 h=blake3:… m=image/jpeg
-
-#td_Pictures_<hash> #td_Pictures_<hash>_2024_<hash>
+Weekend trip
 ```
 
 Three layers, three different jobs:
 
-1. **Display lines** — name and parent path for humans reading the channel.
-2. **`td:v1` metadata** — path, name, size, content hash, MIME type. This is
-   what a full scan parses; hashtags are never used for reconstruction.
-3. **Hashtags** — one cumulative tag per directory level, purely for native
-   client navigation.
+1. **Caption** — caller-provided human text and display name. `td` does not
+   add the remote parent path or its internal `#td_*` tag chain.
+2. **Discussion comment** — `td-manifest:v1` or `td-album:v1` stores the
+   canonical path, size, content hash, MIME type, and complete tag chain.
+3. **SQLite index** — a rebuildable cache of the same Telegram records;
+   hashtags are never used as the authoritative reconstruction model.
 
-Deep paths do not fit Telegram's caption budget (1024 UTF-16 code units).
-Instead of failing, `td` sends a minimal caption and puts the full record in
-a `td-manifest:v1` reply message. Albums work the same way with one
-`td-album:v1` inventory reply per group, because albums keep a single human
-caption on their first item. This is why deleting a file sometimes edits two
-messages, and why tombstoning can fail on old messages
-(`ERR_MESSAGE_NOT_EDITABLE`) — captions are just editable message text, and
-Telegram ages out edits.
+Albums keep one human caption on their first item and one
+`td-album:v1` inventory comment per group. Legacy rows may still carry
+`td:v1` captions or in-channel replies; those carriers remain parseable.
+Use `td repair --captions --dry-run` followed by `td repair --captions` to
+remove the former path scaffold from existing modern captions.
 
 ## Directories do not exist on Telegram
 
@@ -91,7 +86,7 @@ mysteriously.
 | Limit | Origin |
 | --- | --- |
 | 2 GB / 4 GB per file | Telegram free / Premium account tiers |
-| 1024 UTF-16 caption budget | Telegram media caption cap (`td:v1` overflows into a manifest reply) |
+| 1024 UTF-16 caption budget | Telegram media caption cap for human text |
 | 4096 UTF-16 manifest budget | Telegram text message cap |
 | One channel per root | keeps scan/recovery semantics simple and predictable |
 | Incremental scans miss old edits | Telegram does not offer "history diff"; full scans re-read everything |
@@ -101,11 +96,11 @@ Unicode code points — emoji and some CJK characters count as two.
 
 ## Slugs: readable but collision-proof
 
-Hashtag segments must be readable (`Pictures`, pinyin for Chinese) yet unique
-across arbitrary paths, so each segment gets a BLAKE3 suffix
-(`readable_prefix` + 8 base32 chars, lengthening on collision). That is why
-tags look like `#td_Pictures_<hash>_2024_<hash>` rather than
-`#td_Pictures_2024`.
+Path-tag segments remain readable (`Pictures`, pinyin for Chinese) yet
+unique across arbitrary paths, so each segment gets a BLAKE3 suffix
+(`readable_prefix` + 8 base32 chars, lengthening on collision). They remain
+in the index and discussion manifests for compatibility, but new captions do
+not render them.
 
 ## Going deeper
 

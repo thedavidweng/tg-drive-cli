@@ -343,7 +343,7 @@ func NewRmCmd(rt Runtime) *cobra.Command {
 func NewShareCmd(rt Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "share [remote-path]",
-		Short: "Share invite link and hashtag",
+		Short: "Share invite link and optional legacy hashtag filter",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r := rt.Renderer()
 			app, cleanup, err := rt.OpenApp(cmd)
@@ -368,8 +368,8 @@ func NewShareCmd(rt Runtime) *cobra.Command {
 			}
 			_, _ = fmt.Fprintf(out, "Invite: %v\n", data["invite_link"])
 			if tag, ok := data["hashtag"].(string); ok && tag != "" {
-				_, _ = fmt.Fprintf(out, "Filter: %s\n", tag)
-				_, _ = fmt.Fprintln(out, "\nOpen the channel, then search or tap the filter tag. In clients that show global hashtag results, choose the current channel/chat tab.")
+				_, _ = fmt.Fprintf(out, "Legacy filter: %s\n", tag)
+				_, _ = fmt.Fprintln(out, "\nThis filter only matches legacy posts that still carry path hashtags. New posts use human-only captions; open the channel or use td ls/tree to browse.")
 			} else {
 				_, _ = fmt.Fprintln(out, "\nOpen the channel from the invite link; it contains everything shared here.")
 			}

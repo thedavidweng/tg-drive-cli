@@ -320,6 +320,35 @@ the final result is emitted as an `import` envelope. `--dry-run` returns this
 same result shape without downloading, uploading, writing records, or
 deleting sources.
 
+## Caption cleanup
+
+`td repair --captions [path]` removes the former parent-path and path-derived
+`#td_*` scaffold from modern discussion-carrier captions. It never rewrites
+legacy `td:v1` caption carriers.
+
+```json
+{
+  "ok": true,
+  "data": {
+    "dry_run": false,
+    "cleaned": 1,
+    "planned": 0,
+    "skipped": 2,
+    "failed": 0,
+    "total": 3,
+    "items": [
+      {"path": "/stash-browse/832/clip.mp4", "message_id": 8821, "action": "clean"},
+      {"path": "/stash-browse/832/other.mp4", "message_id": 8822, "action": "skipped", "reason": "already clean or scaffold not exact"}
+    ]
+  }
+}
+```
+
+`--dry-run` uses `"action": "would_clean"` and increments `planned` instead
+of `cleaned`. `"message not editable"` and `"empty caption"` are reported as
+skips. Without `--continue-on-error`, the command stops and returns the first
+unexpected per-message error.
+
 ## Recursive download
 
 ```json

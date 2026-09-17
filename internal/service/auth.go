@@ -181,7 +181,7 @@ func (a *App) findRootBinding(ctx context.Context, tgUserID int64, localRoot str
 	return nil
 }
 
-// Share returns invite link and hashtag for a path.
+// Share returns an invite link and an optional legacy hashtag for a path.
 func (a *App) Share(ctx context.Context, remotePath string) (map[string]any, error) {
 	p, err := fsmodel.NormalizeCanonicalPath(remotePath)
 	if err != nil {

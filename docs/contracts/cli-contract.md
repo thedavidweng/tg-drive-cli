@@ -57,13 +57,16 @@ td cp <local> [local...] <remote-path>
 Two argument forms:
 
 - `td cp <local> <remote-path>` — single file, one message per upload; the
-  caption is human-only and the machine record is a `td-manifest:v1`
-  comment on the message's discussion thread (ADR 0018)
+  caption contains only the caller's human text and display name. The remote
+  parent path and `#td_*` path tags are not rendered into new captions. The
+  machine record is a `td-manifest:v1` comment on the message's discussion
+  thread (ADR 0018)
 - `td cp <local...> <remote-dir>` — two or more sources publish as native
   Telegram media groups (albums): one human-only caption on the first
   member, empty sibling captions, one `td-album:v1` inventory comment on
-  the first member's discussion thread per group (ADR 0018). Sets larger
-  than 10 members split into consecutive groups of up to 10.
+  the first member's discussion thread per group (ADR 0018). The caption
+  contains no generated parent path or `#td_*` path tags. Sets larger than
+  10 members split into consecutive groups of up to 10.
   `<remote-dir>` is `/`, a path ending in `/`, or an existing remote
   directory. `--replace` is not supported in this form (`ERR_USAGE`);
   `--skip-existing` and `--auto-rename` apply per file, and a lone survivor
@@ -119,6 +122,11 @@ td repair [--hash] [path]
   # hash, computes its BLAKE3 digest, and backfills it into the index and
   # the machine record on Telegram (comment thread, legacy reply, or
   # caption carrier). A zero/missing size is repaired from the download.
+td repair --captions [path]
+  [--dry-run] [--continue-on-error]
+  # removes td's former parent-path and #td_* caption scaffold from modern
+  # comment-carrier rows; exact path/hash/MIME/tags remain in discussion
+  # manifests. Legacy td:v1 caption carriers are skipped.
 td config get [key]
   [--show-secrets] [--confirm]
 td config set <key> <value>

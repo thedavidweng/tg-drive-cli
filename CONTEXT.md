@@ -9,9 +9,9 @@
 - **Canonical path** — The stable, slash-separated path used in the SQLite index and manifest (e.g. `/Pictures/2024/beach.jpg`).
 - **Display name** — The human-readable file or directory name stored in a caption or manifest.
 - **Manifest** — Reconstructable machine metadata on Telegram. Since ADR 0018 it lives as a comment in the file's discussion thread: one `td-manifest:v1` comment per ungrouped file, one `td-album:v1` comment per album group. Legacy in-channel replies and `td:v1` captions remain parseable.
-- **Caption** — The human text attached to a Telegram media message: display name, parent directory, hashtags. Machine metadata is never written onto captions for new uploads; the machine record is the discussion-thread comment.
+- **Caption** — The human text attached to a Telegram media message: caller-provided text and display name. Modern captions do not include td's remote parent path or path-derived hashtags; the machine record is the discussion-thread comment.
 - **Discussion group** — The supergroup linked to a drive channel. Every channel post auto-forwards there, and its comment thread carries the post's machine record (ADR 0018).
-- **Hashtag** — A `#` prefixed token in a caption used for filtering in native Telegram clients. Not the reconstructable storage model.
+- **Hashtag** — A `#` prefixed human token in a caption, or a path-derived `#td_*` token retained in index/manifest data for compatibility. Path-derived tags are not emitted in modern captions and are not the reconstructable storage model.
 - **Node** — A file or directory entry in the SQLite index (`nodes` table).
 - **File row** — A row in the `files` table tracking message ID, manifest ID, hash, status, and local path.
 - **Status** — The lifecycle of a file row: `pending`, `active`, `deleted`, `superseded`, `missing`, `invalid`, `orphaned`.

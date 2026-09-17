@@ -41,7 +41,6 @@ type CaptionConfig struct {
 	SafeMediaCaptionUTF16Units int `toml:"safe_media_caption_utf16_units"`
 	SafeTextMessageUTF16Units  int `toml:"safe_text_message_utf16_units"`
 	MarginUTF16Units           int `toml:"margin_utf16_units"`
-	MaxHashtagsInCaption       int `toml:"max_hashtags_in_caption"`
 }
 
 type HashConfig struct {
@@ -107,7 +106,6 @@ func Defaults() Config {
 			SafeMediaCaptionUTF16Units: 1024,
 			SafeTextMessageUTF16Units:  4096,
 			MarginUTF16Units:           16,
-			MaxHashtagsInCaption:       32,
 		},
 		Hash:   HashConfig{Enabled: true, Algorithm: "blake3"},
 		Delete: DeleteConfig{Mode: "delete"},

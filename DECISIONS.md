@@ -62,12 +62,13 @@ This document exists to prevent implementation drift. Do not replace these choic
 ## Manifest and caption
 
 - Machine reconstruction uses `td-manifest:v1` / `td-album:v1` comment records first, then legacy `td:v1` captions and in-channel replies — never hashtags.
-- Machine records live in the linked discussion group's comment threads (ADR 0018); media captions carry human text only for new uploads.
+- Machine records live in the linked discussion group's comment threads (ADR 0018); modern media captions carry only caller-provided human text and the display name.
 - A Telegram media album is one human post and one machine inventory: human caption on the first item, one `td-album:v1` comment on the first member's thread.
+- New captions never include the remote parent path or path-derived `#td_*` tags. Existing modern captions can be cleaned with `td repair --captions`; legacy `td:v1` caption carriers are preserved.
 - Media caption budget is 1024 UTF-16 code units with 16-unit margin.
 - Text manifest budget is 4096 UTF-16 code units with 16-unit margin.
 - Minimal caption overflow returns `ERR_CAPTION_TOO_LONG` (legacy caption carrier only).
-- Hashtags are shallow-to-deep and are truncated from the deep side.
+- Path-derived tags remain index and discussion-manifest data; they are not an authoritative storage model or a modern caption surface.
 
 ## Slugs and hashtags
 

@@ -56,7 +56,7 @@ Files
 Maintenance
   repair      Repair index inconsistencies
   scan        Scan Telegram channel and rebuild index
-  share       Share invite link and hashtag
+  share       Share invite link and optional legacy hashtag filter
 
 Additional Commands:
   help        Help about any command
@@ -343,7 +343,8 @@ requires `--confirm`.
 
 ### td share
 
-Share invite link and hashtag.
+Share an invite link and, when available, an optional legacy hashtag filter.
+New posts use human-only captions and do not contain path-derived hashtags.
 
 ```text
 Usage:

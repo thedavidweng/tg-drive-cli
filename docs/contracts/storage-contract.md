@@ -215,6 +215,11 @@ Machine records (`td-manifest:v1` per ungrouped file, `td-album:v1` per
 album) live in the comment thread of the file's post inside the channel's
 linked discussion group (ADR 0018). Import annotations (`td-origin:v1` and
 `td-dupe:v1`) use the same carrier. Media captions carry human text only.
+Modern media captions contain the caller's human text and display name only;
+td does not render the remote parent path or path-derived `#td_*` tags into
+them. The full path, hash, MIME, and tag chain remain in the discussion
+manifest. `td repair --captions` removes that former scaffold from existing
+modern captions without touching legacy `td:v1` carriers.
 Telegram creates comment threads only for posts sent **after** the
 discussion group was linked; on the first record write for an older post the
 adapter bootstraps a thread by forwarding the post into the group (the
@@ -255,7 +260,8 @@ a fixed order during `td scan --full`:
 
 Slug assignment during scans is deterministic (message-id order — the same
 chronological order uploads are assigned in), so a rebuilt index reproduces
-the original tag chains and previously shared hashtag links keep working.
+the original tag chains. Tags remain index and manifest data; modern captions
+do not depend on them.
 
 Full scans walk the drive channel and the discussion group. Each peer has
 its own completeness proof and cursor (`scan_state.last_scanned_message_id`,

@@ -154,25 +154,27 @@ func RenderManifestReplyFitting(m FileMeta, budget, margin int) string {
 	}
 }
 
-// CaptionResult holds the rendered caption and the tags that fit.
+// CaptionResult holds the rendered caption. Modern captions no longer carry
+// path-derived tags, so IncludedTags is empty for RenderCaption and
+// RenderCaptionWithPrefix; it remains for compatibility with callers that
+// inspect the result.
 type CaptionResult struct {
 	Caption      string
 	IncludedTags []string
 }
 
-// RenderCaption builds the human media caption: display name, parent
-// directory line, and the hashtag chain within the caption budget. Machine
-// metadata never rides on captions; it lives in comment threads (ADR 0018).
+// RenderCaption builds the human media caption. Machine metadata and
+// path-derived browsing scaffolding never ride on modern captions; they live
+// in the discussion-thread manifest (ADR 0018).
 func RenderCaption(m FileMeta, budget, margin int) (CaptionResult, error) {
 	return RenderCaptionWithPrefix(m, "", budget, margin)
 }
 
 // RenderCaptionWithPrefix renders the caption with an imported message's own
-// text above the standard block, separated by a blank line. Imports need it:
+// text above the display name, separated by a blank line. Imports need it:
 // the source caption is content in its own right and must stay visible on the
 // republished message. A prefix too long for the budget is truncated rather
-// than dropped, and never displaces the display name, parent line, or the
-// tags that fit — those are what the tree is browsed by.
+// than dropped, and never displaces the display name.
 func RenderCaptionWithPrefix(m FileMeta, prefix string, budget, margin int) (CaptionResult, error) {
 	if budget <= 0 {
 		budget = DefaultCaptionBudget
@@ -183,12 +185,6 @@ func RenderCaptionWithPrefix(m FileMeta, prefix string, budget, margin int) (Cap
 	limit := budget - margin
 
 	block := []string{m.DisplayName}
-	if m.ParentHuman != "" {
-		block = append(block, m.ParentHuman+"/")
-	} else {
-		block = append(block, "")
-	}
-	block = append(block, "")
 
 	var lines []string
 	if prefix = strings.TrimRight(prefix, "\n"); prefix != "" {
@@ -200,24 +196,11 @@ func RenderCaptionWithPrefix(m FileMeta, prefix string, budget, margin int) (Cap
 		}
 	}
 	lines = append(lines, block...)
-	// UTF-16 length is additive over concatenation, so the running count
-	// tracks each appended tag instead of re-encoding the whole caption.
-	cur := UTF16Units(strings.Join(lines, "\n"))
-	var included []string
-	for _, tag := range m.Tags {
-		add := UTF16Units("\n" + tag)
-		if cur+add > limit {
-			break
-		}
-		lines = append(lines, tag)
-		included = append(included, tag)
-		cur += add
-	}
 	caption := strings.TrimRight(strings.Join(lines, "\n"), "\n")
 	if !FitsTelegramCaption(caption, budget, margin) {
 		return CaptionResult{}, apperr.New(apperr.ErrCaptionTooLong, "caption exceeds minimum budget")
 	}
-	return CaptionResult{Caption: caption, IncludedTags: included}, nil
+	return CaptionResult{Caption: caption}, nil
 }
 
 // RenderLegacyCaption renders the pre-ADR-0018 caption: human text plus the
@@ -478,6 +461,45 @@ func StripAdoptScaffold(human, display, parentHuman string) string {
 		}
 	}
 	return human
+}
+
+// StripRenderedScaffold removes the legacy modern-caption path scaffolding
+// from a caption while preserving any imported or user-authored prefix.
+// Only an exact suffix made from the indexed display name, parent line, and
+// stored path-tag prefix is removed. This keeps human hashtags and text that
+// merely resemble the scaffold intact.
+func StripRenderedScaffold(caption, display, parentHuman string, tags []string) (string, bool) {
+	caption = strings.TrimRight(caption, "\n")
+	if caption == "" || display == "" {
+		return caption, false
+	}
+
+	for count := len(tags); count >= 0; count-- {
+		lines := []string{display}
+		if parentHuman != "" {
+			lines = append(lines, parentHuman+"/")
+		} else {
+			lines = append(lines, "")
+		}
+		if count > 0 {
+			lines = append(lines, "")
+			lines = append(lines, tags[:count]...)
+		}
+		suffix := strings.Join(lines, "\n")
+		if caption == suffix {
+			clean := display
+			return clean, clean != caption
+		}
+		separator := "\n\n" + suffix
+		if strings.HasSuffix(caption, separator) {
+			prefix := strings.TrimRight(strings.TrimSuffix(caption, separator), "\n")
+			if prefix != "" {
+				return prefix, true
+			}
+			return display, true
+		}
+	}
+	return caption, false
 }
 
 // HumanVisibleCaption is what should remain on the Telegram media/text

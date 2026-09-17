@@ -136,9 +136,27 @@ func TestMoveFile(t *testing.T) {
 	ctx := context.Background()
 	local := filepath.Join(t.TempDir(), "a.txt")
 	_ = os.WriteFile(local, []byte("hello"), 0o644)
-	_, _ = app.UploadFile(ctx, local, "/from.txt", ConflictFail, false)
+	uploaded, err := app.UploadFile(ctx, local, "/from.txt", ConflictFail, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tgChannelID, _ := app.tgChannelID(ctx)
+	before, err := tg.GetMessage(ctx, tgChannelID, uploaded["message_id"].(int))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(before.Caption, "#td_") || strings.Contains(before.Caption, "from/") {
+		t.Fatalf("upload caption contains path scaffolding: %q", before.Caption)
+	}
 	if err := app.MoveFile(ctx, "/from.txt", "/to.txt"); err != nil {
 		t.Fatal(err)
+	}
+	after, err := tg.GetMessage(ctx, tgChannelID, uploaded["message_id"].(int))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(after.Caption, "#td_") || strings.Contains(after.Caption, "to/") {
+		t.Fatalf("move caption contains path scaffolding: %q", after.Caption)
 	}
 }
 

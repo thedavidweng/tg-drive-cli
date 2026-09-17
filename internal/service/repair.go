@@ -130,6 +130,10 @@ func (a *App) RepairOrphaned(ctx context.Context, deleteOrphans bool) (map[strin
 	if err != nil {
 		return nil, err
 	}
+	manifestChat, err := a.discussionChatID(ctx, channelID)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := a.DB.Raw().QueryContext(ctx, `
 		select id, canonical_path, display_name, coalesce(size,0), coalesce(content_hash,''), coalesce(mime,''), message_id
 		from files where channel_id=? and status='orphaned'`, channelID)
@@ -192,13 +196,14 @@ func (a *App) RepairOrphaned(ctx context.Context, deleteOrphans bool) (map[strin
 				Created:       now,
 			}
 			if _, err := a.publisher().Publish(ctx, publisher.PublishRequest{
-				ChannelRowID:  channelID,
-				ChannelID:     tgChID,
-				FileID:        r.id,
-				MessageID:     int(r.msgID.Int64),
-				Meta:          meta,
-				ExistingSlugs: a.loadSlugMap(ctx, channelID),
-				SetUploadedAt: true,
+				ChannelRowID:   channelID,
+				ChannelID:      tgChID,
+				FileID:         r.id,
+				MessageID:      int(r.msgID.Int64),
+				ManifestChatID: manifestChat,
+				Meta:           meta,
+				ExistingSlugs:  a.loadSlugMap(ctx, channelID),
+				SetUploadedAt:  true,
 			}); err != nil {
 				return nil // stays orphaned for a later attempt
 			}

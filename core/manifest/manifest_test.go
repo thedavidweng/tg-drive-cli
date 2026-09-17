@@ -97,9 +97,15 @@ func TestRenderCaptionHumanOnly(t *testing.T) {
 	if strings.Contains(res.Caption, "td:v1") || strings.Contains(res.Caption, "blake3") {
 		t.Fatalf("machine text leaked into caption: %q", res.Caption)
 	}
-	want := "clip.mp4\nverify/\n\n#td_verify_abc"
+	want := "clip.mp4"
 	if res.Caption != want {
 		t.Fatalf("caption = %q, want %q", res.Caption, want)
+	}
+	if len(res.IncludedTags) != 0 {
+		t.Fatalf("modern caption included path tags: %v", res.IncludedTags)
+	}
+	if strings.Contains(res.Caption, "verify/") || strings.Contains(res.Caption, "#td_") {
+		t.Fatalf("path scaffolding leaked into caption: %q", res.Caption)
 	}
 }
 
@@ -126,10 +132,13 @@ func TestRenderCaptionWithPrefixPreservesImportedText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(res.Caption, "original caption 😀\n\nclip.mp4\nsaved/Trips/") {
+	if !strings.HasPrefix(res.Caption, "original caption 😀\n\nclip.mp4") {
 		t.Fatalf("caption = %q", res.Caption)
 	}
-	if len(res.IncludedTags) != 2 {
+	if strings.Contains(res.Caption, "saved/Trips/") || strings.Contains(res.Caption, "#td_") {
+		t.Fatalf("path scaffolding leaked into imported caption: %q", res.Caption)
+	}
+	if len(res.IncludedTags) != 0 {
 		t.Fatalf("included tags = %v", res.IncludedTags)
 	}
 
@@ -180,6 +189,43 @@ func TestHumanVisibleCaptionRestoresOriginal(t *testing.T) {
 	empty := "The Bet.mp4\nvideos/\n\ntd:v1 p=x n=y"
 	if got := HumanVisibleCaption(empty, "The Bet.mp4", "videos"); got != "The Bet.mp4" {
 		t.Fatalf("empty original -> filename, got %q", got)
+	}
+}
+
+func TestStripRenderedScaffoldPreservesPrefix(t *testing.T) {
+	got, changed := StripRenderedScaffold(
+		"source title\n\nclip.mp4\nvideos/\n\n#td_videos_abc\n#td_videos_abc_more",
+		"clip.mp4",
+		"videos",
+		[]string{"#td_videos_abc", "#td_videos_abc_more"},
+	)
+	if !changed || got != "source title" {
+		t.Fatalf("got=%q changed=%v", got, changed)
+	}
+
+	got, changed = StripRenderedScaffold(
+		"clip.mp4\nvideos/\n\n#td_videos_abc",
+		"clip.mp4",
+		"videos",
+		[]string{"#td_videos_abc", "#td_videos_abc_more"},
+	)
+	if !changed || got != "clip.mp4" {
+		t.Fatalf("unmatched deep tag got=%q changed=%v", got, changed)
+	}
+
+	got, changed = StripRenderedScaffold(
+		"clip.mp4\nvideos/\n\n#human",
+		"clip.mp4",
+		"videos",
+		[]string{"#td_videos_abc"},
+	)
+	if changed || got != "clip.mp4\nvideos/\n\n#human" {
+		t.Fatalf("human tag was altered: %q changed=%v", got, changed)
+	}
+
+	got, changed = StripRenderedScaffold("clip.mp4", "clip.mp4", "", nil)
+	if changed || got != "clip.mp4" {
+		t.Fatalf("clean root caption changed: %q changed=%v", got, changed)
 	}
 }
 
@@ -250,7 +296,7 @@ func TestParseRejectsMissingP(t *testing.T) {
 	}
 }
 
-func TestShallowTagsPreservedFirst(t *testing.T) {
+func TestCaptionOmitsPathTags(t *testing.T) {
 	m := FileMeta{
 		DisplayName:   "f.txt",
 		ParentHuman:   "a/b",
@@ -262,7 +308,10 @@ func TestShallowTagsPreservedFirst(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.IncludedTags) == 0 || res.IncludedTags[0] != "#shallow" {
+	if res.Caption != "f.txt" {
+		t.Fatalf("caption = %q", res.Caption)
+	}
+	if len(res.IncludedTags) != 0 {
 		t.Fatalf("tags = %v", res.IncludedTags)
 	}
 }

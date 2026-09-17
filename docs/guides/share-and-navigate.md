@@ -1,7 +1,8 @@
 # Share folders
 
-How to give other people access, and how the `#td_` hashtags map to your
-folder tree inside native Telegram clients.
+How to give other people access to the channel. New posts use human-only
+captions; path-derived `#td_` hashtags remain only as legacy compatibility
+data.
 
 Output blocks copied verbatim from real runs are unmarked (personal values
 are masked). Blocks that depend on your own data are prefixed *Illustrative*.
@@ -45,35 +46,36 @@ td share /2024
 ```text
 Channel: Pictures [TD]
 Invite: https://t.me/+<invite-hash>
-Filter: #td_Pictures_<hash>_2024_<hash>
+Legacy filter: #td_Pictures_<hash>_2024_<hash>
 
-Open the channel, then search or tap the filter tag. In clients that show global hashtag results, choose the current channel/chat tab.
+The filter is only useful for legacy posts that still carry path hashtags.
+New uploads have clean human-only captions. Use `td ls` or `td tree` for
+path-aware browsing.
 ```
 
-The invite link still admits to the whole channel — the filter tag is a
-navigation aid, not a permission.
+The invite link still admits to the whole channel. It is not a permission
+boundary.
 
-## Navigate by hashtag in Telegram
+## Legacy hashtag navigation
 
 **Scenario:** you are in a Telegram client and want to jump to a folder
-without `td`.
+without `td`, and the folder contains legacy posts.
 
-Every directory level of every file caption carries a cumulative hashtag.
-Illustrative structure:
+Legacy captions may carry cumulative path hashtags:
 
 ```text
 #td_Pictures_<hash> #td_Pictures_<hash>_2024_<hash>
 ```
 
-Tap a tag (or search for it) and the client filters messages down to that
-folder. Two caveats:
+Tap a tag (or search for it) and the client may filter legacy messages down to
+that folder. New uploads do not carry these tags. Two caveats:
 
 - Modern clients may show **global** results across chats — choose the
   **current chat** tab.
 - Public channels can scope tags as `#tag@username`; private channels cannot.
 
 Chinese path segments become pinyin slugs; other non-ASCII scripts become
-ASCII plus a short hash suffix. Hashtags are UX sugar only — machine
+ASCII plus a short hash suffix. Hashtags are compatibility UX only — machine
 reconstruction never relies on them (see [How td works](how-td-works.md)).
 
 ## Revoke access

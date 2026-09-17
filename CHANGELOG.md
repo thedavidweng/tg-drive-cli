@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/thedavidweng/tg-drive-cli/compare/v0.2.0...v0.2.1) (2026-09-17)
+
+
+### Bug Fixes
+
+* keep internal paths out of modern captions ([2780831](https://github.com/thedavidweng/tg-drive-cli/commit/2780831c15b3d0a9090160784d70caebbd4b81ad))
+
 ## [0.2.0](https://github.com/thedavidweng/tg-drive-cli/compare/v0.1.0...v0.2.0) (2026-09-17)
 
 

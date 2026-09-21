@@ -1,7 +1,7 @@
 version: 2
 updates:
-  - package-ecosystem: gomod
-    directory: /
+  - package-ecosystem: "gomod"
+    directory: "/"
     schedule:
       interval: weekly
     cooldown:
@@ -9,7 +9,10 @@ updates:
       semver-major-days: 7
       semver-minor-days: 5
       semver-patch-days: 3
-  - package-ecosystem: github-actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: weekly
     groups:
       github-actions:
         patterns:
@@ -17,9 +20,6 @@ updates:
         update-types:
           - "minor"
           - "patch"
-    directory: /
-    schedule:
-      interval: weekly
     cooldown:
       default-days: 5
       semver-major-days: 7

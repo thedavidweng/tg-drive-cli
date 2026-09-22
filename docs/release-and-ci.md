@@ -63,7 +63,7 @@ make snapshot
 ## Asset names
 
 Archives follow the `archives.name_template` in `.goreleaser.yaml`
-(`{{ .ProjectName }}_{{ .Os }}_<arch>`, where amd64 renders as `x86_64` and
+(<span v-pre><code>{{ .ProjectName }}_{{ .Os }}_&lt;arch&gt;</code></span>, where amd64 renders as `x86_64` and
 the macOS universal binary renders as `universal`):
 
 ```text

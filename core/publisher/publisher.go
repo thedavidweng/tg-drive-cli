@@ -301,6 +301,7 @@ func (p *Publisher) Reindex(ctx context.Context, req ReindexRequest) (*ReindexRe
 	}
 	return &ReindexResult{FileID: fileID, ManifestMsgID: manifestMsgID}, nil
 }
+
 func (p *Publisher) fillMeta(m *manifest.FileMeta) {
 	if m.DisplayName == "" {
 		m.DisplayName = fsmodel.BaseName(m.CanonicalPath)

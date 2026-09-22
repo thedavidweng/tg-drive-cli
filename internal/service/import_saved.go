@@ -494,7 +494,7 @@ func (a *App) planImportDest(into string, msg telegram.Message, kind string, pol
 
 // classifySavedMessage maps a saved message to an import kind, or to the
 // reason it cannot be imported.
-func classifySavedMessage(msg telegram.Message) (kind string, skipReason string) {
+func classifySavedMessage(msg telegram.Message) (kind, skipReason string) {
 	switch {
 	case msg.Kind == telegram.KindPhoto:
 		return importKindPhoto, ""

@@ -85,7 +85,7 @@ func (c *Client) UploadMediaGroup(ctx context.Context, reqs []tgtelegram.UploadR
 // path in UploadMedia: photo kind → uploaded photo, video kind → document
 // with a video attribute block, everything else → plain document. thumb must
 // be an already-uploaded thumbnail input file (nil for none).
-func buildAlbumInputMedia(uploaded tg.InputFileClass, thumb tg.InputFileClass, req tgtelegram.UploadRequest) tg.InputMediaClass {
+func buildAlbumInputMedia(uploaded, thumb tg.InputFileClass, req tgtelegram.UploadRequest) tg.InputMediaClass {
 	if req.Kind == tgtelegram.KindPhoto {
 		return &tg.InputMediaUploadedPhoto{File: uploaded}
 	}

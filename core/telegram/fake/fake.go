@@ -614,7 +614,7 @@ func (c *Client) Doctor(ctx context.Context, channelID int64) (*telegram.Capabil
 
 // historyLocked returns messages newer than afterID, newest-first, applying
 // the truncation knob. Callers hold c.mu.
-func (c *Client) historyLocked(channelID int64, afterID int, limit int) ([]telegram.Message, bool) {
+func (c *Client) historyLocked(channelID int64, afterID, limit int) ([]telegram.Message, bool) {
 	var newer []telegram.Message
 	for _, m := range c.messages[channelID] {
 		if m.ID > afterID {
@@ -634,7 +634,7 @@ func (c *Client) historyLocked(channelID int64, afterID int, limit int) ([]teleg
 	return newer, complete
 }
 
-func (c *Client) History(ctx context.Context, channelID int64, afterID int, limit int) ([]telegram.Message, error) {
+func (c *Client) History(ctx context.Context, channelID int64, afterID, limit int) ([]telegram.Message, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	out, _ := c.historyLocked(channelID, afterID, limit)

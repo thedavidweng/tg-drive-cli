@@ -11,7 +11,5 @@ linters:
     - misspell
     - errcheck
 
-formatters:
-  enable:
-    - gofmt
-    - goimports
+run:
+  timeout: 5m

@@ -23,6 +23,8 @@ jobs:
         run: go mod download
       - name: Verify go.mod
         run: make mod-tidy-check
+      - name: Install gofumpt
+        run: go install mvdan.cc/gofumpt@v0.12.0
       - name: Format check
         run: make fmt-check
       - name: Vet

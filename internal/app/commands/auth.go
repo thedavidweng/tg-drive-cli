@@ -183,8 +183,10 @@ func NewAuthCmd(rt Runtime) *cobra.Command {
 
 // createChannelDefault is the NoOptDefVal for a bare --create-channel:
 // derive the channel title from --channel or the local root's name.
-const createChannelDefault = "auto"
-const bindChannelPick = "?"
+const (
+	createChannelDefault = "auto"
+	bindChannelPick      = "?"
+)
 
 func NewInitCmd(rt Runtime) *cobra.Command {
 	var createCh, bindCh string

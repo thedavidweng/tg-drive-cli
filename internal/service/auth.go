@@ -67,7 +67,7 @@ func (a *App) AuthLogout(ctx context.Context) error {
 }
 
 // InitRoot initializes a local root and optionally creates/binds a channel.
-func (a *App) InitRoot(ctx context.Context, localRoot, channelTitle string, create, bind string) (map[string]any, error) {
+func (a *App) InitRoot(ctx context.Context, localRoot, channelTitle, create, bind string) (map[string]any, error) {
 	user, ok, err := a.TG.Status(ctx)
 	if err != nil {
 		return nil, telegram.MapError(err)

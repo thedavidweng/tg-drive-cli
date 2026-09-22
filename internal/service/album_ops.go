@@ -330,7 +330,7 @@ func (a *App) loadAlbumManifest(ctx context.Context, tgChID int64, carrier teleg
 
 // writeAlbumManifest edits or posts the one td-album:v1 inventory of a
 // group through the given carrier and records it on every member row.
-func (a *App) writeAlbumManifest(ctx context.Context, channelID, tgChID int64, carrier telegram.ManifestCarrier, manifestID int, firstMediaID int, meta manifest.AlbumMeta) (int, error) {
+func (a *App) writeAlbumManifest(ctx context.Context, channelID, tgChID int64, carrier telegram.ManifestCarrier, manifestID, firstMediaID int, meta manifest.AlbumMeta) (int, error) {
 	body, err := manifest.RenderAlbumReplyFitting(meta, manifest.DefaultTextBudget, a.Cfg.Caption.MarginUTF16Units)
 	if err != nil {
 		return 0, err
@@ -355,7 +355,7 @@ func (a *App) writeAlbumManifest(ctx context.Context, channelID, tgChID int64, c
 	return id, nil
 }
 
-func (a *App) reindexAlbumMember(ctx context.Context, channelID int64, fileID int64, messageID, manifestID int, dest, hash, mime string, size int64) error {
+func (a *App) reindexAlbumMember(ctx context.Context, channelID, fileID int64, messageID, manifestID int, dest, hash, mime string, size int64) error {
 	existingSlugs, err := a.loadExistingSlugs(ctx, channelID)
 	if err != nil {
 		return err

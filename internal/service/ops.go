@@ -582,7 +582,6 @@ func (a *App) DeleteFile(ctx context.Context, remotePath string, opts DeleteOpti
 }
 
 func (a *App) deleteFileLocked(ctx context.Context, channelID, tgChID int64, p string, fileID int64, messageID, manifestID sql.NullInt64, manifestChat string, opts DeleteOptions) (map[string]any, error) {
-
 	mode := a.Cfg.Delete.Mode
 	if opts.Tombstone {
 		mode = "tombstone"

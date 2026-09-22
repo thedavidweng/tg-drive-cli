@@ -6,8 +6,7 @@
 
 ## Test plan
 
-- [ ] `make ci-local`
-- [ ] `make build`
+- [ ] `mise run check` passes
 - [ ] JSON output updated if command behavior changed
 - [ ] Contract docs updated if CLI/storage/config behavior changed
 

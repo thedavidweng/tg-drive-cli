@@ -1,4 +1,6 @@
-# Agent instructions
+# AGENTS.md
+
+Instructions for every coding agent working in this repo. This is the only agent-instruction file — never create CLAUDE.md, .cursorrules, .windsurfrules, .clinerules, GEMINI.md, or any other per-tool variant (CI fails the build if one appears).
 
 This repository is implemented. Do not reopen completed V1 scope. Future work
 lives in GitHub Issues.
@@ -27,7 +29,7 @@ Contracts win on conflict with other docs. Code wins on implementation detail.
 
 ## Code rules
 
-- Go code must be formatted with `gofmt -s` and `goimports`.
+- Go code must be formatted with `gofumpt` (strict extra-rules).
 - Every command supports stable JSON output when `--json` is present.
 - JSON output goes to stdout. Logs, prompts, and diagnostics go to stderr.
 - Every remote write operation must use an operation lock and a DB transaction.
@@ -38,15 +40,15 @@ Contracts win on conflict with other docs. Code wins on implementation detail.
 - Never rely on hashtags for machine reconstruction. Use `td:v1`,
   `td-manifest:v1`, or `td-album:v1` metadata.
 
+## Verification
+
+`mise run check` (or `make ci-local && make build`) must pass before every push. CI runs the same gates.
+
 ## PR checklist
 
 Before opening or finishing a PR:
 
-- `make fmt-check` passes
-- `make lint` passes
-- `make test` passes
-- `make test-race` passes
-- `make build` passes
+- `mise run check` passes
 - Changed commands update `docs/contracts/cli-contract.md`
 - Changed JSON output updates `docs/contracts/json-contract.md`
 - Changed storage/manifest behavior updates `docs/contracts/storage-contract.md`

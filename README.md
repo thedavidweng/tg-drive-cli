@@ -1,10 +1,19 @@
-# td
+<p align="center">
+  <img src="assets/icon.png" alt="tg-drive-cli" width="160" />
+</p>
 
-[![CI](https://github.com/thedavidweng/tg-drive-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/thedavidweng/tg-drive-cli/actions/workflows/ci.yml)
-[![Go](https://img.shields.io/github/go-mod/go-version/thedavidweng/tg-drive-cli)](go.mod)
-[![License](https://img.shields.io/github/license/thedavidweng/tg-drive-cli)](LICENSE)
+<h1 align="center">tg-drive-cli (td)</h1>
 
-Turn a Telegram channel into a recoverable, scriptable file tree.
+<p align="center">
+  Turn a Telegram channel into a recoverable, scriptable file tree.
+</p>
+
+<p align="center">
+  <a href="https://github.com/thedavidweng/tg-drive-cli/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/thedavidweng/tg-drive-cli/ci.yml?branch=main&style=flat-square&label=ci" alt="CI"></a>
+  <a href="https://github.com/thedavidweng/tg-drive-cli/releases"><img src="https://img.shields.io/github/v/release/thedavidweng/tg-drive-cli?style=flat-square" alt="Release"></a>
+  <a href="https://github.com/thedavidweng/tg-drive-cli/blob/main/LICENSE"><img src="https://img.shields.io/github/license/thedavidweng/tg-drive-cli?style=flat-square" alt="License"></a>
+  <img src="https://img.shields.io/badge/go-%3E%3D1.26-blue?style=flat-square" alt="Go">
+</p>
 
 `td` uploads local files as ordinary Telegram media, stamps each message with
 machine-readable metadata, and keeps a rebuildable SQLite index. You get

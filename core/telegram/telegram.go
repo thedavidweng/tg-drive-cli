@@ -311,7 +311,7 @@ type HistoryMeta struct {
 // reconciliation.
 type HistoryClient interface {
 	// History returns messages newer than afterID, newest-first.
-	History(ctx context.Context, channelID int64, afterID int, limit int) ([]Message, error)
+	History(ctx context.Context, channelID int64, afterID, limit int) ([]Message, error)
 	// StreamHistory feeds each message newer than afterID to fn, newest-first,
 	// without materializing the whole channel. Returning an error from fn stops
 	// the stream. The HistoryMeta describes whether the read provably covered

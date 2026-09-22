@@ -263,8 +263,10 @@ func RenderLegacyCaption(m FileMeta, budget, margin int) (caption, manifestReply
 	return minCaption, RenderManifestReplyFitting(m, DefaultTextBudget, margin), true, nil
 }
 
-var compactRe = regexp.MustCompile(`td:v1\s+(.+)`)
-var kvRe = regexp.MustCompile(`(\w+)=([^\s]+)`)
+var (
+	compactRe = regexp.MustCompile(`td:v1\s+(.+)`)
+	kvRe      = regexp.MustCompile(`(\w+)=([^\s]+)`)
+)
 
 // RenderTombstoneCaption renders the redacted media caption for a deleted file.
 func RenderTombstoneCaption(displayName, canonicalPath string) string {

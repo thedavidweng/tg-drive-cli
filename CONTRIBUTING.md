@@ -58,7 +58,7 @@ need an ADR in `docs/adr/NNNN-slug.md`.
 
 ## Style
 
-- Format with `gofmt -s` and `goimports`.
+- Format with `gofumpt` (strict extra-rules).
 - JSON goes to stdout. Logs, prompts, and diagnostics go to stderr.
 - Remote writes use an operation lock and a DB transaction.
 - Do not assume Telegram capabilities. Use the capability layer and
@@ -81,9 +81,5 @@ ci: update release workflow
 
 Before opening a PR:
 
-- [ ] `make fmt-check`
-- [ ] `make lint`
-- [ ] `make test`
-- [ ] `make test-race`
-- [ ] `make build`
+- [ ] `mise run check` passes
 - [ ] Contracts updated if the public surface changed

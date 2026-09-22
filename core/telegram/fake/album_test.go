@@ -9,7 +9,7 @@ import (
 )
 
 // groupReq builds one group-member upload request.
-func groupReq(channelID int64, name string, kind string) telegram.UploadRequest {
+func groupReq(channelID int64, name, kind string) telegram.UploadRequest {
 	return telegram.UploadRequest{
 		ChannelID: channelID,
 		Caption:   "caption of " + name,

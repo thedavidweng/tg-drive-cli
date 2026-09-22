@@ -190,7 +190,7 @@ func DeriveDirectoryNodes(filePaths []string) map[string]string {
 }
 
 // GCDirectories returns directory paths with no active descendants.
-func GCDirectories(dirs []string, activeFiles []string) []string {
+func GCDirectories(dirs, activeFiles []string) []string {
 	activeSet := make(map[string]bool, len(activeFiles))
 	for _, f := range activeFiles {
 		for _, anc := range AncestorPaths(f) {

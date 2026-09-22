@@ -28,11 +28,10 @@ test-race:
 	go test -race ./...
 
 fmt:
-	gofmt -s -w $$(git ls-files '*.go' 2>/dev/null || find . -name '*.go')
-	@if command -v goimports >/dev/null 2>&1; then goimports -w $$(git ls-files '*.go' 2>/dev/null || find . -name '*.go'); fi
+	gofumpt -extra -w .
 
 fmt-check:
-	@test -z "$$(gofmt -s -l $$(git ls-files '*.go' 2>/dev/null || find . -name '*.go'))" || (echo "gofmt: files need formatting:" && gofmt -s -l $$(git ls-files '*.go' 2>/dev/null || find . -name '*.go') && exit 1)
+	@test -z "$$(gofumpt -extra -l .)" || (echo "gofumpt: files need formatting:" && gofumpt -extra -l . && exit 1)
 
 vet:
 	go vet ./...

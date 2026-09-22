@@ -1,4 +1,23 @@
 [tools]
-go = "1.26"
+go = "1.26.5"
+gofumpt = "0.12.0"
 golangci-lint = "2.12.2"
 goreleaser = "2.17.0"
+
+[tasks.build]
+run = "make build"
+
+[tasks.test]
+run = "make test"
+
+[tasks.fmt]
+run = "make fmt"
+
+[tasks.fmt-check]
+run = "make fmt-check"
+
+[tasks.lint]
+run = "make lint"
+
+[tasks.check]
+run = "make ci-local && make build"

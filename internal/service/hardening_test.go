@@ -67,7 +67,8 @@ func TestTombstoneWinsOverStaleManifestReply(t *testing.T) {
 // addAlbumMember injects a grouped media message with a human-only caption.
 func addAlbumMember(t *testing.T, tg interface {
 	AddMessage(int64, telegram.Message) telegram.Message
-}, tgChID int64, grouped int64, name string) telegram.Message {
+}, tgChID, grouped int64, name string,
+) telegram.Message {
 	t.Helper()
 	return tg.AddMessage(tgChID, telegram.Message{
 		FileName: name, FileSize: 3, MIME: "image/jpeg",

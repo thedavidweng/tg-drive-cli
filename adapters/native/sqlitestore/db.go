@@ -336,7 +336,8 @@ func (d *DB) LoadUploadState(ctx context.Context, key string) (*telegram.UploadS
 	err := d.sql.QueryRowContext(ctx, `
 		select telegram_file_id, content_hash, part_size, total_parts, total_bytes, confirmed_parts, confirmed_bytes, updated_at
 		from upload_progress where key=?`, key).Scan(
-		&st.FileID, &st.ContentHash, &st.PartSize, &st.TotalParts, &st.TotalBytes, &confirmed, &st.ConfirmedBytes, new(string))
+		&st.FileID, &st.ContentHash, &st.PartSize, &st.TotalParts, &st.TotalBytes, &confirmed, &st.ConfirmedBytes, new(string),
+	)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -465,7 +466,8 @@ func (d *DB) ClearNodeID(ctx context.Context, tx *sql.Tx, fileID int64) error {
 func (d *DB) ActivePaths(ctx context.Context, channelID int64) ([]struct {
 	Path  string
 	IsDir bool
-}, error) {
+}, error,
+) {
 	rows, err := d.sql.QueryContext(ctx, `
 		select canonical_path, 0 from files where channel_id=? and status in ('active','pending')
 		union

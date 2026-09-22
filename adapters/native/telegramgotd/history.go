@@ -14,7 +14,7 @@ import (
 const historyPageSize = 100
 
 // History returns messages newer than afterID, newest-first.
-func (c *Client) History(ctx context.Context, channelID int64, afterID int, limit int) ([]tgtelegram.Message, error) {
+func (c *Client) History(ctx context.Context, channelID int64, afterID, limit int) ([]tgtelegram.Message, error) {
 	var out []tgtelegram.Message
 	meta, err := c.streamHistory(ctx, channelID, afterID, limit, func(msg tgtelegram.Message) error {
 		out = append(out, msg)

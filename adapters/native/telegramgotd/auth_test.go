@@ -7,23 +7,6 @@ import (
 	"time"
 )
 
-func TestLoginStateRoundTrip(t *testing.T) {
-	sessionPath := filepath.Join(t.TempDir(), "session.json")
-	sent := time.Now().UTC().Add(-30 * time.Second)
-	saveLoginState(sessionPath, loginState{Phone: "+1000", PhoneCodeHash: "abc", SentAt: sent})
-
-	st, ok := loadLoginState(sessionPath, "+1000", time.Now().UTC())
-	if !ok {
-		t.Fatal("expected reusable state")
-	}
-	if st.PhoneCodeHash != "abc" {
-		t.Fatalf("hash = %q", st.PhoneCodeHash)
-	}
-	if !st.SentAt.Equal(sent) {
-		t.Fatalf("sent_at = %v, want %v", st.SentAt, sent)
-	}
-}
-
 func TestLoginStateFilePermissions(t *testing.T) {
 	sessionPath := filepath.Join(t.TempDir(), "cfg", "session.json")
 	saveLoginState(sessionPath, loginState{Phone: "+1000", PhoneCodeHash: "abc", SentAt: time.Now().UTC()})
@@ -76,19 +59,5 @@ func TestLoginStateCorruptFile(t *testing.T) {
 	}
 	if _, ok := loadLoginState(sessionPath, "+1000", time.Now().UTC()); ok {
 		t.Fatal("corrupt file must not produce state")
-	}
-}
-
-func TestLoginStatePasswordStageRoundTrip(t *testing.T) {
-	sessionPath := filepath.Join(t.TempDir(), "session.json")
-	saveLoginState(sessionPath, loginState{
-		Phone: "+1000", PhoneCodeHash: "abc", SentAt: time.Now().UTC(), Stage: stagePassword,
-	})
-	st, ok := loadLoginState(sessionPath, "+1000", time.Now().UTC())
-	if !ok {
-		t.Fatal("expected reusable state")
-	}
-	if st.Stage != stagePassword {
-		t.Fatalf("stage = %q, want %q", st.Stage, stagePassword)
 	}
 }

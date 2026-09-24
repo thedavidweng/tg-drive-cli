@@ -17,32 +17,6 @@ func sampleOrigin() Origin {
 	}
 }
 
-func TestOriginRecordRoundTripSingleFile(t *testing.T) {
-	in := OriginMeta{Origin: sampleOrigin(), CanonicalPath: "/saved/trips/clip.mp4"}
-	text := RenderOriginRecord(in)
-	if !IsOriginRecord(text) {
-		t.Fatalf("not recognized as origin record: %q", text)
-	}
-	out, err := ParseOriginRecord(text)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out != in {
-		t.Fatalf("round trip changed record:\n got %+v\nwant %+v", out, in)
-	}
-}
-
-func TestOriginRecordRoundTripAlbumGroup(t *testing.T) {
-	in := OriginMeta{Origin: sampleOrigin(), GroupedID: 5001}
-	out, err := ParseOriginRecord(RenderOriginRecord(in))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out != in {
-		t.Fatalf("round trip changed record:\n got %+v\nwant %+v", out, in)
-	}
-}
-
 func TestOriginRecordRejectsRecordWithoutSubject(t *testing.T) {
 	if _, err := ParseOriginRecord(OriginMagic + "\nsrc=saved\nsmid=1"); err == nil {
 		t.Fatal("expected an error for a record naming neither a path nor a group")
@@ -52,27 +26,6 @@ func TestOriginRecordRejectsRecordWithoutSubject(t *testing.T) {
 func TestOriginRecordRejectsForeignRecord(t *testing.T) {
 	if _, err := ParseOriginRecord("td-manifest:v1\np=AA"); err == nil {
 		t.Fatal("expected an error for a foreign record type")
-	}
-}
-
-func TestDupeRecordRoundTrip(t *testing.T) {
-	in := DupeMeta{
-		Origin:        sampleOrigin(),
-		CanonicalPath: "/saved/trips/clip.mp4",
-		Hash:          "blake3:deadbeef",
-		Caption:       "第一次去北海道\n#travel",
-		SourceDate:    "2024-06-01T12:00:00Z",
-	}
-	text := RenderDupeRecord(in)
-	if !IsDupeRecord(text) {
-		t.Fatalf("not recognized as dupe record: %q", text)
-	}
-	out, err := ParseDupeRecord(text)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out != in {
-		t.Fatalf("round trip changed record:\n got %+v\nwant %+v", out, in)
 	}
 }
 

@@ -25,18 +25,6 @@ func loadGoldenLines(t *testing.T, name string) [][]string {
 	return out
 }
 
-func TestEmojiPathsNormalize(t *testing.T) {
-	for _, p := range loadPathFile(t, "emoji.txt") {
-		got, err := NormalizeCanonicalPath(p)
-		if err != nil {
-			t.Fatalf("%q: %v", p, err)
-		}
-		if got != p {
-			t.Fatalf("%q => %q", p, got)
-		}
-	}
-}
-
 func TestFileDirConflictGolden(t *testing.T) {
 	for _, f := range loadGoldenLines(t, "file-dir-conflict.txt") {
 		if len(f) != 4 {

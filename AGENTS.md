@@ -44,6 +44,13 @@ Contracts win on conflict with other docs. Code wins on implementation detail.
 
 `mise run check` (or `make ci-local && make build`) must pass before every push. CI runs the same gates.
 
+## Testing
+
+- Never write unit tests after code.
+- E2E is the sole testing mechanism by default: verify complex features end-to-end, each run producing a verifiable repeatable artifact.
+- Isolated tests only when E2E cannot reach the failure: first enumerate all failure modes, then write code. No string-match, constant-mirror, or getter tests.
+- Coverage is a side effect, never the goal; never add tests to hit a threshold.
+
 ## PR checklist
 
 Before opening or finishing a PR:

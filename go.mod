@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	github.com/go-faster/errors v0.8.0
 	github.com/google/uuid v1.6.0
-	github.com/gotd/td v0.161.0
+	github.com/gotd/td v0.162.0
 	github.com/mozillazg/go-pinyin v0.21.0
 	github.com/mozillazg/go-unidecode v0.2.0
 	github.com/pelletier/go-toml/v2 v2.4.3

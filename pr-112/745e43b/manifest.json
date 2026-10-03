@@ -1,0 +1,218 @@
+{
+  "sha": "745e43b8190871973ceaef4644b510c736c919e3",
+  "scenes": [
+    {
+      "name": "drive-light",
+      "title": "Drive — light",
+      "file": "drive-light.png",
+      "width": 1920,
+      "height": 1280
+    },
+    {
+      "name": "drive-dark",
+      "title": "Drive — dark",
+      "file": "drive-dark.png",
+      "width": 1920,
+      "height": 1280
+    },
+    {
+      "name": "drive-theme-override",
+      "title": "Drive — dark override on a light system",
+      "file": "drive-theme-override.png",
+      "width": 1920,
+      "height": 1280
+    },
+    {
+      "name": "drive-zh-CN",
+      "title": "Drive — 简体中文",
+      "file": "drive-zh-CN.png",
+      "width": 1920,
+      "height": 1280
+    },
+    {
+      "name": "drive-breadcrumbs",
+      "title": "Drive — breadcrumbs in a folder",
+      "file": "drive-breadcrumbs.png",
+      "width": 1920,
+      "height": 1280
+    },
+    {
+      "name": "drive-delete-sheet",
+      "title": "Drive — delete confirmation sheet",
+      "file": "drive-delete-sheet.png",
+      "width": 1920,
+      "height": 1280
+    },
+    {
+      "name": "drive-tree",
+      "title": "Drive — tree view",
+      "file": "drive-tree.png",
+      "width": 1920,
+      "height": 1280
+    },
+    {
+      "name": "drive-upload-sheet",
+      "title": "Drive — upload options and dry-run plan",
+      "file": "drive-upload-sheet.png",
+      "width": 1920,
+      "height": 1280
+    },
+    {
+      "name": "drive-channels-sheet",
+      "title": "Drive — channel switcher and status",
+      "file": "drive-channels-sheet.png",
+      "width": 1920,
+      "height": 1280
+    },
+    {
+      "name": "drive-bind-sheet",
+      "title": "Drive — bind or create a drive",
+      "file": "drive-bind-sheet.png",
+      "width": 1920,
+      "height": 1280
+    },
+    {
+      "name": "drive-switched",
+      "title": "Drive — switched to Backups",
+      "file": "drive-switched.png",
+      "width": 1920,
+      "height": 1280
+    },
+    {
+      "name": "import-preview",
+      "title": "Import — dry-run plan",
+      "file": "import-preview.png",
+      "width": 1920,
+      "height": 1280
+    },
+    {
+      "name": "import-photo-prompt",
+      "title": "Import — photo presentation prompt",
+      "file": "import-photo-prompt.png",
+      "width": 1920,
+      "height": 1280
+    },
+    {
+      "name": "maintenance-adopt",
+      "title": "Maintenance — adopt preview",
+      "file": "maintenance-adopt.png",
+      "width": 1920,
+      "height": 1280
+    },
+    {
+      "name": "maintenance-doctor",
+      "title": "Maintenance — diagnostics",
+      "file": "maintenance-doctor.png",
+      "width": 1920,
+      "height": 1280
+    },
+    {
+      "name": "settings-light",
+      "title": "Settings — light",
+      "file": "settings-light.png",
+      "width": 1920,
+      "height": 1280
+    },
+    {
+      "name": "settings-dark-about",
+      "title": "Settings — dark, About with the probed versions",
+      "file": "settings-dark-about.png",
+      "width": 1920,
+      "height": 1280
+    },
+    {
+      "name": "settings-zh-CN",
+      "title": "Settings — 简体中文",
+      "file": "settings-zh-CN.png",
+      "width": 1920,
+      "height": 1280
+    },
+    {
+      "name": "omarchy-drive",
+      "title": "Omarchy — Drive in the seeded theme",
+      "file": "omarchy-drive.png",
+      "width": 1920,
+      "height": 1280
+    },
+    {
+      "name": "omarchy-settings",
+      "title": "Omarchy — Settings follows the theme",
+      "file": "omarchy-settings.png",
+      "width": 1920,
+      "height": 1280
+    },
+    {
+      "name": "omarchy-off",
+      "title": "Omarchy — switched off",
+      "file": "omarchy-off.png",
+      "width": 1920,
+      "height": 1280
+    },
+    {
+      "name": "omarchy-theme-change",
+      "title": "Omarchy — theme changed while open",
+      "file": "omarchy-theme-change.png",
+      "width": 1920,
+      "height": 1280
+    },
+    {
+      "name": "auth-setup-zh-CN",
+      "title": "Setup — 简体中文",
+      "file": "auth-setup-zh-CN.png",
+      "width": 1920,
+      "height": 1280
+    },
+    {
+      "name": "auth-setup",
+      "title": "First-run setup",
+      "file": "auth-setup.png",
+      "width": 1920,
+      "height": 1280
+    },
+    {
+      "name": "auth-login",
+      "title": "Login — start",
+      "file": "auth-login.png",
+      "width": 1920,
+      "height": 1280
+    },
+    {
+      "name": "auth-code",
+      "title": "Login — code prompt",
+      "file": "auth-code.png",
+      "width": 1920,
+      "height": 1280
+    },
+    {
+      "name": "auth-logged-in",
+      "title": "Logged in",
+      "file": "auth-logged-in.png",
+      "width": 1920,
+      "height": 1280
+    },
+    {
+      "name": "transfers-cli-upload",
+      "title": "Transfers — a CLI upload among finished ones",
+      "file": "transfers-cli-upload.png",
+      "width": 1920,
+      "height": 1280
+    },
+    {
+      "name": "transfers-cli-cancel",
+      "title": "Transfers — cancelling a CLI upload",
+      "file": "transfers-cli-cancel.png",
+      "width": 1920,
+      "height": 1280
+    },
+    {
+      "name": "transfers-upload-live",
+      "title": "Transfers — live upload",
+      "file": "transfers-upload-live.png",
+      "width": 1920,
+      "height": 1280
+    }
+  ],
+  "video": "preview.mp4",
+  "poster": "drive-light.png",
+  "errors": []
+}
